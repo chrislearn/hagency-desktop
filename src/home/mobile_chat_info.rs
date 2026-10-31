@@ -280,7 +280,7 @@ impl RoomAgentsSlow {
     }
 }
 
-fn agent_binding_error(code: &str) -> &'static str {
+pub(super) fn agent_binding_error(code: &str) -> &'static str {
     match code {
         "room_project_registration_required" => "To chat with Agents, use an Agent space. Open + → Create a space or room, choose Agent space, then create a room inside it.",
         "room_join_required" | "room_membership_required" => "Join this room and its Agent space before adding an Agent.",
@@ -288,6 +288,8 @@ fn agent_binding_error(code: &str) -> &'static str {
         "agent_service_banned" => "The Hagency service is banned from this room. Ask a room administrator to unban it, then retry.",
         "matrix_permission_denied" => "You do not have permission to invite members to this room. Ask a room administrator to enable invitations.",
         "agent_creation_denied" => "This space or room does not allow you to add Agents. Ask its owner to update the Agent permissions.",
+        "agent_owner_binding_required" => "This Agent is not available in your account. Its owner must add it to this room using Add agent.",
+        "agent_retired" => "This Agent has been retired and cannot join another room.",
         "agent_command_recovery_required" => "An original binding request needs confirmation. Resume it in Agents.",
         "sign_in_required" | "matrix_account_changed" => "Your account session changed. Reopen this room after signing in.",
         "invalid_server_response" => "The server returned an invalid binding result. Retry to check the original request.",
@@ -1014,6 +1016,12 @@ impl MobileChatInfoRef {
         let room: OwnedRoomId="!review:example.invalid".try_into().unwrap();
         panel.room=Some(RoomNameId::new(matrix_sdk::RoomDisplayName::Named("Team room".into()),room.clone()));
         panel.tab=InfoTab::Members;
+        if scenario=="members" {
+            panel.data=Some(ChatInfoData {room:panel.room.clone().unwrap(),topic:String::new(),members:Vec::new(),mode:None});
+            panel.select_tab(cx,InfoTab::Members);
+            panel.view.redraw(cx);
+            return;
+        }
         panel.agent_picker_open=true;
         panel.view.modal(cx,ids!(agent_picker_modal)).open(cx);
         panel.view.label(cx,ids!(agent_room)).set_text(cx,"Team room");

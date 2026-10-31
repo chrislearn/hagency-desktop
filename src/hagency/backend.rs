@@ -20,6 +20,39 @@ fn matching_binding_recovery(command: &Command, saved: &Value) -> Option<Command
     Some(Command::ResumeAgentCommand { id })
 }
 
+/// A reserved puppet name selects the binding protocol, never authority. The
+/// owner's server roster must still identify the exact Agent before any write.
+pub(crate) fn is_agent_invitation(user: &matrix_sdk::ruma::UserId) -> bool {
+    user.localpart().starts_with("_hagency_agt_")
+}
+
+fn invited_agent_command(context: &Value, room: &str, user: &str) -> Result<Command, String> {
+    if context["roomId"] != room {return Err("invalid_server_response".into());}
+    let project = context["projectId"].as_str().filter(|id| !id.is_empty()).ok_or("invalid_server_response")?;
+    let agents = context["agents"].as_array().ok_or("invalid_server_response")?;
+    let agent = agents.iter().find(|a| a["puppetMxid"] == user).ok_or("agent_owner_binding_required")?;
+    if !matches!(agent["state"].as_str(), Some("active" | "creating" | "suspended")) {
+        return Err("agent_retired".into());
+    }
+    let id = agent["id"].as_str().filter(|id| !id.is_empty()).ok_or("invalid_server_response")?;
+    Ok(Command::BindAgent {agent_id:id.into(), input:serde_json::json!({
+        "projectId":project,"roomId":room,"idempotencyKey":uuid::Uuid::new_v4().to_string()
+    })})
+}
+
+fn invited_agent_joined(value: &Value, agent: &str, room: &str) -> Result<bool, String> {
+    let binding = &value["creation"]["binding"];
+    if binding["roomId"] != room || binding["agentId"] != agent {
+        return Err("invalid_server_response".into());
+    }
+    match value["commandState"].as_str() {
+        Some("active") if binding["state"] == "active" => Ok(true),
+        Some("pending") => Ok(false),
+        Some("suspended") => Err("agent_binding_suspended".into()),
+        _ => Err("invalid_server_response".into()),
+    }
+}
+
 /// A UI waiting deadline may detach only these reads. The request itself must
 /// keep running: even a first read bootstraps owner authorization and a device.
 /// Never extend this list to actions that create, resume, save or run anything.
@@ -562,6 +595,17 @@ impl Service {
         }
         result
     }
+    /// Human-invitation entry points use the same durable Agent binding as the
+    /// dedicated picker. A Matrix puppet invite alone cannot authorize service.
+    pub(crate) async fn invite_agent_to_room(&self, room: &str, user: &str) -> Result<bool, String> {
+        let context = self.agents_for_registered_room(room).await?;
+        let command = invited_agent_command(&context, room, user)?;
+        let Command::BindAgent {agent_id, ..} = &command else {unreachable!()};
+        let agent = agent_id.clone();
+        let value = self.bind_agent_to_room(command).await?;
+        self.check()?;
+        invited_agent_joined(&value, &agent, room)
+    }
     async fn native_owner(&self) -> Result<NativeOwner, String> {
         let native = {
             let mut native = self.0.native.lock().await;
@@ -784,6 +828,32 @@ mod tests {
 mod binding_recovery_tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn invite_routes_only_hagency_puppets_and_requires_exact_owned_roster_entry() {
+        let puppet: matrix_sdk::ruma::OwnedUserId="@_hagency_agt_a:s".try_into().unwrap();
+        assert!(is_agent_invitation(&puppet));
+        assert!(!is_agent_invitation(matrix_sdk::ruma::user_id!("@friend:s")));
+        let context=json!({"roomId":"!r:s","projectId":"p","agents":[{"id":"a","puppetMxid":puppet,"state":"active"}]});
+        let command=invited_agent_command(&context,"!r:s",puppet.as_str()).unwrap();
+        assert!(matches!(command,Command::BindAgent {agent_id,input} if agent_id=="a" && input["projectId"]=="p" && input["roomId"]=="!r:s" && input["idempotencyKey"].as_str().is_some()));
+        assert_eq!(invited_agent_command(&context,"!other:s",puppet.as_str()).unwrap_err(),"invalid_server_response");
+        assert_eq!(invited_agent_command(&context,"!r:s","@_hagency_agt_a:foreign").unwrap_err(),"agent_owner_binding_required");
+        assert_eq!(invited_agent_command(&json!({"roomId":"!r:s","agents":[]}),"!r:s",puppet.as_str()).unwrap_err(),"invalid_server_response");
+        let mut retired=context;retired["agents"][0]["state"]=json!("retired");
+        assert_eq!(invited_agent_command(&retired,"!r:s",puppet.as_str()).unwrap_err(),"agent_retired");
+    }
+    #[test]
+    fn invitation_success_requires_confirmed_binding_for_exact_agent_and_room() {
+        let mut result=json!({"commandState":"pending","creation":{"binding":{"roomId":"!r:s","agentId":"a","state":"pending"}}});
+        assert_eq!(invited_agent_joined(&result,"a","!r:s"),Ok(false));
+        result["commandState"]=json!("active");
+        assert!(invited_agent_joined(&result,"a","!r:s").is_err());
+        result["creation"]["binding"]["state"]=json!("active");
+        assert_eq!(invited_agent_joined(&result,"a","!r:s"),Ok(true));
+        assert!(invited_agent_joined(&result,"other","!r:s").is_err());
+        assert!(invited_agent_joined(&result,"a","!other:s").is_err());
+        assert!(invited_agent_joined(&json!({"commandState":"active"}),"a","!r:s").is_err());
+    }
     #[test]
     fn binding_retry_recovers_only_the_exact_agent_room_and_project() {
         let original = Command::BindAgent {agent_id:"a".into(),input:json!({"projectId":"p","roomId":"!r:s","idempotencyKey":"new"})};

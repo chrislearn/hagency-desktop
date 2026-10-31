@@ -31,6 +31,7 @@ script_mod! {
 
         buttons_view := ModalButtonsRow {
             cancel_button := RobrixNeutralIconButton {
+                height: 44
                 width: Fit{min: FitBound.Abs(120.0)},
                 align: Align{x: 0.5, y: 0.5}
                 padding: 12,
@@ -40,6 +41,7 @@ script_mod! {
             }
 
             confirm_button := RobrixPositiveIconButton {
+                height: 44
                 width: Fit{min: FitBound.Abs(120.0)}
                 align: Align{x: 0.5, y: 0.5}
                 padding: 12,
@@ -49,6 +51,7 @@ script_mod! {
             }
 
             okay_button := RobrixIconButton {
+                height: 44
                 visible: false
                 width: Fit{min: FitBound.Abs(120.0)}
                 align: Align{x: 0.5, y: 0.5}
@@ -127,6 +130,9 @@ pub struct InviteModal {
     /// Registered agents and people who share a room with the user.
     #[rust] known: Vec<Person>,
     #[rust] request: u64,
+    #[rust] epoch: u64,
+    #[cfg(feature = "onboarding-test-support")]
+    #[rust] review_mode: bool,
 }
 
 impl Widget for InviteModal {
@@ -194,24 +200,16 @@ impl WidgetMatchEvent for InviteModal {
 
         let confirm_button = self.view.button(cx, ids!(confirm_button));
         let user_id_input = self.view.text_input(cx, ids!(user_id_input));
-        let status_view = self.view.view(cx, ids!(status_label_view));
-        let mut status_label = self.view.label(cx, ids!(status_label_view.status_label));
 
         // Handle return key or invite button click.
         if let Some(user_id_str) = confirm_button.clicked(actions)
             .then(|| user_id_input.text())
             .or_else(|| user_id_input.returned(actions).map(|(t, _)| t))
         {
+            if matches!(self.state, InviteModalState::WaitingForInvite(_)) { return; }
             // Validate the user ID
-            if user_id_str.is_empty() {
-                script_apply_eval!(cx, status_label, {
-                    text: crate::i18n::tr("Please enter a user ID."),
-                    draw_text +: {
-                        color: mod.widgets.COLOR_FG_DANGER_RED,
-                    },
-                });
-                status_view.set_visible(cx, true);
-                self.view.redraw(cx);
+            if user_id_str.trim().is_empty() {
+                self.status(cx, crate::i18n::tr("Enter a name or Matrix ID."), true);
                 return;
             }
 
@@ -228,30 +226,25 @@ impl WidgetMatchEvent for InviteModal {
             match parsed {
                 Ok(user_id) => {
                     if let Some(room_name_id) = &self.room_name_id {
-                        submit_async_request(MatrixRequest::InviteUser {
+                        let request = MatrixRequest::InviteUser {
                             room_id: room_name_id.room_id().clone(),
                             user_id: user_id.clone(),
-                        });
+                        };
+                        #[cfg(feature = "onboarding-test-support")]
+                        let offline_review = self.review_mode;
+                        #[cfg(not(feature = "onboarding-test-support"))]
+                        let offline_review = false;
+                        if !offline_review { submit_async_request(request); }
+                        let agent = crate::hagency::backend::is_agent_invitation(&user_id);
                         self.state = InviteModalState::WaitingForInvite(user_id);
-                        script_apply_eval!(cx, status_label, {
-                            text: crate::i18n::tr("Sending invite..."),
-                            draw_text +: {
-                                color: mod.widgets.COLOR_ACTIVE_PRIMARY_DARKER,
-                            },
-                        });
-                        status_view.set_visible(cx, true);
+                        self.status(cx, crate::i18n::tr(if agent {"Adding Agent to this room…"} else {"Sending invite..."}), false);
                         confirm_button.set_enabled(cx, false);
+                        self.view.drop_down(cx, ids!(registered_agents)).set_disabled(cx, true);
                         user_id_input.set_is_read_only(cx, true);
                     }
                 }
                 Err(_) => {
-                    script_apply_eval!(cx, status_label, {
-                        text: crate::i18n::tr("Invalid User ID. Expected format: @user:server.xyz"),
-                        draw_text +: {
-                            color: mod.widgets.COLOR_FG_DANGER_RED,
-                        },
-                    });
-                    status_view.set_visible(cx, true);
+                    self.status(cx, crate::i18n::tr("Invalid User ID. Expected format: @user:server.xyz"), true);
                     user_id_input.set_key_focus(cx);
                 }
             }
@@ -259,56 +252,50 @@ impl WidgetMatchEvent for InviteModal {
         }
 
         // Handle the result of a previously-sent invite.
-        if let InviteModalState::WaitingForInvite(invited_user_id) = &self.state {
-            for action in actions {
-                let new_state = match action.downcast_ref() {
-                    Some(InviteResultAction::Sent { room_id, user_id })
-                        if self.room_name_id.as_ref().is_some_and(|rni| rni.room_id() == room_id)
-                            && invited_user_id == user_id
-                    => {
-                        let status = format!("Successfully invited {user_id}!");
-                        script_apply_eval!(cx, status_label, {
-                            text: #(status),
-                            draw_text +: {
-                                color: mod.widgets.COLOR_FG_ACCEPT_GREEN
-                            }
-                        });
-                        status_view.set_visible(cx, true);
-                        confirm_button.set_visible(cx, false);
-                        cancel_button.set_visible(cx, false);
-                        okay_button.set_visible(cx, true);
-                        Some(InviteModalState::InviteSuccess)
-                    }
-                    Some(InviteResultAction::Failed { room_id, user_id, error })
-                        if self.room_name_id.as_ref().is_some_and(|rni| rni.room_id() == room_id)
-                            && invited_user_id == user_id
-                    => {
-                        let status = format!("Failed to send invite: {error}");
-                        script_apply_eval!(cx, status_label, {
-                            text: #(status),
-                            draw_text +: {
-                                color: mod.widgets.COLOR_FG_DANGER_RED,
-                            }
-                        });
-                        status_view.set_visible(cx, true);
-                        confirm_button.set_enabled(cx, true);
-                        user_id_input.set_is_read_only(cx, false);
-                        user_id_input.set_key_focus(cx);
-                        Some(InviteModalState::InviteError)
-                    }
-                    _ => None,
-                };
-                if let Some(new_state) = new_state {
-                    self.state = new_state;
-                    self.view.redraw(cx);
-                    break;
-                }
+        for action in actions {
+            if let Some(result) = action.downcast_ref::<InviteResultAction>() {
+                self.finish_invite(cx, result);
             }
         }
     }
 }
 
 impl InviteModal {
+    fn finish_invite(&mut self, cx: &mut Cx, result: &InviteResultAction) {
+        let (room, user, epoch) = match result {
+            InviteResultAction::Agent {room_id,user_id,epoch,..} | InviteResultAction::Waiting {room_id,user_id,epoch} => (room_id,user_id,*epoch),
+            InviteResultAction::Sent {room_id,user_id} | InviteResultAction::Failed {room_id,user_id,..} => (room_id,user_id,self.epoch),
+        };
+        if self.epoch != crate::account_session::epoch() || epoch != self.epoch
+            || self.room_name_id.as_ref().is_none_or(|r| r.room_id() != room)
+            || !matches!(&self.state, InviteModalState::WaitingForInvite(id) if id == user) { return; }
+        let (text, error, success, pending) = match result {
+            InviteResultAction::Waiting {..} => {
+                self.status(cx, crate::i18n::tr("Still waiting for the server. You can close this panel; the original request will continue."), false);
+                return;
+            }
+            InviteResultAction::Agent {result:Ok(true),..} => (crate::i18n::tr("Agent joined this room. In group chats, @ the Agent to ask it to reply.").to_owned(),false,true,false),
+            InviteResultAction::Agent {result:Ok(false),..} => (crate::i18n::tr("The request is saved. The Agent is still joining. You can close this panel or check its status.").to_owned(),false,false,true),
+            InviteResultAction::Agent {result:Err(code),..} => (crate::i18n::tr(super::mobile_chat_info::agent_binding_error(code)).to_owned(),true,false,false),
+            InviteResultAction::Sent {..} => (crate::i18n::tr("Invitation sent. Waiting for them to join.").to_owned(),false,true,false),
+            InviteResultAction::Failed {error,..} => (crate::i18n::format("Failed to send invite.\n\nError: {error}", &[("error", error.to_string())]),true,false,false),
+        };
+        self.status(cx, &text, error);
+        if success {
+            let mut label=self.view.label(cx,ids!(status_label_view.status_label));
+            script_apply_eval!(cx,label,{draw_text +: {color: mod.widgets.COLOR_FG_ACCEPT_GREEN}});
+        }
+        self.state=if success {InviteModalState::InviteSuccess} else {InviteModalState::InviteError};
+        let confirm=self.view.button(cx,ids!(confirm_button));
+        confirm.set_visible(cx,!success);
+        confirm.set_enabled(cx,true);
+        self.view.drop_down(cx,ids!(registered_agents)).set_disabled(cx,false);
+        confirm.set_text(cx,crate::i18n::tr(if pending {"Check status"} else {"Invite"}));
+        self.view.button(cx,ids!(cancel_button)).set_visible(cx,!success);
+        self.view.button(cx,ids!(okay_button)).set_visible(cx,success);
+        self.view.text_input(cx,ids!(user_id_input)).set_is_read_only(cx,false);
+        self.view.redraw(cx);
+    }
     /// Put `people` in the dropdown, after its header.
     fn offer(&mut self, cx: &mut Cx, people: &[Person]) {
         self.agents = people.iter().map(|(id, _)| id.clone()).collect();
@@ -437,10 +424,11 @@ impl InviteModal {
     pub fn show(&mut self, cx: &mut Cx, room_name_id: RoomNameId) {
         self.view.label(cx, ids!(title)).set_text(
             cx,
-            &format!("Invite to {room_name_id}"),
+            &crate::i18n::format("Invite to {0}", &[("0", room_name_id.to_string())]),
         );
         let settings = crate::agent_access::current();
         self.request += 1;
+        self.epoch = crate::account_session::epoch();
         self.known = settings
             .agent_registry
             .agents()
@@ -459,7 +447,9 @@ impl InviteModal {
         let user_id_input = self.view.text_input(cx, ids!(user_id_input));
         confirm_button.set_visible(cx, true);
         confirm_button.set_enabled(cx, true);
+        confirm_button.set_text(cx, crate::i18n::tr("Invite"));
         confirm_button.reset_hover(cx);
+        self.view.drop_down(cx,ids!(registered_agents)).set_disabled(cx,false);
         cancel_button.set_visible(cx, true);
         cancel_button.set_enabled(cx, true);
         cancel_button.reset_hover(cx);
@@ -475,6 +465,31 @@ impl InviteModal {
 }
 
 impl InviteModalRef {
+    /// Offline native interaction tests use the production controls and result
+    /// handler. This seam cannot submit commands or run with a signed-in client.
+    #[cfg(feature = "onboarding-test-support")]
+    pub fn review_result(&self, cx: &mut Cx, scenario: &str) {
+        assert!(get_client().is_none(), "Invitation review requires an offline profile");
+        let Some(mut inner)=self.borrow_mut() else {return;};
+        inner.review_mode=true;
+        if scenario=="ready" {
+            inner.known=vec![("@_hagency_agt_cabbage:example.invalid".try_into().unwrap(),Some("小白菜".into())),("@friend:example.invalid".try_into().unwrap(),Some("Alex".into()))];
+            let known=inner.known.clone();inner.offer(cx,&known);
+            return;
+        }
+        let InviteModalState::WaitingForInvite(user)=&inner.state else {panic!("Submit through the real Invite button first");};
+        let user_id=user.clone();
+        let room_id=inner.room_name_id.as_ref().unwrap().room_id().clone();
+        let epoch=inner.epoch;
+        let result=match scenario {
+            "slow" => InviteResultAction::Waiting {room_id,user_id,epoch},
+            "human" => InviteResultAction::Sent {room_id,user_id},
+            "stale" => InviteResultAction::Agent {room_id,user_id,epoch:epoch.wrapping_add(1),result:Ok(true)},
+            "other-room" => InviteResultAction::Agent {room_id:"!other:example.invalid".try_into().unwrap(),user_id,epoch,result:Ok(true)},
+            _ => InviteResultAction::Agent {room_id,user_id,epoch,result:match scenario {"success"=>Ok(true),"pending"=>Ok(false),code=>Err(code.into())}},
+        };
+        inner.finish_invite(cx,&result);
+    }
     pub fn show(&self, cx: &mut Cx, room_name_id: RoomNameId) {
         let Some(mut inner) = self.borrow_mut() else { return };
         inner.show(cx, room_name_id);

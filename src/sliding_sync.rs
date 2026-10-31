@@ -1310,6 +1310,30 @@ async fn matrix_worker_task(
 
             MatrixRequest::InviteUser { room_id, user_id } => {
                 let Some(client) = get_client() else { continue };
+                // Every invitation entry point (dialog, /invite and member
+                // actions) must bind owned Hagency Agents instead of leaving a
+                // puppet indefinitely invited with no authorized Room service.
+                if crate::hagency::backend::is_agent_invitation(&user_id) {
+                    let epoch = crate::account_session::epoch();
+                    let service = crate::hagency::backend::Service::for_current();
+                    let _invite_task = crate::account_session::spawn(async move {
+                        let operation = async {
+                            service?.invite_agent_to_room(room_id.as_str(),user_id.as_str()).await
+                        };
+                        tokio::pin!(operation);
+                        let result = tokio::select! {
+                            result = &mut operation => result,
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {
+                                Cx::post_action(InviteResultAction::Waiting {room_id:room_id.clone(),user_id:user_id.clone(),epoch});
+                                operation.await
+                            }
+                        };
+                        if crate::account_session::epoch() == epoch {
+                            Cx::post_action(InviteResultAction::Agent {room_id:room_id.clone(),user_id:user_id.clone(),epoch,result});
+                        }
+                    });
+                    continue;
+                }
                 let _invite_task = crate::account_session::spawn(async move {
                     // We use `client.get_room()` here because the room might also be a space,
                     // not just a joined room.

@@ -2655,5 +2655,12 @@
   "Checking is taking longer than expected. You can close this panel and return later.": "检查耗时较长。你可以关闭此面板，稍后再查看。",
   "The request is saved. The Agent is still joining. You can close this panel or check its status.": "请求已保存，Agent 仍在加入聊天室。你可以关闭面板，或检查状态。",
   "Added": "已添加",
-  "Check status": "检查状态"
+  "Check status": "检查状态",
+  "Enter a name or Matrix ID.": "请输入名称或 Matrix ID。",
+  "Adding Agent to this room…": "正在将 Agent 添加到此聊天室…",
+  "Agent joined this room. In group chats, @ the Agent to ask it to reply.": "Agent 已加入此聊天室。在群聊中，请 @ Agent 让它回答。",
+  "Invitation sent. Waiting for them to join.": "邀请已发送，等待对方加入。",
+  "Invite to {0}": "邀请加入 {0}",
+  "This Agent is not available in your account. Its owner must add it to this room using Add agent.": "此 Agent 不属于你的账号。请其主人通过“添加 Agent”将它加入此聊天室。",
+  "This Agent has been retired and cannot join another room.": "此 Agent 已停用，无法加入新的聊天室。"
 }

@@ -1581,6 +1581,16 @@ impl Widget for RoomScreen {
                 }
 
                 // Handle InviteResultAction to show popup notifications.
+                if let Some(InviteResultAction::Agent { room_id, epoch, result, .. }) = action.downcast_ref() {
+                    if *epoch == crate::account_session::epoch() && self.room_name_id.as_ref().is_some_and(|rn| rn.room_id() == room_id) {
+                        let (text, kind) = match result {
+                            Ok(true) => ("Agent joined this room. In group chats, @ the Agent to ask it to reply.", PopupKind::Success),
+                            Ok(false) => ("The request is saved. The Agent is still joining. You can close this panel or check its status.", PopupKind::Info),
+                            Err(code) => (super::mobile_chat_info::agent_binding_error(code), PopupKind::Error),
+                        };
+                        enqueue_popup_notification(crate::i18n::tr(text), kind, Some(8.0));
+                    }
+                }
                 if let Some(InviteResultAction::Sent { room_id, .. }) = action.downcast_ref() {
                     // Only handle if this is for the current room.
                     if self.room_name_id.as_ref().is_some_and(|rn| rn.room_id() == room_id) {
@@ -7115,6 +7125,10 @@ pub enum InviteAction {
 ///
 #[derive(Debug)]
 pub enum InviteResultAction {
+    /// A durable owned-Agent binding, rather than a plain puppet invitation.
+    Agent { room_id: OwnedRoomId, user_id: OwnedUserId, epoch: u64, result: Result<bool, String> },
+    /// The original request continues while the dialog remains dismissible.
+    Waiting { room_id: OwnedRoomId, user_id: OwnedUserId, epoch: u64 },
     /// The invite was sent successfully.
     ///
     /// This action is posted in response to the [`MatrixRequest::InviteUser`] request.
