@@ -29,12 +29,13 @@ CASES = {
 }
 
 class Review:
-    def __init__(self, binary, output, case):
+    def __init__(self, binary, output, case, profile=None):
         language, self.width, self.height, dark, large = case
         self.language = language
         self.output = output.resolve()
         self.output.mkdir(parents=True, exist_ok=True)
-        profile = self.output / 'profile'
+        profile = (profile or self.output / 'profile').resolve()
+        self.profile = profile
         profile.mkdir(exist_ok=True)
         (profile / 'ui-language.json').write_text(json.dumps(language))
         self.checks, self.trace = [], []
@@ -45,6 +46,7 @@ class Review:
         env = dict(os.environ, HAGENCY_DESKTOP_DATA_DIR=str(profile),
                    MAKEPAD_REMOTE=str(self.port), MAKEPAD_HIDE_WINDOWS='1', MAKEPAD_NO_FOCUS='1',
                    WIZARD_REVIEW_WIDTH=str(self.width), WIZARD_REVIEW_HEIGHT=str(self.height))
+        env.pop('MAKEPAD_FOCUS', None)
         self.log = (self.output / 'native.log').open('w')
         self.process = subprocess.Popen([str(binary.resolve())], cwd=ROOT, env=env,
                                         stdout=self.log, stderr=subprocess.STDOUT)
@@ -108,11 +110,11 @@ class Review:
             self.request('/t', w=0, t=value, wait=1)
         time.sleep(.1)
 
-    def capture(self, name):
-        image = self.request('/g', w=0, scale=1)
+    def capture(self, name, window=0):
+        image = self.request('/g', w=window, scale=1)
         assert image.get('capture_kind') == 'pixels'
         shutil.copy2(image['png'], self.output / (name + '.png'))
-        (self.output / (name + '.json')).write_text(json.dumps(self.snap(), ensure_ascii=False, indent=2))
+        (self.output / (name + '.json')).write_text(json.dumps(self.request('/snap', w=window)['s'], ensure_ascii=False, indent=2))
 
     def footer(self, ident):
         x, y, width, height = self.widget(ident)['r']
@@ -168,7 +170,7 @@ class Review:
                 self.capture('failure')
             except Exception:
                 pass
-        (self.output / 'report.json').write_text(json.dumps({'passed': passed, 'binary_sha256': self.binary_sha256, 'checks': self.checks, 'trace': self.trace}, indent=2))
+        (self.output / 'report.json').write_text(json.dumps({'passed': passed, 'renderer': 'hidden native Makepad / Metal', 'windows_hidden': True, 'profile': str(self.profile), 'binary_sha256': self.binary_sha256, 'checks': self.checks, 'trace': self.trace}, indent=2))
         try:
             self.request('/quit')
         except OSError:
