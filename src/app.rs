@@ -101,11 +101,6 @@ mod embedded_content {
                     }
                 }
 
-                // A modal to invite a user to a room.
-                invite_modal := Modal {
-                    content := InviteModal {}
-                }
-
                 // Show the logout confirmation modal.
                 logout_confirm_modal := Modal {
                     content := LogoutConfirmModal {}
@@ -133,6 +128,12 @@ mod embedded_content {
                     close := RinxBackButton {}
                     management := HagencyPanel {}
                 }}
+
+                // Creation completion can open an invitation without closing
+                // the wizard. Draw it after its parent so it owns pointer hits.
+                invite_modal := Modal {
+                    content := InviteModal {}
+                }
 
                 // A generic modal to confirm any positive action.
                 positive_confirmation_modal := Modal {
@@ -1368,6 +1369,21 @@ impl AppMain for App {
         // to Rinx's views and, at the root of Rinx's navigation, to the host
         // (OctoSense leaves the app; Android backgrounds it).
         let back_unhandled = matches!(event, Event::BackPressed { handled } if !handled.get());
+        let escape = matches!(event, Event::KeyDown(k) | Event::KeyUp(k) if k.key_code == KeyCode::Escape);
+        if (back_unhandled || escape) && self.ui.modal(cx, ids!(invite_modal)).is_open() {
+            // Give nested confirmations, then the invitation, the same priority
+            // as their draw order. Modal owns the cancel scope (including any
+            // dropdown inside it); never dismiss the creation wizard underneath.
+            let foreground = if self.ui.modal(cx, ids!(delete_confirmation_modal)).is_open() {
+                ids!(delete_confirmation_modal)
+            } else if self.ui.modal(cx, ids!(positive_confirmation_modal)).is_open() {
+                ids!(positive_confirmation_modal)
+            } else {
+                ids!(invite_modal)
+            };
+            self.ui.widget(cx, foreground).handle_event(cx, event, &mut Scope::with_data(&mut self.app_state));
+            return;
+        }
         if (back_unhandled || matches!(event, Event::KeyDown(k) if k.key_code == KeyCode::Escape))
             && self.ui.modal(cx, ids!(theme_studio_modal)).is_open()
         {
@@ -1593,6 +1609,15 @@ impl App {
     /// The hosted content widget, which the host seats in its pane.
     pub fn content(&self) -> WidgetRef {
         self.ui.clone()
+    }
+
+    /// Native offline fixtures keep the production UI and event routing, but
+    /// must never start account restoration or a Matrix backend.
+    #[cfg(feature = "onboarding-test-support")]
+    pub fn prepare_offline_review(&mut self) {
+        assert!(crate::sliding_sync::get_client().is_none());
+        self.embedded = true;
+        self.started = true;
     }
 
     /// The module owns this content dynamically, so reapplying its empty
@@ -2409,8 +2434,19 @@ mod back_navigation_tests {
         })
     }
 
+    /// These Cx instances have a no-op platform handler. Dispatch a real cancel
+    /// key through the platform first, to assign the cancel-scope owner before
+    /// directly testing App's routing (ownership is normally set by dispatch).
+    fn settle_cancel_owner(cx: &mut Cx) {
+        let key = KeyEvent { key_code: KeyCode::Escape, ..Default::default() };
+        for message in [studio::StudioToApp::KeyDown(key.clone()), studio::StudioToApp::KeyUp(key)] {
+            cx.dispatch_studio_msg(message, WindowId(0, 0), dvec2(0.0, 0.0));
+        }
+    }
+
     /// Delivers Back as the host shell does and reports whether Rinx took it.
     fn back(cx: &mut Cx, app: &mut App) -> bool {
+        settle_cancel_owner(cx);
         let event = Event::BackPressed { handled: std::cell::Cell::new(false) };
         AppMain::handle_event(app, cx, &event);
         matches!(event, Event::BackPressed { handled } if handled.get())
@@ -2435,6 +2471,58 @@ mod back_navigation_tests {
         assert!(back(&mut cx, &mut app), "Back must close the open modal");
         assert!(!modal.is_open());
         assert!(!back(&mut cx, &mut app), "With the modal closed, Back goes to the host");
+    }
+
+    #[test]
+    fn back_closes_invitation_before_its_creation_wizard() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut app = embedded_app(&mut cx);
+        let wizard = app.ui.modal(&mut cx, ids!(space_management_modal));
+        let invite = app.ui.modal(&mut cx, ids!(invite_modal));
+        wizard.open(&mut cx);
+        invite.open(&mut cx);
+        assert!(back(&mut cx, &mut app));
+        assert!(!invite.is_open(), "Back must dismiss the foreground invitation");
+        assert!(wizard.is_open(), "The completed creation must remain available");
+        assert!(back(&mut cx, &mut app));
+        assert!(!wizard.is_open());
+        assert!(!back(&mut cx, &mut app));
+    }
+
+    #[test]
+    fn escape_closes_invitation_without_dismissing_its_creation_wizard() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut app = embedded_app(&mut cx);
+        let wizard = app.ui.modal(&mut cx, ids!(space_management_modal));
+        let invite = app.ui.modal(&mut cx, ids!(invite_modal));
+        wizard.open(&mut cx);
+        invite.open(&mut cx);
+        let key = KeyEvent { key_code: KeyCode::Escape, ..Default::default() };
+        settle_cancel_owner(&mut cx);
+        AppMain::handle_event(&mut app, &mut cx, &Event::KeyDown(key.clone()));
+        assert!(wizard.is_open(), "Escape key-down must not close the parent");
+        AppMain::handle_event(&mut app, &mut cx, &Event::KeyUp(key));
+        assert!(!invite.is_open());
+        assert!(wizard.is_open());
+    }
+
+    #[test]
+    fn confirmation_above_invitation_keeps_navigation_priority() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut app = embedded_app(&mut cx);
+        let wizard = app.ui.modal(&mut cx, ids!(space_management_modal));
+        let invite = app.ui.modal(&mut cx, ids!(invite_modal));
+        let confirmation = app.ui.modal(&mut cx, ids!(positive_confirmation_modal));
+        wizard.open(&mut cx);
+        invite.open(&mut cx);
+        confirmation.open(&mut cx);
+        assert!(back(&mut cx, &mut app));
+        assert!(!confirmation.is_open());
+        assert!(invite.is_open());
+        assert!(wizard.is_open());
+        assert!(back(&mut cx, &mut app));
+        assert!(!invite.is_open());
+        assert!(wizard.is_open());
     }
 
     #[test]
