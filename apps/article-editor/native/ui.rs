@@ -193,7 +193,7 @@ script_mod! {
             line2 := SolidView {width: Fill height: 2}
             accent := SolidView {width: Fill height: 3}
         }
-        name := mod.widgets.ArticleLabel {width: Fit padding: 0 draw_text.text_style: theme.font_regular{font_size: (11 * mod.widgets.RINX_TEXT_SCALE)}}
+        name := mod.widgets.ArticleLabel {width: Fill padding: 0 max_lines: 2 align: Align{x: 0.5} draw_text.text_style: theme.font_regular{font_size: (11 * mod.widgets.RINX_TEXT_SCALE) line_spacing: 1.2}}
     }
     // A chat to publish to: initial avatar, name and a radio mark (atlas 发布到).
     mod.widgets.ArticleChatRow = NavigationBarButton {width: Fill height: 64 flow: Right align: Align{y: 0.5} padding: Inset{left: 12 right: 12} spacing: 12
@@ -422,13 +422,13 @@ script_mod! {
                         }
                     }
                 }
-                write_themes_panel := SolidView {visible: false width: 260 height: Fill flow: Down padding: 16 spacing: 10 draw_bg.color: mod.widgets.RINX_SURFACE
+                write_themes_panel := SolidView {visible: false width: (300 * mod.widgets.RINX_TEXT_SCALE) height: Fill flow: Down padding: 16 spacing: 10 draw_bg.color: mod.widgets.RINX_SURFACE
                     View {width: Fill height: 44 flow: Right align: Align{y: 0.5}
                         mod.widgets.ArticleLabel {width: Fill text: #(crate::i18n::tr("Article style")) i18n_text: "Article style" draw_text.text_style: theme.font_bold{font_size: (14 * mod.widgets.RINX_TEXT_SCALE)}}
                         write_themes_close := mod.widgets.ArticleIconButton {draw_icon +: {svg: ICON_CLOSE}}
                     }
                     write_theme_list := PortalList {width: Fill height: Fill
-                        Swatches := View {width: Fill height: 108 flow: Right spacing: 10 padding: Inset{bottom: 12}
+                        Swatches := View {width: Fill height: (116 + 32 * mod.widgets.RINX_TEXT_SCALE) flow: Right spacing: 10 padding: Inset{bottom: 12}
                             t0 := mod.widgets.ArticleThemeSwatch {}
                             t1 := mod.widgets.ArticleThemeSwatch {}
                             t2 := mod.widgets.ArticleThemeSwatch {}
@@ -458,19 +458,19 @@ script_mod! {
                 mod.widgets.ArticleLabel {width: Fill text: #(crate::i18n::tr("Article style")) i18n_text: "Article style" draw_text.text_style: theme.font_bold{font_size: (16 * mod.widgets.RINX_TEXT_SCALE)}}
                 theme_sheet_close := mod.widgets.ArticleIconButton {draw_icon +: {svg: ICON_CLOSE}}
               }
-              ScrollXView {width: Fill height: 108 flow: Right spacing: 10
-                  s0 := mod.widgets.ArticleThemeSwatch {width: 68}
-                  s1 := mod.widgets.ArticleThemeSwatch {width: 68}
-                  s2 := mod.widgets.ArticleThemeSwatch {width: 68}
-                  s3 := mod.widgets.ArticleThemeSwatch {width: 68}
-                  s4 := mod.widgets.ArticleThemeSwatch {width: 68}
-                  s5 := mod.widgets.ArticleThemeSwatch {width: 68}
-                  s6 := mod.widgets.ArticleThemeSwatch {width: 68}
-                  s7 := mod.widgets.ArticleThemeSwatch {width: 68}
-                  s8 := mod.widgets.ArticleThemeSwatch {width: 68}
-                  s9 := mod.widgets.ArticleThemeSwatch {width: 68}
-                  s10 := mod.widgets.ArticleThemeSwatch {width: 68}
-                  s11 := mod.widgets.ArticleThemeSwatch {width: 68}
+              ScrollXView {width: Fill height: (104 + 32 * mod.widgets.RINX_TEXT_SCALE) flow: Right spacing: 10
+                  s0 := mod.widgets.ArticleThemeSwatch {width: (84 * mod.widgets.RINX_TEXT_SCALE)}
+                  s1 := mod.widgets.ArticleThemeSwatch {width: (84 * mod.widgets.RINX_TEXT_SCALE)}
+                  s2 := mod.widgets.ArticleThemeSwatch {width: (84 * mod.widgets.RINX_TEXT_SCALE)}
+                  s3 := mod.widgets.ArticleThemeSwatch {width: (84 * mod.widgets.RINX_TEXT_SCALE)}
+                  s4 := mod.widgets.ArticleThemeSwatch {width: (84 * mod.widgets.RINX_TEXT_SCALE)}
+                  s5 := mod.widgets.ArticleThemeSwatch {width: (84 * mod.widgets.RINX_TEXT_SCALE)}
+                  s6 := mod.widgets.ArticleThemeSwatch {width: (84 * mod.widgets.RINX_TEXT_SCALE)}
+                  s7 := mod.widgets.ArticleThemeSwatch {width: (84 * mod.widgets.RINX_TEXT_SCALE)}
+                  s8 := mod.widgets.ArticleThemeSwatch {width: (84 * mod.widgets.RINX_TEXT_SCALE)}
+                  s9 := mod.widgets.ArticleThemeSwatch {width: (84 * mod.widgets.RINX_TEXT_SCALE)}
+                  s10 := mod.widgets.ArticleThemeSwatch {width: (84 * mod.widgets.RINX_TEXT_SCALE)}
+                  s11 := mod.widgets.ArticleThemeSwatch {width: (84 * mod.widgets.RINX_TEXT_SCALE)}
               }
               theme_sheet_apply := RinxPrimaryButton {width: Fill height: 48 text: #(crate::i18n::tr("Apply")) i18n_text: "Apply" draw_bg.border_radius: 12}
             }
@@ -1113,7 +1113,7 @@ impl ArticlePanel {
             self.label(cx, ids!(write_toast)).set_text(cx, &toast);
         }
         let paper_width = if wide {
-            let sidebar = if self.write_themes_open { 260.0 } else { 0.0 };
+            let sidebar = if self.write_themes_open { 300.0 * self.appearance.text_scale } else { 0.0 };
             let pane = (self.viewport_width - sidebar) / if source { 2.0 } else { 1.0 };
             Size::Fixed((pane - 32.0).clamp(240.0, 640.0))
         } else {

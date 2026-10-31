@@ -206,6 +206,20 @@ def run(binary, output, width, language):
         style_id = "wb_style" if width < 448 else "write_style"
         assert app.widget(style_id)["r"][2] >= 44
         app.mark("large_text_keeps_primary_actions_reachable")
+        if width >= 960:
+            app.click("write_mode_split")
+        app.click(style_id)
+        app.capture("09b-large-text-styles")
+        names = [w for w in app.snap() if w.get("i") == "name" and w.get("t") == "Classic green"]
+        if language == "en":
+            assert names and names[0]["r"][3] > 24, "English style name did not wrap"
+        if width >= 960:
+            paper = app.widget("write_paper")["r"]
+            pane = app.widget("write_preview_pane")["r"]
+            assert paper[0] >= pane[0] and paper[0]+paper[2] <= pane[0]+pane[2]+.5
+            app.mark("large_text_split_preview_stays_inside_pane")
+        app.click("write_themes_close" if width >= 960 else "theme_sheet_close")
+        app.mark("large_text_style_names_wrap_instead_of_clipping")
         app.click("write_publish")
         app.capture("10-publication-review")
         if width >= 960:

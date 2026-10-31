@@ -76,3 +76,21 @@ the article editor's existing model, storage and interaction unit tests.
 
 Final release gate: **58 checks and 317 Rust tests passed**. Release build completed
 with `--locked --features onboarding-test-support --bin rinx`.
+
+Follow-up check of `47ece56d` found a visual omission: English preset captions
+were clipped in the narrow style sheet even though the interaction checks passed.
+The original visual review did not cover these English captions closely enough.
+Captions now wrap within their cards, card and inspector widths follow font scale,
+and row heights reserve space for two complete lines. Split preview width accounts
+for the wider inspector.
+
+The follow-up passed **59 native checks** across 390, 420, 960 and 1440 point
+layouts, including 130% type, preview containment, and scrolling to the final style.
+All **18 article module unit tests** also passed. This was focused verification of
+the caption/layout correction; the full release gate above belongs to the baseline.
+The self-assessed score remains **96/100** after this correction.
+
+- [Complete English captions at 130%](article-editor-ios/style-names-large-text.png).
+- [Split preview at the 960-point breakpoint](article-editor-ios/style-names-split.png).
+- [Final styles remain reachable by scrolling](article-editor-ios/style-names-scroll.png).
+- [Follow-up results and capture hashes](article-editor-ios/recheck.json).

@@ -1,0 +1,112 @@
+{
+  "baselineCommit": "47ece56d26ae403159db097eda12405c549a848c",
+  "finding": "English style captions clipped because 68-point cards did not provide a bounded wrapping area. At larger font scales, long words and final lines also needed more room.",
+  "renderer": "hidden native Makepad / Metal",
+  "cases": [
+    {
+      "case": "accepted-390",
+      "passed": true,
+      "checks": [
+        "autosave_does_not_move_source_or_navigation",
+        "native_input_and_local_draft_save",
+        "formatting_preserves_selection_and_keyboard_undo_redo",
+        "primary_controls_are_visible_with_44_point_targets",
+        "cancelling_style_preview_restores_saved_theme",
+        "preview_and_style_navigation_preserve_source",
+        "theme_switch_preserves_draft_and_current_page",
+        "large_text_keeps_primary_actions_reachable",
+        "large_text_style_names_wrap_instead_of_clipping",
+        "empty_destination_is_explained_and_cannot_publish",
+        "publication_stops_at_review_and_returns_to_draft",
+        "saved_draft_visible_after_return_to_library",
+        "wrapped_library_title_keeps_status_visible",
+        "reopening_saved_draft_restores_title_and_source"
+      ]
+    },
+    {
+      "case": "accepted-420",
+      "passed": true,
+      "checks": [
+        "autosave_does_not_move_source_or_navigation",
+        "native_input_and_local_draft_save",
+        "formatting_preserves_selection_and_keyboard_undo_redo",
+        "primary_controls_are_visible_with_44_point_targets",
+        "cancelling_style_preview_restores_saved_theme",
+        "preview_and_style_navigation_preserve_source",
+        "theme_switch_preserves_draft_and_current_page",
+        "large_text_keeps_primary_actions_reachable",
+        "large_text_style_names_wrap_instead_of_clipping",
+        "empty_destination_is_explained_and_cannot_publish",
+        "publication_stops_at_review_and_returns_to_draft",
+        "saved_draft_visible_after_return_to_library",
+        "wrapped_library_title_keeps_status_visible",
+        "reopening_saved_draft_restores_title_and_source"
+      ]
+    },
+    {
+      "case": "split-960",
+      "passed": true,
+      "checks": [
+        "autosave_does_not_move_source_or_navigation",
+        "native_input_and_local_draft_save",
+        "formatting_preserves_selection_and_keyboard_undo_redo",
+        "primary_controls_are_visible_with_44_point_targets",
+        "preview_and_style_navigation_preserve_source",
+        "theme_switch_preserves_draft_and_current_page",
+        "split_preview_stays_inside_pane_with_inspector_open",
+        "large_text_keeps_primary_actions_reachable",
+        "large_text_split_preview_stays_inside_pane",
+        "large_text_style_names_wrap_instead_of_clipping",
+        "empty_destination_is_explained_and_cannot_publish",
+        "publication_stops_at_review_and_returns_to_draft",
+        "saved_draft_visible_after_return_to_library",
+        "wrapped_library_title_keeps_status_visible",
+        "reopening_saved_draft_restores_title_and_source"
+      ]
+    },
+    {
+      "case": "split-1440",
+      "passed": true,
+      "checks": [
+        "autosave_does_not_move_source_or_navigation",
+        "native_input_and_local_draft_save",
+        "formatting_preserves_selection_and_keyboard_undo_redo",
+        "primary_controls_are_visible_with_44_point_targets",
+        "preview_and_style_navigation_preserve_source",
+        "theme_switch_preserves_draft_and_current_page",
+        "split_preview_stays_inside_pane_with_inspector_open",
+        "large_text_keeps_primary_actions_reachable",
+        "large_text_split_preview_stays_inside_pane",
+        "large_text_style_names_wrap_instead_of_clipping",
+        "empty_destination_is_explained_and_cannot_publish",
+        "publication_stops_at_review_and_returns_to_draft",
+        "saved_draft_visible_after_return_to_library",
+        "wrapped_library_title_keeps_status_visible",
+        "reopening_saved_draft_restores_title_and_source"
+      ]
+    },
+    {
+      "case": "style-scroll-final",
+      "passed": true,
+      "checks": [
+        "last_style_name_is_fully_reachable_by_scrolling_at_large_text"
+      ]
+    }
+  ],
+  "totalChecks": 59,
+  "articleUnitTests": 18,
+  "captures": {
+    "style-names-large-text.png": {
+      "source": "accepted-420/09b-large-text-styles.png",
+      "sha256": "5bcee97253a37ac83201db66a1f7836745fc1c4eacbb282bd4240acb37263e7f"
+    },
+    "style-names-split.png": {
+      "source": "split-960/09b-large-text-styles.png",
+      "sha256": "e2ef0c1107251998cb6a8e08133ce7557b039173edfb5426c87ca7c072a2433d"
+    },
+    "style-names-scroll.png": {
+      "source": "style-scroll-final/style-list-bottom.png",
+      "sha256": "eed5926f0cca42f56956a1557e1dfea6ee7e4eb0f4919459b241965dbb5e2583"
+    }
+  }
+}
