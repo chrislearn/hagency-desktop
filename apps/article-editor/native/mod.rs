@@ -11,6 +11,8 @@ pub(crate) mod backend;
 pub mod ui;
 pub mod window;
 pub mod table_picker;
+#[cfg(feature = "onboarding-test-support")]
+pub mod review;
 pub use model::{ArticlePackage, MSGTYPE};
 pub use ui::{ArticleAction, ArticlePanelWidgetRefExt};
 pub(crate) use model::invalidate_sessions;

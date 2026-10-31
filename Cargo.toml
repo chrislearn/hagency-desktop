@@ -151,6 +151,10 @@ reqwest = { version = "0.12", default-features = false, optional = true, feature
 # Native writer fixtures must never acquire the user's installation authority.
 hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "077970ce118ee347804e159dd28865d2c8d2ba1d", features = ["test-support"] }
 
+[[example]]
+name = "article_editor_review"
+required-features = ["onboarding-test-support"]
+
 ## For OAuth/SSO login on iOS, via `ASWebAuthenticationSession`. Ugh....
 [target.'cfg(target_os = "ios")'.dependencies]
 robius-web-auth-session = { git = "https://github.com/project-robius/robius" }

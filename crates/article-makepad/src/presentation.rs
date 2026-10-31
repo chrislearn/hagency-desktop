@@ -27,11 +27,15 @@ pub fn style_input(cx: &mut Cx, mut input: ArticleRichInputRef, document: &Docum
 }
 
 pub fn style_html(cx: &mut Cx, mut html: HtmlRef, document: &Document) {
-    let ink = color(document.theme.colors().1);
+    let (paper, ink, accent) = document.theme.colors();
+    let (paper, ink, accent) = (color(paper), color(ink), color(accent));
+    // Published paper keeps its own palette even inside a dark application.
+    // Inheriting the host's dark quote fill made black article text unreadable.
+    let quote = paper * 0.94 + ink * 0.06;
     let size = if document.large_type { 16.0 } else { 14.0 };
     let spacing = if document.compact { 1.0 } else { 1.25 };
     script_apply_eval!(cx, html, {
-        draw_block +: {table_header_bg_color: #x0000000a table_border_color: #xb8c2bd code_color: #xf3f5f4 line_color: #xb8c2bd}
+        draw_block +: {table_header_bg_color: #x0000000a table_border_color: #xb8c2bd code_color: #xf3f5f4 line_color: #xb8c2bd quote_bg_color: #(quote) quote_fg_color: #(accent)}
         font_size: #(size) font_color: #(ink)
         draw_text +: {color: #(ink)}
         text_style_normal +: {line_spacing: #(spacing)}

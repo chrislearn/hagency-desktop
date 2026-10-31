@@ -1,0 +1,141 @@
+{
+  "renderer": "hidden native Makepad / Metal",
+  "cases": [
+    {
+      "case": "390",
+      "passed": true,
+      "checks": [
+        "autosave_does_not_move_source_or_navigation",
+        "native_input_and_local_draft_save",
+        "formatting_preserves_selection_and_keyboard_undo_redo",
+        "primary_controls_are_visible_with_44_point_targets",
+        "cancelling_style_preview_restores_saved_theme",
+        "preview_and_style_navigation_preserve_source",
+        "theme_switch_preserves_draft_and_current_page",
+        "large_text_keeps_primary_actions_reachable",
+        "empty_destination_is_explained_and_cannot_publish",
+        "publication_stops_at_review_and_returns_to_draft",
+        "saved_draft_visible_after_return_to_library",
+        "wrapped_library_title_keeps_status_visible",
+        "reopening_saved_draft_restores_title_and_source"
+      ]
+    },
+    {
+      "case": "390-en",
+      "passed": true,
+      "checks": [
+        "autosave_does_not_move_source_or_navigation",
+        "native_input_and_local_draft_save",
+        "formatting_preserves_selection_and_keyboard_undo_redo",
+        "primary_controls_are_visible_with_44_point_targets",
+        "cancelling_style_preview_restores_saved_theme",
+        "preview_and_style_navigation_preserve_source",
+        "theme_switch_preserves_draft_and_current_page",
+        "large_text_keeps_primary_actions_reachable",
+        "empty_destination_is_explained_and_cannot_publish",
+        "publication_stops_at_review_and_returns_to_draft",
+        "saved_draft_visible_after_return_to_library",
+        "wrapped_library_title_keeps_status_visible",
+        "reopening_saved_draft_restores_title_and_source"
+      ]
+    },
+    {
+      "case": "760",
+      "passed": true,
+      "checks": [
+        "autosave_does_not_move_source_or_navigation",
+        "native_input_and_local_draft_save",
+        "formatting_preserves_selection_and_keyboard_undo_redo",
+        "primary_controls_are_visible_with_44_point_targets",
+        "cancelling_style_preview_restores_saved_theme",
+        "preview_and_style_navigation_preserve_source",
+        "theme_switch_preserves_draft_and_current_page",
+        "large_text_keeps_primary_actions_reachable",
+        "empty_destination_is_explained_and_cannot_publish",
+        "publication_stops_at_review_and_returns_to_draft",
+        "saved_draft_visible_after_return_to_library",
+        "wrapped_library_title_keeps_status_visible",
+        "reopening_saved_draft_restores_title_and_source"
+      ]
+    },
+    {
+      "case": "1120",
+      "passed": true,
+      "checks": [
+        "autosave_does_not_move_source_or_navigation",
+        "native_input_and_local_draft_save",
+        "formatting_preserves_selection_and_keyboard_undo_redo",
+        "primary_controls_are_visible_with_44_point_targets",
+        "preview_and_style_navigation_preserve_source",
+        "theme_switch_preserves_draft_and_current_page",
+        "split_preview_stays_inside_pane_with_inspector_open",
+        "large_text_keeps_primary_actions_reachable",
+        "empty_destination_is_explained_and_cannot_publish",
+        "publication_stops_at_review_and_returns_to_draft",
+        "saved_draft_visible_after_return_to_library",
+        "wrapped_library_title_keeps_status_visible",
+        "reopening_saved_draft_restores_title_and_source"
+      ]
+    },
+    {
+      "case": "1440",
+      "passed": true,
+      "checks": [
+        "autosave_does_not_move_source_or_navigation",
+        "native_input_and_local_draft_save",
+        "formatting_preserves_selection_and_keyboard_undo_redo",
+        "primary_controls_are_visible_with_44_point_targets",
+        "preview_and_style_navigation_preserve_source",
+        "theme_switch_preserves_draft_and_current_page",
+        "split_preview_stays_inside_pane_with_inspector_open",
+        "large_text_keeps_primary_actions_reachable",
+        "empty_destination_is_explained_and_cannot_publish",
+        "publication_stops_at_review_and_returns_to_draft",
+        "saved_draft_visible_after_return_to_library",
+        "wrapped_library_title_keeps_status_visible",
+        "reopening_saved_draft_restores_title_and_source"
+      ]
+    }
+  ],
+  "totalAssertions": 65,
+  "captures": {
+    "editor-light.png": {
+      "source": "accepted-390/02-editor.png",
+      "sha256": "edc4ac0e4341cc9811e43f862b6cc9a191ccf14f4a3aeb9720e8cef92f06a3c5"
+    },
+    "editor-dark.png": {
+      "source": "accepted-390/05-dark-editor.png",
+      "sha256": "ac571e157a88fc8137a53e50f85b369b39de5e1558c88b4f09c0370455a844bb"
+    },
+    "editor-large-text.png": {
+      "source": "accepted-390-en/09-large-text.png",
+      "sha256": "8033c436c08e1804b5bb628efc86c0d639cef71fe8da8e367668d5a3b349e59f"
+    },
+    "library-large-text.png": {
+      "source": "accepted-390-en/11-saved-library.png",
+      "sha256": "53fe732c14a0b34cc0140081c6a6b3b249a0ad042f6414b24e63ad53362c31c8"
+    },
+    "style-sheet-dark.png": {
+      "source": "accepted-390/07-dark-styles.png",
+      "sha256": "bef030af9e80860620af2371328c834d1bf5093386fc52ffeaf712efce0ece23"
+    },
+    "desktop-split.png": {
+      "source": "accepted-1120/08-split-with-styles.png",
+      "sha256": "768eebbbb0a6ed707e4c8e6e5348533b5ab90309049bb4b7dfdd13a55be815dd"
+    },
+    "publish-review.png": {
+      "source": "accepted-1120/10-publication-review.png",
+      "sha256": "928b4de62bbf86d3256a222defd098f93ce09a3c5af538bf2706d6ab74cc6e8c"
+    }
+  },
+  "visualScore": {
+    "score": 96,
+    "outOf": 100,
+    "assessment": "Implementer self-review of native captures against the documented rubric; not an independent rating or iOS device certification"
+  },
+  "releaseRegression": {
+    "checks": 58,
+    "rustTests": 317,
+    "passed": true
+  }
+}

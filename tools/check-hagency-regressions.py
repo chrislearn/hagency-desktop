@@ -65,6 +65,7 @@ def main():
         ("chat-information", "home::mobile_chat_info"),
         ("chat-information-layout", "desktop_information_columns_tests"),
         ("miniapp-dock", "mini_apps_side_tests"),
+        ("article-editor", "article_app::"),
     ]:
         run(name, ["cargo", "test", "--locked", "--lib", "--features", "onboarding-test-support", pattern], rust_tests=True)
     if sys.platform == "darwin":
