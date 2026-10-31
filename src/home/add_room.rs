@@ -22,7 +22,7 @@ script_mod! {
         explore_header := DetailHeader { title +: {text: #(crate::i18n::tr("Explore Rooms")) i18n_text: "Explore Rooms"} }
         create_room_space := RobrixNeutralIconButton {
             width: Fill height: 40 margin: Inset{left: 16 right: 16}
-            text: #(crate::i18n::tr("New room or space")) i18n_text: "New room or space"
+            text: #(crate::i18n::tr("Create a space or room…")) i18n_text: "Create a space or room…"
             icon_walk: Walk{width: 0 height: 0}
         }
         help_info := DetailNote {

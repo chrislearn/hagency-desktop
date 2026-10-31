@@ -495,7 +495,7 @@ script_mod! {
         Filler := View {width: Fill height: 64}
         Empty := RoundedView {width: Fill height: Fit flow: Down padding: 24 spacing: 12 margin: Inset{top: 8}
             draw_bg +: {color: mod.widgets.RINX_SURFACE border_color: mod.widgets.RINX_BORDER border_size: 1 border_radius: theme.corner_radius}
-            empty_message := Text {text: #(crate::i18n::tr("No Matrix workspaces yet. Create one to organize rooms and members.")) i18n_text: "No Matrix workspaces yet. Create one to organize rooms and members."}
+            empty_message := Text {text: #(crate::i18n::tr("No Agent spaces yet. Choose Agent space in the creation wizard to get started.")) i18n_text: "No Agent spaces yet. Choose Agent space in the creation wizard to get started."}
         }
     }
     mod.widgets.HagencyPanel = #(HagencyPanel::register_widget(vm)) {
@@ -503,9 +503,9 @@ script_mod! {
         width: Fill height: Fill flow: Down padding: Inset{top: 16 left: 20 right: 0 bottom: 0} spacing: 12 draw_bg.color: mod.widgets.RINX_PAGE
         View {width: Fill height: 40 margin: Inset{right: 20} spacing: 10 align: Align{y: 0.5}
             back := RinxBackButton {visible: false}
-            heading := Text {text: #(crate::i18n::tr("Matrix workspaces")) i18n_text: "Matrix workspaces" draw_text.text_style: theme.font_bold{font_size: (16 * mod.widgets.RINX_TEXT_SCALE)}}
+            heading := Text {text: #(crate::i18n::tr("Agent spaces")) i18n_text: "Agent spaces" draw_text.text_style: theme.font_bold{font_size: (16 * mod.widgets.RINX_TEXT_SCALE)}}
             loading_status := LoadingSpinner {visible: false width: 18 height: 18 draw_bg +: {color: mod.widgets.RINX_MUTED stroke_width: 2.0}}
-            new_item := Primary {text: #(crate::i18n::tr("New workspace")) i18n_text: "New workspace"}
+            new_item := Primary {text: #(crate::i18n::tr("Create a space or room…")) i18n_text: "Create a space or room…"}
             refresh := Action {text: #(crate::i18n::tr("Refresh")) i18n_text: "Refresh"}
         }
         owner := Text {visible: false}
@@ -1402,7 +1402,7 @@ impl HagencyPanel {
     fn list_page(&self, cx: &mut Cx) {
         self.view.label(cx, ids!(heading)).set_text(
             cx,
-            crate::i18n::tr(if self.page == Page::Projects {"Matrix workspaces"} else {"Local agents"}),
+            crate::i18n::tr(if self.page == Page::Projects {"Agent spaces"} else {"Local agents"}),
         );
         self.view
             .view(cx, ids!(project_list_holder))
@@ -1743,14 +1743,8 @@ impl HagencyPanel {
         self.view.button(cx,ids!(open_binding_chat)).set_enabled(cx,selected_binding.as_ref().is_some_and(|b|string(b,"state")=="active" && !string(b,"roomId").is_empty()) && !self.busy);
         let project_binding = selected_binding.as_ref().is_some_and(|b| b["projectId"].as_str().is_some_and(|id| !id.is_empty()) && string(b,"scopeKind") != "owner_direct");
         self.view.view(cx, ids!(reply_policy)).set_visible(cx, project_binding);
-        let auto_reply = selected_binding.as_ref().is_some_and(|b| b["threadAutoReply"] == true);
-        self.view.label(cx, ids!(reply_policy_status)).set_text(cx, crate::i18n::tr(if auto_reply {
-            "Mention the Agent to start a thread. Everyone in that thread can then follow up without mentioning it."
-        } else {
-            "Every message requires an @ mention, including follow-ups in a thread."
-        }));
-        self.view.button(cx, ids!(reply_policy_toggle)).set_text(cx, crate::i18n::tr(if auto_reply { "Require @ for every message" } else { "Enable automatic thread follow-ups" }));
-        self.view.button(cx, ids!(reply_policy_toggle)).set_enabled(cx, project_binding && matches!(state, Some("active" | "suspended")) && !self.busy);
+        self.view.label(cx, ids!(reply_policy_status)).set_text(cx, crate::i18n::tr("In group chats, every message must @ the Agent. In a one-to-one chat with its owner, no @ is needed."));
+        self.view.button(cx, ids!(reply_policy_toggle)).set_visible(cx, false);
         self.view.button(cx, ids!(room_roster_check)).set_visible(cx, project_binding);
         self.view.button(cx, ids!(room_roster_check)).set_enabled(cx, project_binding && !self.busy);
         if selected_binding.as_ref().is_some_and(|b| string(b,"scopeKind") == "owner_direct") {
@@ -1833,15 +1827,15 @@ impl HagencyPanel {
         if !detail {
             let projects = self.page == Page::Projects;
             for (id, text) in [
-                (ids!(context_title), if projects {"Organize your Matrix rooms"} else {"Manage agents you run locally"}),
-                (ids!(context_description), if projects {"Create or connect a Matrix Space, then manage its rooms and people."} else {"Configure this account's local agents, their models, rooms and execution permissions."}),
-                (ids!(context_steps), if projects {"1 · Connect a Space    2 · Add rooms    3 · Invite people"} else {"1 · Create an agent    2 · Choose a model    3 · Connect rooms"}),
+                (ids!(context_title), if projects {"Spaces for people and Agents"} else {"Manage agents you run locally"}),
+                (ids!(context_description), if projects {"An Agent space is a Matrix Space connected to a Hagency project. The creation wizard handles this setup."} else {"Configure this account's local agents, their models, rooms and execution permissions."}),
+                (ids!(context_steps), if projects {"1 · Create an Agent space    2 · Create a room    3 · Invite people and Agents"} else {"1 · Create an agent    2 · Choose a model    3 · Connect rooms"}),
                 (ids!(context_scope), if projects {"To use contributed capacity, open Hagency → Resource pools and request an Agent."} else {"To use contributed capacity, open Hagency → Resource pools and request an Agent."}),
             ] { self.view.label(cx,id).set_text(cx,crate::i18n::tr(text)); }
             self.view.view(cx,ids!(context_project_icon)).set_visible(cx,projects);
             self.view.view(cx,ids!(context_agent_icon)).set_visible(cx,!projects);
-            self.view.label(cx,ids!(heading)).set_text(cx,crate::i18n::tr(if self.page==Page::Projects {"Matrix workspaces"} else {"Local agents"}));
-            self.view.button(cx,ids!(new_item)).set_text(cx,crate::i18n::tr(if self.page==Page::Projects {"New workspace"} else {"New local agent"}));
+            self.view.label(cx,ids!(heading)).set_text(cx,crate::i18n::tr(if self.page==Page::Projects {"Agent spaces"} else {"Local agents"}));
+            self.view.button(cx,ids!(new_item)).set_text(cx,crate::i18n::tr(if self.page==Page::Projects {"Create a space or room…"} else {"New local agent"}));
         }
         self.view.view(cx,ids!(lists_pane)).set_visible(cx,!detail && !self.display_blocked);
         self.view.view(cx,ids!(details_scroll)).set_visible(cx,detail && !self.display_blocked);
@@ -2041,11 +2035,11 @@ impl HagencyPanel {
         self.page = page;
         self.view.label(cx, ids!(heading)).set_text(
             cx,
-            crate::i18n::tr(if page == Page::Projects {"Matrix workspaces"} else {"Local agents"}),
+            crate::i18n::tr(if page == Page::Projects {"Agent spaces"} else {"Local agents"}),
         );
         self.view.button(cx, ids!(new_item)).set_text(
             cx,
-            crate::i18n::tr(if page == Page::Projects {"New workspace"} else {"New local agent"}),
+            crate::i18n::tr(if page == Page::Projects {"Create a space or room…"} else {"New local agent"}),
         );
         self.view
             .view(cx, ids!(projects_page))
@@ -3233,26 +3227,8 @@ impl Widget for HagencyPanel {
             self.reset_detail_scroll(cx);
             self.list_page(cx);
             if self.page == Page::Projects {
-                if !self.begin_creation_form(cx,false) {return;}
-                self.create_room = false;
-                self.view.drop_down(cx, ids!(creation_source)).set_labels(
-                    cx,
-                    vec![
-                        crate::i18n::tr("Create a new Space (default)").into(),
-                        crate::i18n::tr("Connect an existing Space").into(),
-                    ],
-                );
-                self.view
-                    .label(cx, ids!(creation_heading))
-                    .set_text(cx, crate::i18n::tr("Create Matrix workspace"));
-                self.view
-                    .view(cx, ids!(project_list_holder))
-                    .set_visible(cx, false);
-                self.view.view(cx, ids!(project_form)).set_visible(cx, true);
-                self.view
-                    .drop_down(cx, ids!(creation_source))
-                    .set_selected_item(cx, 0);
-                self.creation_source(cx);
+                cx.action(HagencyAction::NewProject);
+                return;
             } else {
                 self.view
                     .view(cx, ids!(agent_list_holder))
@@ -3904,17 +3880,6 @@ impl Widget for HagencyPanel {
             }
             return;
         }
-        if self.view.button(cx, ids!(reply_policy_toggle)).clicked(actions) {
-            if let (Some(agent_id), Some(binding)) = (self.agent(cx), self.selected(cx, ids!(bindings), &self.bindings)) {
-                if string(&binding, "scopeKind") == "project" && matches!(string(&binding, "state"), "active" | "suspended") {
-                    self.run(cx, Target::ReplyPolicyChanged, Command::Binding {
-                        agent_id, binding_id: string(&binding, "id").into(),
-                        action: BindingAction::SetThreadAutoReply(binding["threadAutoReply"] != true),
-                    });
-                }
-            }
-            return;
-        }
         for (button, action) in [
             (ids!(pause_binding), BindingAction::Pause),
             (ids!(resume_binding), BindingAction::Resume),
@@ -4182,7 +4147,7 @@ impl Widget for HagencyPanel {
                         row.label(cx, ids!(empty_message)).set_text(
                             cx,
                             crate::i18n::tr(if self.page == Page::Projects {
-                                "No Matrix workspaces yet. Create one to organize rooms and members."
+                                "No Agent spaces yet. Choose Agent space in the creation wizard to get started."
                             } else {
                                 agent_empty_message(self.agents_loaded, self.agents_loading)
                             }),
@@ -4340,7 +4305,7 @@ impl HagencyPanelRef {
         panel
             .view
             .label(cx, ids!(owner))
-            .set_text(cx, crate::i18n::tr("Matrix workspaces and local agents for your signed-in account."));
+            .set_text(cx, crate::i18n::tr("Agent spaces and local agents for your signed-in account."));
         panel
             .view
             .view(cx, ids!(project_form))
@@ -4625,9 +4590,12 @@ mod tests {
             overlay.end(&mut cx2d);cx2d.end_pass_sized_turtle();dl.end(&mut cx2d);cx2d.end_pass(&pass);}
             let list=panel.view.portal_list(&mut cx,if page==Page::Projects {ids!(project_list)} else {ids!(agent_list)});
             let rect=list.area().rect(&cx);
-            assert!(rect.size.y>height-120.0,"list should fill the body: {rect:?}, height {height}");
-            assert!(rect.pos.y+rect.size.y<=height-15.0,"list stays within panel padding: {rect:?}");
-            let second=list.item(&mut cx,1,id!(Card)).area().rect(&cx);assert!(second.size.y>0.0 && second.pos.y+second.size.y<height,"second card is fully visible: {second:?}");
+            let intro=panel.view.view(&mut cx,ids!(list_intro)).area().rect(&cx);
+            assert!(rect.pos.y>=intro.pos.y+intro.size.y,"list follows its guidance: {rect:?}, {intro:?}");
+            assert!(rect.size.y>0.0 && (rect.pos.y+rect.size.y-(height-16.0)).abs()<1.0,"list fills all remaining body space: {rect:?}, height {height}");
+            // A compact window scrolls cards below the guidance instead of
+            // requiring every card to fit inside the initial viewport.
+            let second=list.item(&mut cx,1,id!(Card)).area().rect(&cx);assert!(second.size.y>0.0 && second.pos.y>=rect.pos.y,"second card participates in the scrollable list: {second:?}");
             if page==Page::Agents {
                 let row=list.item(&mut cx,0,id!(Card));let device=row.view(&mut cx,ids!(device_badge)).area().rect(&cx);let runtime=row.view(&mut cx,ids!(runtime_badge)).area().rect(&cx);
                 assert!((device.pos.y-runtime.pos.y).abs()<1.0);assert!(device.size.y<=28.0 && runtime.size.y<=28.0);assert!(runtime.pos.x>=device.pos.x+device.size.x);
@@ -5190,16 +5158,16 @@ mod tests {
         panel.view.drop_down(&mut cx,ids!(bindings)).set_selected_item(&mut cx,2);
         panel.sync_navigation(&mut cx);
         assert!(panel.view.view(&mut cx,ids!(reply_policy)).visible());
-        assert!(panel.view.label(&mut cx,ids!(reply_policy_status)).text().contains("Every message"));
+        assert!(panel.view.label(&mut cx,ids!(reply_policy_status)).text().contains("every message must @"));
         panel.apply(&mut cx,Target::ReplyPolicyChanged,&json!({"binding":{"id":"room-a","scopeKind":"project","projectId":"project","state":"active","threadAutoReply":true}}));
         panel.sync_navigation(&mut cx);
         assert_eq!(panel.view.drop_down(&mut cx,ids!(bindings)).selected_item(),2);
-        assert!(panel.view.label(&mut cx,ids!(reply_policy_status)).text().contains("Everyone"));
+        assert!(panel.view.label(&mut cx,ids!(reply_policy_status)).text().contains("every message must @"));
         panel.apply(&mut cx,Target::ReplyPolicyChanged,&json!({"binding":{"id":"room-b","scopeKind":"project","projectId":"project","state":"active","threadAutoReply":false}}));
         panel.sync_navigation(&mut cx);
-        assert!(panel.view.label(&mut cx,ids!(reply_policy_status)).text().contains("Everyone"),"another Room response cannot change this Room's behavior");
+        assert!(panel.view.label(&mut cx,ids!(reply_policy_status)).text().contains("every message must @"),"another Room response cannot change this Room's behavior");
         panel.busy=true;panel.sync_navigation(&mut cx);
-        assert!(!panel.view.button(&mut cx,ids!(reply_policy_toggle)).borrow().unwrap().enabled());
+        assert!(!panel.view.button(&mut cx,ids!(reply_policy_toggle)).visible());
     }
 
     #[test]

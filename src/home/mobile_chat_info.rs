@@ -9,7 +9,7 @@ use matrix_sdk::{
 };
 
 use crate::{
-    home::{invite_modal::InviteModalAction, rooms_list::{RoomNotificationModeUpdated, RoomsListRef}},
+    home::{invite_modal::InviteModalAction, rooms_list::RoomNotificationModeUpdated},
     logout::logout_confirm_modal::LogoutAction,
     profile::user_profile::{ShowUserProfileAction, UserProfile, UserProfileAndRoomId},
     shared::{
@@ -521,13 +521,6 @@ impl MobileChatInfo {
         }
     }
     fn request_agents(&mut self, cx: &mut Cx, binding: bool) {
-        if self.room.as_ref().is_some_and(|room|
-            cx.get_global_ref::<RoomsListRef>().is_some_and(|rooms|
-                rooms.is_direct_room(room.room_id()) == Some(true))) {
-            self.agent_picker_open = false;
-            self.view.redraw(cx);
-            return;
-        }
         if self.agent_busy || !self.pin_is_current() {return;}
         let (Some(owner),Some(room)) = (self.owner.clone(),self.room.clone()) else {return;};
         let service = match crate::hagency::backend::Service::for_current() {Ok(service)=>service,Err(_)=>return};
@@ -637,7 +630,7 @@ impl Widget for MobileChatInfo {
                         self.agent_busy=false;
                         match &loaded.result {
                             Ok(value) if loaded.binding=> {
-                                self.view.label(cx,ids!(agent_status)).set_text(cx,if value["commandState"] == "pending" {crate::i18n::tr("Binding saved. Check its Room service in Overview.")} else {crate::i18n::tr("Agent added. Open Agent services in Overview to start responding.")});
+                                self.view.label(cx,ids!(agent_status)).set_text(cx,if value["commandState"] == "pending" {crate::i18n::tr("Agent binding saved. Joining this room…")} else {crate::i18n::tr("Agent added. In a group, @ the Agent to request a reply.")});
                             }
                             Ok(value)=> {
                                 self.agent_project=value["projectId"].as_str().unwrap_or("").into();
@@ -649,7 +642,7 @@ impl Widget for MobileChatInfo {
                             }
                             Err(error)=> {
                                 self.view.label(cx,ids!(agent_status)).set_text(cx,match error.as_str() {
-                                    "room_project_registration_required"=>"This Room must first be connected to a Project. No Room was registered automatically.",
+                                    "room_project_registration_required"=>crate::i18n::tr("To chat with Agents, use an Agent space. Open + → Create a space or room, choose Agent space, then create a room inside it."),
                                     "room_join_required"=>"Join this Room before adding an Agent.",
                                     "agent_command_recovery_required"=>"An original binding request needs confirmation. Resume it in Agents.",
                                     _ if loaded.binding=>"Could not confirm the binding. Retry the same request, or resume its saved request in Agents.",
@@ -786,9 +779,6 @@ impl Widget for MobileChatInfo {
         if self.owner.is_some() && !self.pin_is_current() {
             self.clear();
         }
-        let direct = self.room.as_ref().is_some_and(|room|
-            cx.get_global_ref::<RoomsListRef>().is_some_and(|rooms|
-                rooms.is_direct_room(room.room_id()) == Some(true)));
         let members = self.tab == InfoTab::Members;
         self.view.label(cx,ids!(ownership_status)).set_visible(cx,members && self.ownership_unavailable);
         self.view.view(cx, ids!(services_panel)).set_visible(cx, !members && self.services_open);
@@ -797,8 +787,8 @@ impl Widget for MobileChatInfo {
         self.view.button(cx, ids!(configure_service)).set_enabled(cx, service_selected && !self.services_busy && self.pin_is_current());
         self.view.button(cx, ids!(refresh_services)).set_enabled(cx, !self.services_busy);
         self.view.view(cx, ids!(member_controls)).set_visible(cx, members);
-        self.view.button(cx,ids!(invite_my_agent)).set_visible(cx,members && !direct);
-        if !members || direct || !self.agent_picker_open {
+        self.view.button(cx,ids!(invite_my_agent)).set_visible(cx,members);
+        if !members || !self.agent_picker_open {
             self.close_agent_picker(cx);
         }
         self.view.button(cx, ids!(invite_people)).set_enabled(cx, self.data.is_some() && self.owner.is_some());

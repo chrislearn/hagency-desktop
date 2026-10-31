@@ -253,15 +253,66 @@ async fn link(client: &Client, parent: &RoomId, child: &RoomId, add: bool) -> Re
     .into())
 }
 
+async fn finish_creation(
+    client: &Client,
+    name: RoomNameId,
+    config: CreateRoomConfig,
+    agent_space: bool,
+    project: Option<String>,
+) -> (String, Option<RoomNameId>, bool) {
+    let result: Result<()> = async {
+        matrix_context::ensure_current(client)?;
+        if let Some(parent) = &config.parent {
+            link(client, parent, name.room_id(), true).await?;
+        }
+        if agent_space || project.is_some() {
+            matrix_context::ensure_current(client)?;
+            let service =
+                crate::hagency::backend::Service::for_current().map_err(|e| anyhow!(e))?;
+            let command = if agent_space {
+                crate::hagency::model::Command::AdoptProject {
+                    space_id: name.room_id().to_string(),
+                }
+            } else {
+                crate::hagency::model::Command::AdoptRoom {
+                    project_id: project.unwrap(),
+                    room_id: name.room_id().to_string(),
+                }
+            };
+            matrix_context::ensure_current(client)?;
+            service.execute(command).await.map_err(|e| anyhow!(e))?;
+        }
+        matrix_context::ensure_current(client)?;
+        Ok(())
+    }
+    .await;
+    let (message, pending) = match result {
+        Ok(()) => (
+            crate::i18n::tr("Created. Continue with the next step below.").to_owned(),
+            false,
+        ),
+        Err(error) => (
+            format!(
+                "{}: {error}",
+                crate::i18n::tr("Created, but setup is incomplete. Use Finish setup to retry.")
+            ),
+            true,
+        ),
+    };
+    (message, Some(name), pending)
+}
+
 #[derive(Clone, Debug)]
 struct SpaceChoice {
     name: RoomNameId,
     can_link: bool,
     can_edit: bool,
     topic: String,
+    project_id: Option<String>,
 }
 #[derive(Clone, Debug, Default)]
 struct Snapshot {
+    projects_known: bool,
     spaces: Vec<SpaceChoice>,
     rooms: Vec<RoomNameId>,
     children: HashSet<OwnedRoomId>,
@@ -271,6 +322,15 @@ async fn snapshot(client: &Client, parent: Option<&OwnedRoomId>) -> Result<Snaps
     matrix_context::ensure_current(client)?;
     let user = client.user_id().ok_or_else(|| anyhow!("Sign in first."))?;
     let mut data = Snapshot::default();
+    let projects = if let Ok(service) = crate::hagency::backend::Service::for_current() {
+        service
+            .execute(crate::hagency::model::Command::Projects)
+            .await
+            .ok()
+    } else {
+        None
+    };
+    data.projects_known = projects.as_ref().is_some_and(|v| v["projects"].is_array());
     for room in client.joined_rooms() {
         let mut name = RoomNameId::from_room(&room).await;
         let has_creation = room.get_state_event_static::<matrix_sdk::ruma::events::room::create::RoomCreateEventContent>().await?.is_some();
@@ -278,7 +338,18 @@ async fn snapshot(client: &Client, parent: Option<&OwnedRoomId>) -> Result<Snaps
             let state = fresh_state(client, &room).await?;
             name = state.name.clone();
             if state.space {
+                let project_id = projects
+                    .as_ref()
+                    .and_then(|v| v["projects"].as_array())
+                    .and_then(|rows| {
+                        rows.iter().find(|p| {
+                            p["spaceId"] == room.room_id().as_str() && p["active"] == true
+                        })
+                    })
+                    .and_then(|p| p["id"].as_str())
+                    .map(str::to_owned);
                 data.spaces.push(SpaceChoice {
+                    project_id,
                     name: state.name,
                     can_link: state
                         .levels
@@ -335,7 +406,7 @@ struct Finished {
     owner: OwnedUserId,
     request: u64,
     parent: Option<OwnedRoomId>,
-    result: Result<(String, Option<RoomNameId>), String>,
+    result: Result<(String, Option<RoomNameId>, bool), String>,
 }
 #[derive(Debug)]
 struct LinkFinished {
@@ -364,17 +435,43 @@ script_mod! {
             create_tab := Action {width: Fill text: #(crate::i18n::tr("Create")) i18n_text: "Create"}
             manage_tab := Action {width: Fill text: #(crate::i18n::tr("Manage space")) i18n_text: "Manage space"}
         }
-        Text {text: #(crate::i18n::tr("Parent space")) i18n_text: "Parent space"}
-        parent := DropDown {width: Fill labels: ["No parent space"]}
-        create_form := ScrollYView {width: Fill height: Fill flow: Down spacing: 8
-            kind := DropDown {width: Fill labels: [#(crate::i18n::tr("Room")) #(crate::i18n::tr("Space"))] i18n_labels: ["Room" "Space"]}
-            name := Input {empty_text: #(crate::i18n::tr("Name")) i18n_empty_text: "Name"}
-            topic := Input {empty_text: #(crate::i18n::tr("Topic")) i18n_empty_text: "Topic"}
-            public := CheckBox {text: #(crate::i18n::tr("Public")) i18n_text: "Public"}
-            encrypted := CheckBox {text: #(crate::i18n::tr("Encrypted room")) i18n_text: "Encrypted room"}
-            create := Action {width: Fill text: #(crate::i18n::tr("Create")) i18n_text: "Create"}
-            created := Action {visible: false width: Fill text: #(crate::i18n::tr("Open")) i18n_text: "Open"}
+        wizard_step := Text {text: #(crate::i18n::tr("1 of 3 · Choose what to create"))}
+        parent_controls := View {width: Fill height: Fit flow: Down spacing: 8
+            parent_label := Text {text: #(crate::i18n::tr("Choose a space for this room")) i18n_text: "Choose a space for this room"}
+            parent := DropDown {width: Fill labels: ["No parent space"]}
         }
+        create_form := ScrollYView {width: Fill height: Fill flow: Down spacing: 8
+            choose_kind := View {width: Fill height: Fit flow: Down spacing: 12
+                kind_state := View {visible: false
+                    kind := DropDown {labels: ["ordinary" "agent" "room"]}
+                }
+                ordinary_kind := Action {width: Fill}
+                Text {text: #(crate::i18n::tr("Organize rooms for people. No Agent setup.")) i18n_text: "Organize rooms for people. No Agent setup."}
+                agent_kind := Action {width: Fill}
+                Text {text: #(crate::i18n::tr("People and Agents work together. Project setup is automatic.")) i18n_text: "People and Agents work together. Project setup is automatic."}
+                room_kind := Action {width: Fill}
+                Text {text: #(crate::i18n::tr("Create a conversation in a space you choose.")) i18n_text: "Create a conversation in a space you choose."}
+                kind_help := Text {}
+                wizard_next := Action {width: Fill text: #(crate::i18n::tr("Next step")) i18n_text: "Next step"}
+            }
+            creation_details := View {visible: false width: Fill height: Fit flow: Down spacing: 12
+                details_help := Text {}
+                name := Input {empty_text: #(crate::i18n::tr("Name")) i18n_empty_text: "Name"}
+                topic := Input {empty_text: #(crate::i18n::tr("Topic")) i18n_empty_text: "Topic"}
+                public := CheckBox {text: #(crate::i18n::tr("Public")) i18n_text: "Public"}
+                encrypted := CheckBox {text: #(crate::i18n::tr("Encrypted room")) i18n_text: "Encrypted room"}
+                create := Action {width: Fill text: #(crate::i18n::tr("Create")) i18n_text: "Create"}
+                wizard_back := Action {width: Fill text: #(crate::i18n::tr("Back")) i18n_text: "Back"}
+            }
+            creation_done := View {visible: false width: Fill height: Fit flow: Down spacing: 12
+                done_help := Text {}
+                finish_setup := Action {visible: false width: Fill text: #(crate::i18n::tr("Finish setup for this space or room")) i18n_text: "Finish setup for this space or room"}
+                create_child := Action {visible: false width: Fill text: #(crate::i18n::tr("Create a room in this space")) i18n_text: "Create a room in this space"}
+                invite_created := Action {width: Fill text: #(crate::i18n::tr("Invite members")) i18n_text: "Invite members"}
+                created := Action {width: Fill text: #(crate::i18n::tr("Open")) i18n_text: "Open"}
+            }
+        }
+
         manage_form := View {visible: false width: Fill height: Fill flow: Down spacing: 8
             space_name := Input {empty_text: #(crate::i18n::tr("Space name")) i18n_empty_text: "Space name"}
             space_topic := Input {empty_text: #(crate::i18n::tr("Topic")) i18n_empty_text: "Topic"}
@@ -419,6 +516,16 @@ pub struct SpaceManagementPanel {
     created: Option<RoomNameId>,
     #[rust]
     created_space: bool,
+    #[rust]
+    wizard_step: usize,
+    #[rust]
+    setup_pending: bool,
+    #[rust]
+    setup_config: Option<CreateRoomConfig>,
+    #[rust]
+    setup_agent_space: bool,
+    #[rust]
+    setup_project: Option<String>,
 }
 
 fn next_request() -> u64 {
@@ -445,6 +552,89 @@ impl SpaceManagementPanel {
             .find(|space| Some(space.name.room_id()) == self.parent.as_ref())
     }
     fn sync(&mut self, cx: &mut Cx) {
+        let kind = self.view.drop_down(cx, ids!(kind)).selected_item();
+        self.view.label(cx,ids!(wizard_step)).set_visible(cx,!self.manage);
+        let room = kind == 2;
+        for (index,button,label) in [(0,id!(ordinary_kind),"Ordinary space · people only"),(1,id!(agent_kind),"Agent space · people and Agents"),(2,id!(room_kind),"Chat room · inside a space")] {
+            self.view.button(cx,&[button]).set_text(cx,&format!("{}{}",if kind==index {"✓  "}else{""},crate::i18n::tr(label)));
+        }
+
+        let help = match kind {
+            0 => "For people to chat and organize rooms. Agents are not enabled in this space.",
+            1 => {
+                "For people and Agents to collaborate. Hagency project setup is handled automatically; then create a room and add Agents."
+            }
+            _ => {
+                "Choose the space where this room belongs. Agent spaces allow you to add local or pooled Agents alongside their owners and other members."
+            }
+        };
+        self.view
+            .label(cx, ids!(kind_help))
+            .set_text(cx, crate::i18n::tr(help));
+        self.view
+            .label(cx, ids!(details_help))
+            .set_text(cx, crate::i18n::tr(help));
+        self.view.label(cx, ids!(wizard_step)).set_text(
+            cx,
+            crate::i18n::tr(match self.wizard_step {
+                0 => "1 of 3 · Choose what to create",
+                1 => "2 of 3 · Name and location",
+                _ => "3 of 3 · Invite and start chatting",
+            }),
+        );
+        self.view
+            .view(cx, ids!(choose_kind))
+            .set_visible(cx, self.wizard_step == 0);
+        self.view
+            .view(cx, ids!(creation_details))
+            .set_visible(cx, self.wizard_step == 1);
+        self.view
+            .view(cx, ids!(creation_done))
+            .set_visible(cx, self.wizard_step == 2);
+        self.view
+            .view(cx, ids!(parent_controls))
+            .set_visible(cx, self.manage || (room && self.wizard_step == 1));
+        self.view
+            .check_box(cx, ids!(encrypted))
+            .set_visible(cx, room);
+        let agent_room = room && self.choice().is_some_and(|s| s.project_id.is_some());
+        self.view
+            .check_box(cx, ids!(public))
+            .set_visible(cx, kind != 1 && !agent_room);
+        if self.wizard_step == 1 && room {
+            let guidance = if !self.data.projects_known {
+                "Space types could not be checked. Refresh before creating a room."
+            } else if self.choice().is_none() {
+                "Choose a space to continue."
+            } else if self.choice().is_some_and(|s| !s.can_link) {
+                "You cannot add rooms to this space. Choose a space you can manage."
+            } else {
+                help
+            };
+            self.view
+                .label(cx, ids!(details_help))
+                .set_text(cx, crate::i18n::tr(guidance));
+        }
+        self.view
+            .button(cx, ids!(wizard_next))
+            .set_enabled(cx, !self.busy);
+        self.view
+            .button(cx, ids!(wizard_back))
+            .set_enabled(cx, !self.busy);
+        self.view
+            .button(cx, ids!(finish_setup))
+            .set_visible(cx, self.setup_pending);
+        self.view
+            .button(cx, ids!(finish_setup))
+            .set_enabled(cx, !self.busy);
+        self.view
+            .button(cx, ids!(create_child))
+            .set_visible(cx, self.created_space && !self.setup_pending);
+        self.view
+            .button(cx, ids!(invite_created))
+            .set_enabled(cx, !self.busy && !self.setup_pending);
+        self.view.label(cx,ids!(done_help)).set_text(cx,crate::i18n::tr(if self.setup_pending {"The space or room exists. Finish its setup here; it will not be created again."} else if self.created_space {"Next, create a room in this space and invite its members. Space membership does not automatically join its rooms."} else if self.setup_project.is_some() {"Invite people, then open chat information → Members → Add Agent. The Agent owner must join this space and room. In a group, everyone must @ the Agent they want to answer."} else {"Invite people to start chatting. This room belongs to an ordinary space; Agents are not enabled."}));
+
         self.view
             .view(cx, ids!(create_form))
             .set_visible(cx, !self.manage);
@@ -454,7 +644,7 @@ impl SpaceManagementPanel {
         self.view.button(cx, ids!(create)).set_enabled(
             cx,
             !self.busy
-                && (self.parent.is_none() || self.choice().is_some_and(|c| c.can_link))
+                && (!room || self.choice().is_some_and(|c| c.can_link) && self.data.projects_known)
                 && self.created.is_none(),
         );
         self.view
@@ -501,7 +691,7 @@ impl SpaceManagementPanel {
     fn run(
         &mut self,
         cx: &mut Cx,
-        operation: impl std::future::Future<Output = Result<(String, Option<RoomNameId>)>>
+        operation: impl std::future::Future<Output = Result<(String, Option<RoomNameId>, bool)>>
         + Send
         + 'static,
     ) {
@@ -558,12 +748,19 @@ impl Widget for SpaceManagementPanel {
                     Ok(data) => {
                         self.data = data.clone();
                         let labels = std::iter::once(crate::i18n::tr("No parent space").to_owned())
-                            .chain(
-                                self.data
-                                    .spaces
-                                    .iter()
-                                    .map(|space| space.name.display().to_string()),
-                            )
+                            .chain(self.data.spaces.iter().map(|space| {
+                                format!(
+                                    "{} · {}",
+                                    space.name.display(),
+                                    crate::i18n::tr(if space.project_id.is_some() {
+                                        "Agent space"
+                                    } else if data.projects_known {
+                                        "Ordinary space"
+                                    } else {
+                                        "Space type unavailable"
+                                    })
+                                )
+                            }))
                             .collect::<Vec<_>>();
                         self.view.drop_down(cx, ids!(parent)).set_labels(cx, labels);
                         let index = self
@@ -596,8 +793,12 @@ impl Widget for SpaceManagementPanel {
             {
                 self.busy = false;
                 match &done.result {
-                    Ok((message, created)) => {
-                        self.created = created.clone();
+                    Ok((message, created, pending)) => {
+                        if created.is_some() {
+                            self.created = created.clone();
+                            self.wizard_step = 2;
+                            self.setup_pending = *pending;
+                        }
                         self.status(cx, message);
                         cx.action(SpaceManagementChanged {
                             owner: done.owner.clone(),
@@ -620,9 +821,55 @@ impl Widget for SpaceManagementPanel {
             self.load(cx);
             return;
         }
+        for (index,button) in [(0,id!(ordinary_kind)),(1,id!(agent_kind)),(2,id!(room_kind))] {
+            if self.view.button(cx,&[button]).clicked(actions) {
+                self.view.drop_down(cx,ids!(kind)).set_selected_item(cx,index);
+                self.sync(cx);return;
+            }
+        }
+        if self.view.button(cx, ids!(wizard_next)).clicked(actions) {
+            self.wizard_step = 1;
+            self.sync(cx);
+            return;
+        }
+        if self.view.button(cx, ids!(wizard_back)).clicked(actions) {
+            self.wizard_step = 0;
+            self.sync(cx);
+            return;
+        }
+        if self.view.button(cx, ids!(invite_created)).clicked(actions) && !self.setup_pending {
+            if let Some(room) = self.created.clone() {
+                cx.action(super::invite_modal::InviteModalAction::Open(room));
+            }
+            return;
+        }
+        if self.view.button(cx, ids!(create_child)).clicked(actions) && !self.setup_pending {
+            self.parent = self.created.as_ref().map(|r| r.room_id().clone());
+            self.created = None;
+            self.created_space = false;
+            self.wizard_step = 1;
+            self.setup_pending = false;
+            self.view.drop_down(cx, ids!(kind)).set_selected_item(cx, 2);
+            self.view.text_input(cx, ids!(name)).set_text(cx, "");
+            self.load(cx);
+            return;
+        }
+        if self.view.button(cx, ids!(finish_setup)).clicked(actions) {
+            if let (Some(client), Some(room), Some(config)) = (
+                get_client(),
+                self.created.clone(),
+                self.setup_config.clone(),
+            ) {
+                let agent_space = self.setup_agent_space;
+                let project = self.setup_project.clone();
+                self.run(cx, async move {
+                    Ok(finish_creation(&client, room, config, agent_space, project).await)
+                });
+            }
+            return;
+        }
         if self.view.button(cx, ids!(create_tab)).clicked(actions) {
             self.manage = false;
-            self.created = None;
             self.sync(cx);
         }
         if self.view.button(cx, ids!(manage_tab)).clicked(actions) {
@@ -647,11 +894,9 @@ impl Widget for SpaceManagementPanel {
             .selected(actions)
             .is_some()
         {
-            let is_space = self.view.drop_down(cx, ids!(kind)).selected_item() == 1;
-            self.view
-                .check_box(cx, ids!(encrypted))
-                .set_visible(cx, !is_space);
+            self.sync(cx);
         }
+
         if self.view.button(cx, ids!(created)).clicked(actions)
             && let Some(room) = self.created.clone()
         {
@@ -680,26 +925,50 @@ impl Widget for SpaceManagementPanel {
                 topic: self.view.text_input(cx, ids!(topic)).text(),
                 public: self.view.check_box(cx, ids!(public)).active(cx),
                 encrypted: self.view.check_box(cx, ids!(encrypted)).active(cx),
-                space: self.view.drop_down(cx, ids!(kind)).selected_item() == 1,
-                parent: self.parent.clone(),
+                space: self.view.drop_down(cx, ids!(kind)).selected_item() != 2,
+                parent: if self.view.drop_down(cx, ids!(kind)).selected_item() == 2 {
+                    self.parent.clone()
+                } else {
+                    None
+                },
             };
+            if !config.space && (config.parent.is_none() || !self.data.projects_known) {
+                self.status(
+                    cx,
+                    "Choose a space and refresh its type before creating the room.",
+                );
+                return;
+            }
             self.created_space = config.space;
+            self.setup_agent_space = self.view.drop_down(cx, ids!(kind)).selected_item() == 1;
+            self.setup_project = if config.space {
+                None
+            } else {
+                self.choice().and_then(|s| s.project_id.clone())
+            };
+            let mut config = config;
+            if self.setup_agent_space || self.setup_project.is_some() {
+                config.public = false;
+            }
+            self.setup_config = Some(config.clone());
+            let agent_space = self.setup_agent_space;
+            let project = self.setup_project.clone();
             self.run(cx, async move {
                 let request = config.request()?;
-                if let Some(parent) = &config.parent { editable_space(&client, parent, StateEventType::SpaceChild).await?; }
+                if let Some(parent) = &config.parent {
+                    editable_space(&client, parent, StateEventType::SpaceChild).await?;
+                }
                 matrix_context::ensure_current(&client)?;
                 let room = client.create_room(request).await?;
-                let name = RoomNameId::new(matrix_sdk::RoomDisplayName::Named(config.name.trim().into()), room.room_id().to_owned());
-                let message = if let Some(parent) = &config.parent {
-                    match link(&client, parent, room.room_id(), true).await {
-                        Ok(message) => format!("Created {}. {message}", config.name.trim()),
-                        Err(error) => format!("Created {} ({}) but could not add it to the space: {error}. Use Manage space to retry the link.", config.name.trim(), room.room_id()),
-                    }
-                } else { format!("Created {}.", config.name.trim()) };
-                Ok((message, Some(name)))
+                let name = RoomNameId::new(
+                    matrix_sdk::RoomDisplayName::Named(config.name.trim().into()),
+                    room.room_id().to_owned(),
+                );
+                Ok(finish_creation(&client, name, config, agent_space, project).await)
             });
             return;
         }
+
         if self.view.button(cx, ids!(save)).clicked(actions)
             && let Some(parent) = self.parent.clone()
         {
@@ -722,10 +991,11 @@ impl Widget for SpaceManagementPanel {
                 room.set_name(name).await?;
                 matrix_context::ensure_current(&client)?;
                 match room.set_room_topic(&topic).await {
-                    Ok(_) => Ok(("Space details saved.".into(), None)),
+                    Ok(_) => Ok(("Space details saved.".into(), None, false)),
                     Err(error) => Ok((
                         format!("Space name saved; the topic could not be saved: {error}"),
                         None,
+                        false,
                     )),
                 }
             });
@@ -743,7 +1013,7 @@ impl Widget for SpaceManagementPanel {
                     let child = room.room_id().clone();
                     if add {
                         self.run(cx, async move {
-                            Ok((link(&client, &parent, &child, true).await?, None))
+                            Ok((link(&client, &parent, &child, true).await?, None, false))
                         });
                     } else {
                         // The confirmation callback carries the exact account/space/room,
@@ -842,6 +1112,73 @@ impl Widget for SpaceManagementPanel {
 }
 
 impl SpaceManagementPanelRef {
+    /// Offline visual review only: no account, network or creation commands.
+    #[cfg(feature = "onboarding-test-support")]
+    pub fn review(&self, cx: &mut Cx, kind: usize, step: usize, pending: bool) {
+        assert!(
+            get_client().is_none(),
+            "The wizard review must not use a signed-in profile"
+        );
+        let Some(mut panel) = self.borrow_mut() else {
+            return;
+        };
+        panel.active = true;
+        panel.owner = None;
+        panel.manage = false;
+        panel.busy = false;
+        panel.wizard_step = step;
+        panel.setup_pending = pending;
+        panel.setup_agent_space = kind == 1;
+        panel.setup_project = (kind == 2).then(|| "review-project".into());
+        panel.created_space = kind != 2;
+        let id: OwnedRoomId = "!review-space:example.invalid".try_into().unwrap();
+        let name = RoomNameId::new(
+            matrix_sdk::RoomDisplayName::Named("Team space".into()),
+            id.clone(),
+        );
+        panel.data = Snapshot {
+            projects_known: true,
+            spaces: vec![SpaceChoice {
+                name: name.clone(),
+                can_link: true,
+                can_edit: true,
+                topic: String::new(),
+                project_id: Some("review-project".into()),
+            }],
+            ..Default::default()
+        };
+        panel.parent = Some(id);
+        panel.created = (step == 2).then_some(name);
+        panel
+            .view
+            .drop_down(cx, ids!(kind))
+            .set_selected_item(cx, kind);
+        panel.view.drop_down(cx, ids!(parent)).set_labels(
+            cx,
+            vec![
+                crate::i18n::tr("Choose a space for this room").into(),
+                format!("Team · {}", crate::i18n::tr("Agent space")),
+            ],
+        );
+        panel
+            .view
+            .drop_down(cx, ids!(parent))
+            .set_selected_item(cx, 1);
+        panel
+            .view
+            .check_box(cx, ids!(encrypted))
+            .set_active(cx, true, Animate::No);
+        panel.status(
+            cx,
+            if pending {
+                "Created, but setup is incomplete. Use Finish setup to retry."
+            } else {
+                ""
+            },
+        );
+        panel.sync(cx);
+    }
+
     pub fn action(&self, cx: &mut Cx, modal: ModalRef, action: &SpaceManagementAction) {
         let Some(mut inner) = self.borrow_mut() else {
             return;
@@ -853,6 +1190,12 @@ impl SpaceManagementPanelRef {
                 inner.parent = parent.as_ref().map(|p| p.room_id().clone());
                 inner.manage = parent.is_some();
                 inner.created = None;
+                inner.wizard_step = 0;
+                inner.setup_pending = false;
+                inner.setup_config = None;
+                inner.setup_project = None;
+                inner.created_space = false;
+                inner.setup_agent_space = false;
                 inner.data = Snapshot::default();
                 inner.query.clear();
                 inner
@@ -890,6 +1233,150 @@ impl SpaceManagementPanelRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn panel() -> (Cx, SpaceManagementPanel) {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let panel = cx.with_vm(|vm| {
+            crate::theme::tests::install(vm, crate::theme::Selection::default());
+            crate::app::register_widgets(vm);
+            vm.bx.captured_errors = Some(Vec::new());
+            let value = script_eval!(vm,{mod.widgets.SpaceManagementPanel {}});
+            let panel = SpaceManagementPanel::script_from_value(vm, value);
+            assert!(vm.take_errors().is_empty());
+            panel
+        });
+        (cx, panel)
+    }
+    fn space(id: &str, project: Option<&str>, can_link: bool) -> SpaceChoice {
+        SpaceChoice {
+            name: RoomNameId::new(
+                matrix_sdk::RoomDisplayName::Named("Team".into()),
+                id.try_into().unwrap(),
+            ),
+            can_link,
+            can_edit: can_link,
+            topic: String::new(),
+            project_id: project.map(str::to_owned),
+        }
+    }
+    #[test]
+    fn creation_wizard_explains_three_paths_and_requires_a_known_writable_space() {
+        let (mut cx, mut panel) = panel();
+        for kind in 0..3 {
+            panel
+                .view
+                .drop_down(&mut cx, ids!(kind))
+                .set_selected_item(&mut cx, kind);
+            panel.wizard_step = 0;
+            panel.sync(&mut cx);
+            assert!(panel.view.view(&mut cx, ids!(choose_kind)).visible());
+            assert!(!panel.view.view(&mut cx, ids!(creation_details)).visible());
+            assert!(!panel.view.label(&mut cx, ids!(kind_help)).text().is_empty());
+            panel.wizard_step = 1;
+            panel.sync(&mut cx);
+            assert!(panel.view.view(&mut cx, ids!(creation_details)).visible());
+            assert_eq!(
+                panel.view.view(&mut cx, ids!(parent_controls)).visible(),
+                kind == 2
+            );
+            assert_eq!(
+                panel.view.check_box(&mut cx, ids!(encrypted)).visible(),
+                kind == 2
+            );
+            assert_eq!(
+                panel
+                    .view
+                    .button(&mut cx, ids!(create))
+                    .borrow()
+                    .unwrap()
+                    .enabled(),
+                kind != 2
+            );
+        }
+        let candidate = space("!space:test", Some("project"), true);
+        panel.parent = Some(candidate.name.room_id().clone());
+        panel.data.spaces = vec![candidate];
+        panel.sync(&mut cx);
+        assert!(
+            !panel
+                .view
+                .button(&mut cx, ids!(create))
+                .borrow()
+                .unwrap()
+                .enabled(),
+            "unknown project association must not create an unregistered Agent room"
+        );
+        panel.data.projects_known = true;
+        panel.sync(&mut cx);
+        assert!(
+            panel
+                .view
+                .button(&mut cx, ids!(create))
+                .borrow()
+                .unwrap()
+                .enabled()
+        );
+        assert!(!panel.view.check_box(&mut cx, ids!(public)).visible());
+        panel.data.spaces[0].can_link = false;
+        panel.sync(&mut cx);
+        assert!(
+            !panel
+                .view
+                .button(&mut cx, ids!(create))
+                .borrow()
+                .unwrap()
+                .enabled()
+        );
+    }
+    #[test]
+    fn creation_wizard_keeps_created_room_visible_during_setup_failure() {
+        let (mut cx, mut panel) = panel();
+        panel.created = Some(space("!created:test", None, true).name);
+        panel.wizard_step = 2;
+        panel.created_space = true;
+        panel.setup_pending = true;
+        panel.sync(&mut cx);
+        assert!(panel.view.button(&mut cx, ids!(finish_setup)).visible());
+        assert!(!panel.view.button(&mut cx, ids!(create_child)).visible());
+        assert!(
+            !panel
+                .view
+                .button(&mut cx, ids!(create))
+                .borrow()
+                .unwrap()
+                .enabled()
+        );
+        assert!(
+            !panel
+                .view
+                .button(&mut cx, ids!(invite_created))
+                .borrow()
+                .unwrap()
+                .enabled()
+        );
+        assert!(panel.view.button(&mut cx, ids!(created)).visible());
+        panel.setup_pending = false;
+        panel.sync(&mut cx);
+        assert!(!panel.view.button(&mut cx, ids!(finish_setup)).visible());
+        assert!(panel.view.button(&mut cx, ids!(create_child)).visible());
+        assert!(
+            panel
+                .view
+                .button(&mut cx, ids!(invite_created))
+                .borrow()
+                .unwrap()
+                .enabled()
+        );
+    }
+    #[test]
+    fn creation_tab_resumes_incomplete_setup_instead_of_starting_a_duplicate() {
+        let (mut cx,mut panel)=panel();
+        panel.active=true;panel.manage=true;panel.wizard_step=2;panel.setup_pending=true;
+        panel.created=Some(space("!created:test",None,true).name);panel.sync(&mut cx);
+        let uid=panel.view.button(&mut cx,ids!(create_tab)).widget_uid();
+        let actions=cx.capture_actions(|cx|cx.widget_action(uid,ButtonAction::Clicked(KeyModifiers::default())));
+        panel.handle_event(&mut cx,&Event::Actions(actions),&mut Scope::empty());
+        assert!(!panel.manage);assert!(panel.created.is_some());assert_eq!(panel.wizard_step,2);assert!(panel.setup_pending);
+    }
     #[test]
     fn space_creation_sets_room_type_and_never_encrypts_spaces() {
         let request = CreateRoomConfig {

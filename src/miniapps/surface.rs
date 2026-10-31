@@ -147,7 +147,7 @@ impl MiniAppsSurface {
         self.view.view(cx, ids!(management_navigation)).set_visible(cx, self.management_page.is_some());
         self.view.label(cx, ids!(management_navigation.context)).set_text(cx, crate::i18n::tr(
             if self.management_page == Some(true) { "Local agents · Device and room settings" }
-            else { "Matrix workspaces · Rooms, members and access" }
+            else { "Agent spaces · Rooms, members and access" }
         ));
         self.view.widget(cx, ids!(native_content)).set_visible(cx, self.native.is_some());
         self.sync_script_visibility(cx);
@@ -189,7 +189,7 @@ impl MiniAppsSurface {
         }
         match self.management_page {
             Some(true) => crate::i18n::tr("Local agents").to_owned(),
-            Some(false) => crate::i18n::tr("Matrix workspaces").to_owned(),
+            Some(false) => crate::i18n::tr("Agent spaces").to_owned(),
             None => self.panel(cx).current_app()
                 .map(|(_, name)| name)
                 .unwrap_or_else(|| crate::i18n::tr("Mini apps").to_owned()),

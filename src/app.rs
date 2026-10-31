@@ -593,6 +593,9 @@ impl MatchEvent for App {
                 continue;
             }
             if let Some(action) = action.downcast_ref::<crate::hagency::ui::HagencyAction>() {
+                if matches!(action,HagencyAction::NewProject) {
+                    cx.action(SpaceManagementAction::Open{parent:None});continue;
+                }
                 // Management opens beside chat; it never replaces the chat dock.
                 if self.docks_mini_apps() {
                     self.dock_hagency_action(cx, action);

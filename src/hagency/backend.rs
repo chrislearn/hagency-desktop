@@ -14,7 +14,7 @@ use std::{
 pub(super) fn management_read(command: &Command) -> bool {
     matches!(command,
         Command::Projects | Command::ProjectRooms {..} | Command::SpaceCandidates {..}
-        | Command::RoomRoster {..} | Command::Agents | Command::Bindings {..}
+        | Command::RoomRoster {..} | Command::Agents | Command::RoomAgents | Command::Bindings {..}
         | Command::Devices | Command::AgentDetails {..} | Command::AgentConfigurationStatus {..}
         | Command::AgentOwnerDirectStatus {..} | Command::ScopeServiceState {..}
         | Command::LoginStatus | Command::AgentCommands | Command::Creations | Command::Creation {..}
@@ -463,7 +463,7 @@ impl Service {
         let room = client.get_room(matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| "invalid_room_id")?.as_ref()).ok_or("room_join_required")?;
         if room.state() != matrix_sdk::RoomState::Joined { return Err("room_join_required".into()); }
         let result = tokio::time::timeout(std::time::Duration::from_secs(20), async {
-            let roster = self.execute(Command::Agents).await?;
+            let roster = self.execute(Command::RoomAgents).await?;
             let projects = self.execute(Command::Projects).await?;
             let projects = projects["projects"].as_array().ok_or("room_discovery_unavailable")?;
             if projects.len() > 128 { return Err("room_discovery_incomplete".into()); }

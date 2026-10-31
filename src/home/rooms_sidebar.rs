@@ -350,7 +350,7 @@ mod tests {
     const LOOKS: [(Appearance, f64); 4] = [
         (Appearance::Light, 1.0), (Appearance::Dark, 1.0), (Appearance::Light, 1.5), (Appearance::Dark, 2.0),
     ];
-    const NEW_OR_JOIN_ROWS: [LiveId; 3] = [id!(add_workspace), id!(add_room_or_space), id!(add_join_rooms)];
+    const NEW_OR_JOIN_ROWS: [LiveId; 2] = [id!(add_room_or_space), id!(add_join_rooms)];
 
     fn texts(widget: &WidgetRef, found: &mut Vec<String>) {
         found.push(widget.text());
