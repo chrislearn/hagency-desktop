@@ -23,28 +23,30 @@ Switching accounts stops the current owner's local Agent runtime and clears its
 active permissions. The previous account's separate data remains; Agent ownership
 never transfers with a switch.
 
-## Create a Project and discussion Rooms
+## Create a space or room
 
-Open **Projects**, then **New Project** (or Projects **⋯ → New project**).
-Choose **Create a new Space** or **Connect an existing Space**. Existing candidates
-are joined Spaces for this account. Partial lookup failures and pagination must
-be resolved before choosing an unavailable candidate.
+Open the conversation list’s **+ → Create a space or room…** and follow the
+three-step wizard. The same **+** menu also offers **Article editor**, which
+opens its mini-app tab and retains the current editing session.
 
-A Project is the Hagency record bound to a Space, not every Matrix Space. Its
-name/topic come from the Space. Select the Project's details:
+| Choice | Purpose | Next step |
+| --- | --- | --- |
+| Ordinary space | Organize people and conversations without Agents | Create rooms and invite members |
+| Agent space | Collaborate with people and Agents; Hagency connects the Project automatically | Create rooms, invite Agent owners and members, then add Agents |
+| Chat room | Exchange messages inside a selected space | Choose its space; Agent-space rooms are connected to the Project automatically |
 
-| Section | Purpose |
-| --- | --- |
-| Overview | Space identity, description and Open Space. |
-| Rooms | Create a Room or connect an already Space-linked Room; open its chat and members. |
-| Members | Read actual Space members; invite when Matrix grants permission. |
-| Access | Read access/service state; permitted administrators can edit it. |
+Spaces organize rooms; each room has its own members and encryption settings.
+Joining a space does not automatically join its rooms. The wizard identifies the
+space type and required permissions. Refresh if its type cannot be checked. If
+creation succeeds but connection is incomplete, use **Finish setup** in the same
+wizard to complete that creation.
 
-Space membership is not copied automatically into every Room. Each discussion
-Room has its own membership and invitation rules. A Project tree entry's **⋯**
-also opens Overview, Discussion Rooms, Project members, Invite members and Open
-Space. If a creation result is unconfirmed, use **Resume original request**;
-do not create a second Space/Room to guess what happened.
+In an Agent-space room, open **Chat information → Members → Add Agent** to select
+an existing local or pooled Agent. Its owner must join both the space and room.
+Both Agent types follow the same reply rule: the owner can chat without @ in the
+original one-to-one room. Once other members join, every request must @ the Agent,
+including the owner’s requests and thread replies. The original room is retained;
+the same Agent can also join additional rooms in Agent spaces.
 
 Project/Room access policy controls who may connect an Agent to that scope. Deny
 entries take priority. It does not approve token allocations. **Service pause**

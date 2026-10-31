@@ -33,7 +33,7 @@ pub fn new_or_join_menu_pos(cx: &mut Cx, button: Rect) -> DVec2 {
 }
 
 /// The rows of the "New or Join" menu, top to bottom.
-const ADD_ITEMS: [LiveId; 2] = [id!(add_room_or_space), id!(add_join_rooms)];
+const ADD_ITEMS: [LiveId; 3] = [id!(add_room_or_space), id!(add_article_editor), id!(add_join_rooms)];
 
 /// What one "New or Join" row does: exactly what the same command did before it
 /// moved here.
@@ -45,6 +45,7 @@ fn add_item_action(cx: &mut Cx, item: LiveId) {
         id!(add_room_or_space) => {
             cx.action(super::space_management::SpaceManagementAction::Open { parent: None })
         }
+        id!(add_article_editor) => cx.action(crate::article_app::ArticleAction::Open),
         // Was the old rail "+" button's only action: the Explore Rooms page.
         id!(add_join_rooms) => {
             cx.action(super::navigation_tab_bar::NavigationBarAction::GoToAddRoom)
@@ -186,6 +187,7 @@ script_mod! {
             draw_bg +: {color: mod.widgets.RINX_SURFACE border_size: 1 border_color: mod.widgets.RINX_MUTED}
             add_workspace := mod.widgets.SidebarAddMenuItem {visible: false text: #(crate::i18n::tr("New workspace")) i18n_text: "New workspace" draw_icon.svg: ICON_HIERARCHY}
             add_room_or_space := mod.widgets.SidebarAddMenuItem {text: #(crate::i18n::tr("Create a space or room…")) i18n_text: "Create a space or room…" draw_icon.svg: ICON_ADD}
+            add_article_editor := mod.widgets.SidebarAddMenuItem {text: #(crate::i18n::tr("Article editor")) i18n_text: "Article editor" draw_icon.svg: ICON_EDIT}
             add_join_rooms := mod.widgets.SidebarAddMenuItem {text: #(crate::i18n::tr("Join or explore rooms")) i18n_text: "Join or explore rooms" draw_icon.svg: ICON_JOIN_ROOM}
             project_overview := mod.widgets.ContextMenuButton {visible: false icon_walk: Walk{width: 0 height: 0} spacing: 0 text: #(crate::i18n::tr("Overview")) i18n_text: "Overview"}
             project_rooms := mod.widgets.ContextMenuButton {visible: false icon_walk: Walk{width: 0 height: 0} spacing: 0 text: #(crate::i18n::tr("Discussion Rooms")) i18n_text: "Discussion Rooms"}
@@ -823,11 +825,11 @@ mod new_or_join_tests {
     /// width (300 points, right of the 76-point rail, 10-point margins).
     const PLUS: Rect = Rect {pos: dvec2(331.0, 62.0), size: dvec2(35.0, 35.0)};
     /// Every command row the widget can show, whatever menu it is.
-    const ALL_ROWS: [LiveId; 16] = [
+    const ALL_ROWS: [LiveId; 17] = [
         id!(project_overview), id!(project_rooms), id!(project_members), id!(project_invite),
         id!(project_space), id!(new_project), id!(new_chat), id!(new_agent), id!(open_discover),
         id!(explore_rooms), id!(open_moments), id!(open_article), id!(open_browser),
-        id!(add_workspace), id!(add_room_or_space), id!(add_join_rooms),
+        id!(add_workspace), id!(add_room_or_space), id!(add_article_editor), id!(add_join_rooms),
     ];
 
     /// A registered menu under one appearance and text scale (1.0 is the default).
@@ -898,14 +900,15 @@ mod new_or_join_tests {
     }
 
     #[test]
-    fn new_or_join_menu_has_one_creation_wizard_and_join_action() {
+    fn new_or_join_menu_has_creation_wizard_article_editor_and_join_action() {
         let (mut cx, mut menu) = menu(Appearance::Light, 1.0);
         let anchor = new_or_join_menu_pos(&mut cx, PLUS);
         menu.show(&mut cx, SidebarMenuKind::Add, anchor, Rect {pos: DVec2::default(), size: WINDOW});
         assert!(menu.visible);
-        assert_eq!(visible_rows(&mut cx, &menu), ADD_ITEMS, "One wizard entry and one join action");
+        assert_eq!(visible_rows(&mut cx, &menu), ADD_ITEMS, "Creation wizard, article editor and join action");
         for (row, english, chinese) in [
             (id!(add_room_or_space), "Create a space or room…", "创建空间或聊天室…"),
+            (id!(add_article_editor), "Article editor", "文章编辑器"),
             (id!(add_join_rooms), "Join or explore rooms", "加入或探索聊天室"),
         ] {
             assert_eq!(menu.view.button(&mut cx, &[row]).text(), english);
@@ -936,6 +939,8 @@ mod new_or_join_tests {
                     Some(id!(add_room_or_space))
                 } else if matches!(action.downcast_ref(), Some(crate::home::navigation_tab_bar::NavigationBarAction::GoToAddRoom)) {
                     Some(id!(add_join_rooms))
+                } else if matches!(action.downcast_ref(), Some(crate::article_app::ArticleAction::Open)) {
+                    Some(id!(add_article_editor))
                 } else {
                     None
                 }

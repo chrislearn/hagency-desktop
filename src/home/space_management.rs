@@ -21,6 +21,7 @@ use matrix_sdk::ruma::{
 };
 use crate::{
     matrix_context,
+    shared::navigation_bar_button::NavigationBarButtonWidgetExt,
     sliding_sync::{current_user_id, get_client, spawn_async_task},
     utils::RoomNameId,
 };
@@ -418,70 +419,216 @@ struct LinkFinished {
 script_mod! {
     use mod.prelude.widgets.*
     use mod.widgets.*
-    let Text = Label {width: Fill height: Fit flow: Flow.Right{wrap: true} draw_text +: {color: mod.widgets.RINX_INK text_style: theme.font_regular{font_size: (11 * mod.widgets.RINX_TEXT_SCALE)}}}
-    let Action = RobrixNeutralIconButton {height: 40 icon_walk: Walk{width: 0 height: 0} spacing: 0}
-    let Input = TextInput {width: Fill height: 40}
+    let Text = Label {width: Fill height: Fit padding: 0 margin: Inset{} flow: Flow.Right{wrap: true} draw_text +: {color: mod.widgets.RINX_INK text_style: theme.font_regular{font_size: (12 * mod.widgets.RINX_TEXT_SCALE)}}}
+    let Hint = Text {draw_text +: {color: mod.widgets.RINX_MUTED text_style.font_size: (10.5 * mod.widgets.RINX_TEXT_SCALE)}}
+    let Title = Text {draw_text.text_style: theme.font_bold{font_size: (23 * mod.widgets.RINX_TEXT_SCALE)}}
+    // Makepad Sdf2d.box uses twice the supplied radius.
+    let Section = RoundedView {width: Fill height: Fit flow: Down padding: 18 spacing: 12 draw_bg +: {color: mod.widgets.RINX_SURFACE border_radius: 8 border_size: 0}}
+    let Action = RinxButton {grab_key_focus: true height: (44 * mod.widgets.RINX_TEXT_SCALE) icon_walk: Walk{width: 0 height: 0} spacing: 0 draw_bg +: {
+        border_radius: 6
+        pixel: fn() {
+            let sdf = Sdf2d.viewport(self.pos * self.rect_size)
+            sdf.box(1.0, 1.0, self.rect_size.x - 2.0, self.rect_size.y - 2.0, self.border_radius)
+            sdf.fill_keep(self.color.mix(self.color_focus, self.focus).mix(self.color_hover, self.hover).mix(self.color_down, self.down).mix(self.color_disabled, self.disabled))
+            sdf.stroke(self.border_color.mix(self.border_color_focus, self.focus), max(self.border_size, self.focus))
+            return sdf.result
+        }
+    }}
+    let Primary = Action {width: Fill height: (48 * mod.widgets.RINX_TEXT_SCALE) icon_walk: Walk{width: 0 height: 0} spacing: 0 draw_bg +: {border_radius: 6 color: mod.widgets.RINX_ACCENT color_focus: mod.widgets.RINX_ACCENT color_hover: mod.widgets.RINX_ACCENT_HOVER color_down: mod.widgets.RINX_ACCENT_DOWN border_size: 0 border_color_focus: mod.widgets.RINX_ON_ACCENT color_disabled: mod.widgets.RINX_BORDER} draw_text +: {color: mod.widgets.RINX_ON_ACCENT color_hover: mod.widgets.RINX_ON_ACCENT color_focus: mod.widgets.RINX_ON_ACCENT color_down: mod.widgets.RINX_ON_ACCENT text_style: theme.font_bold{font_size: (12 * mod.widgets.RINX_TEXT_SCALE)} color_disabled: mod.widgets.RINX_MUTED}}
+    let Quiet = Action {draw_bg +: {color: #0000 color_hover: mod.widgets.RINX_HOVER border_size: 0} draw_text +: {color: mod.widgets.RINX_ACCENT color_hover: mod.widgets.RINX_ACCENT}}
+    let Input = RinxInput {width: Fill height: (44 * mod.widgets.RINX_TEXT_SCALE) padding: Inset{left: 12 right: 12 top: 10 bottom: 10} draw_bg +: {border_size: 0 border_radius: 5} draw_text.text_style.font_size: (12 * mod.widgets.RINX_TEXT_SCALE)}
+    let Switch = ToggleFlat {
+        width: 52 height: 44 text: "" padding: 0
+        label_walk: Walk{width: 0 height: 0 margin: Inset{}}
+        draw_bg +: {
+            color: mod.widgets.RINX_BORDER color_active: mod.widgets.RINX_ACCENT
+            knob_color: uniform(#fff)
+            pixel: fn() {
+                let sdf = Sdf2d.viewport(self.pos * self.rect_size)
+                let p = (self.rect_size - vec2(44.0, 26.0)) * 0.5
+                sdf.box(p.x, p.y, 44.0, 26.0, 13.0)
+                sdf.fill(self.color.mix(self.color_active, self.active))
+                sdf.circle(p.x + 13.0 + 18.0 * self.active, p.y + 13.0, 10.5)
+                sdf.fill(self.knob_color)
+                return sdf.result
+            }
+        }
+    }
+    let Choice = NavigationBarButton {
+        width: Fill height: Fit flow: Right spacing: 14 padding: 16 align: Align{y: 0.5}
+        draw_bg +: {
+            base_color: instance(mod.widgets.RINX_SURFACE)
+            selected_border: instance(mod.widgets.RINX_ACCENT)
+            color_hover: mod.widgets.RINX_HOVER color_active: mod.widgets.RINX_SELECTED
+            border_color: mod.widgets.RINX_BORDER border_size: 1 border_radius: 8
+            pixel: fn() {
+                let sdf = Sdf2d.viewport(self.pos * self.rect_size)
+                sdf.box(0.75, 0.75, self.rect_size.x - 1.5, self.rect_size.y - 1.5, 8.0)
+                sdf.fill_keep(self.base_color.mix(self.color_hover, self.hover).mix(self.color_active, self.active))
+                sdf.stroke(self.border_color.mix(self.selected_border, max(self.active, self.focus)), 1.0)
+                return sdf.result
+            }
+        }
+        badge := RoundedView {width: 40 height: 40 align: Align{x: 0.5 y: 0.5} draw_bg +: {color: mod.widgets.RINX_SELECTED border_radius: 5.5}
+            icon := Icon {icon_walk: Walk{width: 22 height: 22} draw_icon +: {color: mod.widgets.RINX_ACCENT}}
+        }
+        copy := View {width: Fill height: Fit flow: Down spacing: 5
+            title := Text {draw_text.text_style: theme.font_bold{font_size: (13 * mod.widgets.RINX_TEXT_SCALE)}}
+            description := Hint {}
+        }
+        selection := RoundedView {width: 22 height: 22 align: Align{x: 0.5 y: 0.5} draw_bg +: {color: #0000 border_color: mod.widgets.RINX_BORDER border_size: 1 border_radius: 5.5}
+            mark := View {width: 12 height: 12 visible: false
+                Icon {icon_walk: Walk{width: 12 height: 12} draw_icon +: {svg: ICON_CHECKMARK color: mod.widgets.RINX_ON_ACCENT}}
+            }
+        }
+    }
     mod.widgets.SpaceManagementPanel = #(SpaceManagementPanel::register_widget(vm)) {
         ..mod.widgets.SolidView
-        width: Fill height: Fill flow: Down padding: Inset{top: 32 left: 16 right: 16 bottom: 12} spacing: 8
+        width: Fill height: Fill flow: Down align: Align{x: 0.5} spacing: 0 padding: 0
         draw_bg.color: mod.widgets.RINX_PAGE
-        View {width: Fill height: 40 spacing: 8 align: Align{y: 0.5}
-            close := RinxBackButton {}
-            refresh := Action {text: #(crate::i18n::tr("Refresh")) i18n_text: "Refresh"}
-            Text {text: #(crate::i18n::tr("Rooms and spaces")) i18n_text: "Rooms and spaces"}
+        navigation := View {width: Fill height: (56 * mod.widgets.RINX_TEXT_SCALE) padding: Inset{left: 16 right: 16} spacing: 8 align: Align{y: 0.5}
+            close := Quiet {text: #(crate::i18n::tr("Cancel")) i18n_text: "Cancel"}
+            Text {width: Fill align: Align{x: 0.5} text: #(crate::i18n::tr("Rooms and spaces")) i18n_text: "Rooms and spaces" draw_text.text_style: theme.font_bold{font_size: (12 * mod.widgets.RINX_TEXT_SCALE)}}
+            refresh := Quiet {text: #(crate::i18n::tr("Refresh")) i18n_text: "Refresh" spacing: 6 draw_icon +: {svg: ICON_ROTATE_CW color: mod.widgets.RINX_ACCENT} icon_walk: Walk{width: 16 height: 16}}
         }
-        status := Text {}
-        View {width: Fill height: 40 spacing: 8
-            create_tab := Action {width: Fill text: #(crate::i18n::tr("Create")) i18n_text: "Create"}
-            manage_tab := Action {width: Fill text: #(crate::i18n::tr("Manage space")) i18n_text: "Manage space"}
-        }
-        wizard_step := Text {text: #(crate::i18n::tr("1 of 3 · Choose what to create"))}
-        parent_controls := View {width: Fill height: Fit flow: Down spacing: 8
-            parent_label := Text {text: #(crate::i18n::tr("Choose a space for this room")) i18n_text: "Choose a space for this room"}
-            parent := DropDown {width: Fill labels: ["No parent space"]}
-        }
-        create_form := ScrollYView {width: Fill height: Fill flow: Down spacing: 8
-            choose_kind := View {width: Fill height: Fit flow: Down spacing: 12
-                kind_state := View {visible: false
-                    kind := DropDown {labels: ["ordinary" "agent" "room"]}
+        body := View {width: Fill{max: 600} height: Fill flow: Down spacing: 16 padding: Inset{left: 20 right: 20 top: 8 bottom: 20}
+            mode_bar := RoundedView {width: Fill height: Fit padding: 3 spacing: 2 draw_bg +: {color: mod.widgets.RINX_HOVER border_radius: 6}
+                create_tab := Action {width: Fill height: (44 * mod.widgets.RINX_TEXT_SCALE) text: #(crate::i18n::tr("Create")) i18n_text: "Create" draw_bg +: {border_size: 0 border_radius: 4}}
+                manage_tab := Action {width: Fill height: (44 * mod.widgets.RINX_TEXT_SCALE) text: #(crate::i18n::tr("Manage space")) i18n_text: "Manage space" draw_bg +: {border_size: 0 border_radius: 4}}
+            }
+            wizard_heading := View {width: Fill height: Fit flow: Down spacing: 8
+                View {width: Fill height: Fit align: Align{y: 0.5} spacing: 10
+                    wizard_step := Hint {}
+                    progress := View {width: 66 height: 3 spacing: 4
+                        progress_one := RoundedView {width: Fill height: Fill draw_bg +: {color: mod.widgets.RINX_ACCENT border_radius: 1.5}}
+                        progress_two := RoundedView {width: Fill height: Fill draw_bg +: {color: mod.widgets.RINX_BORDER border_radius: 1.5}}
+                        progress_three := RoundedView {width: Fill height: Fill draw_bg +: {color: mod.widgets.RINX_BORDER border_radius: 1.5}}
+                    }
                 }
-                ordinary_kind := Action {width: Fill}
-                Text {text: #(crate::i18n::tr("Organize rooms for people. No Agent setup.")) i18n_text: "Organize rooms for people. No Agent setup."}
-                agent_kind := Action {width: Fill}
-                Text {text: #(crate::i18n::tr("People and Agents work together. Project setup is automatic.")) i18n_text: "People and Agents work together. Project setup is automatic."}
-                room_kind := Action {width: Fill}
-                Text {text: #(crate::i18n::tr("Create a conversation in a space you choose.")) i18n_text: "Create a conversation in a space you choose."}
-                kind_help := Text {}
-                wizard_next := Action {width: Fill text: #(crate::i18n::tr("Next step")) i18n_text: "Next step"}
+                wizard_title := Title {}
+                wizard_subtitle := Hint {}
             }
-            creation_details := View {visible: false width: Fill height: Fit flow: Down spacing: 12
-                details_help := Text {}
-                name := Input {empty_text: #(crate::i18n::tr("Name")) i18n_empty_text: "Name"}
-                topic := Input {empty_text: #(crate::i18n::tr("Topic")) i18n_empty_text: "Topic"}
-                public := CheckBox {text: #(crate::i18n::tr("Public")) i18n_text: "Public"}
-                encrypted := CheckBox {text: #(crate::i18n::tr("Encrypted room")) i18n_text: "Encrypted room"}
-                create := Action {width: Fill text: #(crate::i18n::tr("Create")) i18n_text: "Create"}
-                wizard_back := Action {width: Fill text: #(crate::i18n::tr("Back")) i18n_text: "Back"}
+            status_card := RoundedView {visible: false width: Fill height: Fit flow: Right padding: 12 spacing: 10 draw_bg +: {color: mod.widgets.RINX_WARNING_BG border_radius: 6}
+                status_icon := Icon {icon_walk: Walk{width: 16 height: 16} draw_icon +: {svg: ICON_INFO color: mod.widgets.RINX_WARNING_FG}}
+                status := Hint {draw_text.color: mod.widgets.RINX_WARNING_FG}
             }
-            creation_done := View {visible: false width: Fill height: Fit flow: Down spacing: 12
-                done_help := Text {}
-                finish_setup := Action {visible: false width: Fill text: #(crate::i18n::tr("Finish setup for this space or room")) i18n_text: "Finish setup for this space or room"}
-                create_child := Action {visible: false width: Fill text: #(crate::i18n::tr("Create a room in this space")) i18n_text: "Create a room in this space"}
-                invite_created := Action {width: Fill text: #(crate::i18n::tr("Invite members")) i18n_text: "Invite members"}
-                created := Action {width: Fill text: #(crate::i18n::tr("Open")) i18n_text: "Open"}
+            parent_controls := Section {
+                parent_label := Hint {text: #(crate::i18n::tr("Choose a space for this room")) i18n_text: "Choose a space for this room"}
+                parent := DropDown {
+                    width: Fill height: (44 * mod.widgets.RINX_TEXT_SCALE) margin: Inset{} padding: Inset{left: 12 right: 36} align: Align{y: 0.5}
+                    labels: ["No parent space"]
+                    draw_text +: {color: mod.widgets.RINX_INK color_hover: mod.widgets.RINX_INK color_focus: mod.widgets.RINX_INK color_down: mod.widgets.RINX_INK text_style.font_size: (12 * mod.widgets.RINX_TEXT_SCALE)}
+                    draw_bg +: {
+                        color: mod.widgets.RINX_FIELD color_hover: mod.widgets.RINX_HOVER border_color: mod.widgets.RINX_ACCENT arrow_color: mod.widgets.RINX_MUTED
+                        pixel: fn() {
+                            let sdf = Sdf2d.viewport(self.pos * self.rect_size)
+                            sdf.box(1.0, 1.0, self.rect_size.x - 2.0, self.rect_size.y - 2.0, 5.0)
+                            sdf.fill_keep(self.color.mix(self.color_hover, self.hover))
+                            sdf.stroke(self.border_color, self.focus)
+                            let x = self.rect_size.x - 23.0
+                            let y = self.rect_size.y * 0.5 - 2.0
+                            sdf.move_to(x - 4.0, y)
+                            sdf.line_to(x, y + 4.0)
+                            sdf.line_to(x + 4.0, y)
+                            sdf.stroke(self.arrow_color, 1.5)
+                            return sdf.result
+                        }
+                    }
+                }
             }
-        }
-
-        manage_form := View {visible: false width: Fill height: Fill flow: Down spacing: 8
-            space_name := Input {empty_text: #(crate::i18n::tr("Space name")) i18n_empty_text: "Space name"}
-            space_topic := Input {empty_text: #(crate::i18n::tr("Topic")) i18n_empty_text: "Topic"}
-            save := Action {width: Fill text: #(crate::i18n::tr("Save space details")) i18n_text: "Save space details"}
-            search := Input {empty_text: #(crate::i18n::tr("Filter rooms")) i18n_empty_text: "Filter rooms"}
-            rooms := PortalList {width: Fill height: Fill
-                Row := View {width: Fill height: Fit flow: Down padding: 8 spacing: 4
-                    name := Text {}
-                    id := Text {draw_text.color: mod.widgets.RINX_MUTED}
-                    toggle := Action {width: Fill}
+            create_form := ScrollYView {width: Fill height: Fill flow: Down spacing: 12 padding: Inset{right: 12}
+                scroll_bars +: {scroll_bar_y +: {bar_size: 7 bar_side_margin: 0 draw_bg +: {size: 3 border_size: 0 border_radius: 1.5 color: mod.widgets.RINX_BORDER color_hover: mod.widgets.RINX_MUTED color_drag: mod.widgets.RINX_MUTED}}}
+                choose_kind := View {width: Fill height: Fit flow: Down spacing: 12
+                    kind_state := View {visible: false kind := DropDown {labels: ["ordinary" "agent" "room"]}}
+                    ordinary_kind := Choice {
+                        badge +: {icon.draw_icon.svg: ICON_PEOPLE}
+                        copy +: {
+                            title +: {text: #(crate::i18n::tr("Ordinary space")) i18n_text: "Ordinary space"}
+                            description +: {text: #(crate::i18n::tr("A place for people and their conversations.")) i18n_text: "A place for people and their conversations."}
+                        }
+                    }
+                    agent_kind := Choice {
+                        badge +: {icon.draw_icon.svg: ICON_ROBOT}
+                        copy +: {
+                            title +: {text: #(crate::i18n::tr("Agent space")) i18n_text: "Agent space"}
+                            description +: {text: #(crate::i18n::tr("Bring people and Agents together.")) i18n_text: "Bring people and Agents together."}
+                        }
+                    }
+                    room_kind := Choice {
+                        badge +: {icon.draw_icon.svg: ICON_THREADS}
+                        copy +: {
+                            title +: {text: #(crate::i18n::tr("Chat room")) i18n_text: "Chat room"}
+                            description +: {text: #(crate::i18n::tr("Start a conversation inside a space.")) i18n_text: "Start a conversation inside a space."}
+                        }
+                    }
+                    kind_help := Hint {padding: Inset{left: 4 right: 4 top: 4 bottom: 8}}
+                }
+                creation_details := View {visible: false width: Fill height: Fit flow: Down spacing: 16
+                    Section {
+                        Text {text: #(crate::i18n::tr("Name")) i18n_text: "Name"}
+                        name := Input {empty_text: #(crate::i18n::tr("Give it a name")) i18n_empty_text: "Give it a name"}
+                        Text {text: #(crate::i18n::tr("Description · optional")) i18n_text: "Description · optional"}
+                        topic := Input {empty_text: #(crate::i18n::tr("What is this place for?")) i18n_empty_text: "What is this place for?"}
+                        name_error := Hint {visible: false draw_text.color: mod.widgets.RINX_DANGER_FG}
+                    }
+                    privacy := Section {spacing: 6
+                        public_row := View {width: Fill height: Fit align: Align{y: 0.5} spacing: 12
+                            View {width: Fill height: Fit flow: Down spacing: 4
+                                Text {text: #(crate::i18n::tr("Public")) i18n_text: "Public"}
+                                Hint {text: #(crate::i18n::tr("Allow people to discover and join.")) i18n_text: "Allow people to discover and join."}
+                            }
+                            public := Switch {}
+                        }
+                        encrypted_row := View {width: Fill height: Fit align: Align{y: 0.5} spacing: 12
+                            View {width: Fill height: Fit flow: Down spacing: 4
+                                Text {text: #(crate::i18n::tr("End-to-end encryption")) i18n_text: "End-to-end encryption"}
+                                Hint {text: #(crate::i18n::tr("Only room members can read messages.")) i18n_text: "Only room members can read messages."}
+                            }
+                            encrypted := Switch {}
+                        }
+                        private_note := View {visible: false width: Fill height: Fit flow: Right spacing: 10 align: Align{y: 0.5}
+                            Icon {icon_walk: Walk{width: 18 height: 18} draw_icon +: {svg: ICON_LOCK color: mod.widgets.RINX_MUTED}}
+                            Hint {text: #(crate::i18n::tr("Private space · members join by invitation.")) i18n_text: "Private space · members join by invitation."}
+                        }
+                    }
+                    details_help := Hint {padding: Inset{left: 4 right: 4 bottom: 8}}
+                }
+                creation_done := View {visible: false width: Fill height: Fit flow: Down spacing: 16
+                    Section {padding: 24 spacing: 16 align: Align{x: 0.5}
+                        done_badge := RoundedView {width: 56 height: 56 align: Align{x: 0.5 y: 0.5} draw_bg +: {color: mod.widgets.RINX_SUCCESS_BG border_radius: 28}
+                            done_icon := Icon {icon_walk: Walk{width: 26 height: 26} draw_icon +: {svg: ICON_CHECKMARK color: mod.widgets.RINX_SUCCESS_FG}}
+                        }
+                        created_name := Text {align: Align{x: 0.5} draw_text.text_style: theme.font_bold{font_size: (16 * mod.widgets.RINX_TEXT_SCALE)}}
+                        done_help := Hint {}
+                    }
+                }
+            }
+            wizard_footer := View {width: Fill height: Fit flow: Down spacing: 10
+                choose_actions := View {width: Fill height: Fit
+                    wizard_next := Primary {text: #(crate::i18n::tr("Next step")) i18n_text: "Next step"}
+                }
+                detail_actions := View {visible: false width: Fill height: Fit spacing: 12 align: Align{y: 0.5}
+                    wizard_back := Quiet {width: 76 text: #(crate::i18n::tr("Back")) i18n_text: "Back"}
+                    create := Primary {text: #(crate::i18n::tr("Create")) i18n_text: "Create"}
+                }
+                done_actions := View {visible: false width: Fill height: Fit flow: Down spacing: 8
+                    finish_setup := Primary {visible: false text: #(crate::i18n::tr("Finish setup")) i18n_text: "Finish setup"}
+                    create_child := Primary {visible: false text: #(crate::i18n::tr("Create room")) i18n_text: "Create room"}
+                    invite_created := Action {width: Fill text: #(crate::i18n::tr("Invite members")) i18n_text: "Invite members"}
+                    created := Quiet {width: Fill text: #(crate::i18n::tr("Open")) i18n_text: "Open"}
+                }
+            }
+            manage_form := View {visible: false width: Fill height: Fill flow: Down spacing: 12
+                space_name := Input {empty_text: #(crate::i18n::tr("Space name")) i18n_empty_text: "Space name"}
+                space_topic := Input {empty_text: #(crate::i18n::tr("Topic")) i18n_empty_text: "Topic"}
+                save := Primary {text: #(crate::i18n::tr("Save space details")) i18n_text: "Save space details"}
+                search := Input {empty_text: #(crate::i18n::tr("Filter rooms")) i18n_empty_text: "Filter rooms"}
+                rooms := PortalList {width: Fill height: Fill
+                    Row := View {width: Fill height: Fit flow: Down padding: 8 spacing: 4
+                        name := Text {}
+                        id := Hint {}
+                        toggle := Action {width: Fill}
+                    }
                 }
             }
         }
@@ -541,9 +688,23 @@ impl SpaceManagementPanel {
             && self.request == request
     }
     fn status(&self, cx: &mut Cx, status: &str) {
+        self.view.view(cx, ids!(status_card)).set_visible(cx, !status.is_empty());
         self.view
             .label(cx, ids!(status))
             .set_text(cx, crate::i18n::tr(status));
+        let theme = crate::theme::snapshot(cx);
+        let state = if status == "Saving…" { "info" }
+            else if status.starts_with("Created, but") { "warning" }
+            else if status == "Created. Continue with the next step below." || status.ends_with("saved.") { "success" }
+            else { "danger" };
+        let bg = theme.role(&format!("color.status.{state}.background"));
+        let fg = theme.role(&format!("color.status.{state}.foreground"));
+        let mut card = self.view.view(cx, ids!(status_card));
+        script_apply_eval!(cx, card, {draw_bg +: {color: #(bg)}});
+        let mut text = self.view.label(cx, ids!(status));
+        script_apply_eval!(cx, text, {draw_text +: {color: #(fg)}});
+        let mut icon = self.view.icon(cx, ids!(status_icon));
+        script_apply_eval!(cx, icon, {draw_icon +: {color: #(fg)}});
     }
     fn choice(&self) -> Option<&SpaceChoice> {
         self.data
@@ -552,55 +713,66 @@ impl SpaceManagementPanel {
             .find(|space| Some(space.name.room_id()) == self.parent.as_ref())
     }
     fn sync(&mut self, cx: &mut Cx) {
+        let theme = crate::theme::snapshot(cx);
         let kind = self.view.drop_down(cx, ids!(kind)).selected_item();
-        self.view.label(cx,ids!(wizard_step)).set_visible(cx,!self.manage);
         let room = kind == 2;
-        for (index,button,label) in [(0,id!(ordinary_kind),"Ordinary space · people only"),(1,id!(agent_kind),"Agent space · people and Agents"),(2,id!(room_kind),"Chat room · inside a space")] {
-            self.view.button(cx,&[button]).set_text(cx,&format!("{}{}",if kind==index {"✓  "}else{""},crate::i18n::tr(label)));
+        for (index, id) in [id!(ordinary_kind), id!(agent_kind), id!(room_kind)].into_iter().enumerate() {
+            let card = self.view.navigation_bar_button(cx, &[id]);
+            card.set_selected(cx, kind == index);
+            let mut selection = card.view(cx, ids!(selection));
+            let color = if kind == index { theme.accent } else { theme.surface };
+            let border = if kind == index { theme.accent } else { theme.border };
+            script_apply_eval!(cx, selection, {draw_bg +: {color: #(color) border_color: #(border)}});
+            card.view(cx, ids!(mark)).set_visible(cx, kind == index);
         }
-
-        let help = match kind {
-            0 => "For people to chat and organize rooms. Agents are not enabled in this space.",
-            1 => {
-                "For people and Agents to collaborate. Hagency project setup is handled automatically; then create a room and add Agents."
-            }
-            _ => {
-                "Choose the space where this room belongs. Agent spaces allow you to add local or pooled Agents alongside their owners and other members."
-            }
+        for (id, selected) in [(id!(create_tab), !self.manage), (id!(manage_tab), self.manage)] {
+            let mut button = self.view.button(cx, &[id]);
+            let color = if selected {theme.surface} else {theme.hover};
+            script_apply_eval!(cx, button, {draw_bg +: {color: #(color) color_focus: #(color)}});
+        }
+        for (index, id) in [id!(progress_one), id!(progress_two), id!(progress_three)].into_iter().enumerate() {
+            let mut bar = self.view.view(cx, &[id]);
+            let color = if index <= self.wizard_step {theme.accent} else {theme.border};
+            script_apply_eval!(cx, bar, {draw_bg +: {color: #(color)}});
+        }
+        self.view.view(cx, ids!(wizard_heading)).set_visible(cx, !self.manage);
+        self.view.view(cx, ids!(wizard_footer)).set_visible(cx, !self.manage);
+        self.view.label(cx, ids!(wizard_step)).set_text(cx, crate::i18n::tr(match self.wizard_step {
+            0 => "Step 1 of 3", 1 => "Step 2 of 3", _ => "Step 3 of 3",
+        }));
+        let title = match self.wizard_step {
+            0 => "What would you like to create?",
+            1 => match kind {0 => "New ordinary space", 1 => "New Agent space", _ => "New chat room"},
+            _ if self.setup_pending => "One more step",
+            _ if self.created_space => "Your space is ready",
+            _ => "Your room is ready",
         };
-        self.view
-            .label(cx, ids!(kind_help))
-            .set_text(cx, crate::i18n::tr(help));
-        self.view
-            .label(cx, ids!(details_help))
-            .set_text(cx, crate::i18n::tr(help));
-        self.view.label(cx, ids!(wizard_step)).set_text(
-            cx,
-            crate::i18n::tr(match self.wizard_step {
-                0 => "1 of 3 · Choose what to create",
-                1 => "2 of 3 · Name and location",
-                _ => "3 of 3 · Invite and start chatting",
-            }),
-        );
-        self.view
-            .view(cx, ids!(choose_kind))
-            .set_visible(cx, self.wizard_step == 0);
-        self.view
-            .view(cx, ids!(creation_details))
-            .set_visible(cx, self.wizard_step == 1);
-        self.view
-            .view(cx, ids!(creation_done))
-            .set_visible(cx, self.wizard_step == 2);
-        self.view
-            .view(cx, ids!(parent_controls))
-            .set_visible(cx, self.manage || (room && self.wizard_step == 1));
-        self.view
-            .check_box(cx, ids!(encrypted))
-            .set_visible(cx, room);
+        self.view.label(cx, ids!(wizard_title)).set_text(cx, crate::i18n::tr(title));
+        self.view.label(cx, ids!(wizard_subtitle)).set_text(cx, crate::i18n::tr(match self.wizard_step {
+            0 => "Choose a place for your next conversation.",
+            1 => "Make it easy for everyone to find their place.",
+            _ if self.setup_pending => "Your creation is saved. Complete its connection below.",
+            _ => "Bring in your people and start something together.",
+        }));
+        let help = match kind {
+            0 => "Spaces organize rooms. Create a room inside, then invite people.",
+            1 => "Hagency connects the project for you. Add rooms, people and Agents next.",
+            _ => "The space you choose determines whether Agents can join this room.",
+        };
+        self.view.label(cx, ids!(kind_help)).set_text(cx, crate::i18n::tr(help));
+        self.view.label(cx, ids!(details_help)).set_text(cx, crate::i18n::tr(help));
+        for (step, body, actions) in [(0,id!(choose_kind),id!(choose_actions)), (1,id!(creation_details),id!(detail_actions)), (2,id!(creation_done),id!(done_actions))] {
+            self.view.view(cx, &[body]).set_visible(cx, self.wizard_step == step);
+            self.view.view(cx, &[actions]).set_visible(cx, self.wizard_step == step);
+        }
+        self.view.view(cx, ids!(parent_controls)).set_visible(cx, self.manage || (room && self.wizard_step == 1));
+        self.view.check_box(cx, ids!(encrypted)).set_visible(cx, room);
+        self.view.view(cx, ids!(encrypted_row)).set_visible(cx, room);
         let agent_room = room && self.choice().is_some_and(|s| s.project_id.is_some());
-        self.view
-            .check_box(cx, ids!(public))
-            .set_visible(cx, kind != 1 && !agent_room);
+        let public_visible = kind != 1 && !agent_room;
+        self.view.check_box(cx, ids!(public)).set_visible(cx, public_visible);
+        self.view.view(cx, ids!(public_row)).set_visible(cx, public_visible);
+        self.view.view(cx, ids!(private_note)).set_visible(cx, kind == 1);
         if self.wizard_step == 1 && room {
             let guidance = if !self.data.projects_known {
                 "Space types could not be checked. Refresh before creating a room."
@@ -608,62 +780,55 @@ impl SpaceManagementPanel {
                 "Choose a space to continue."
             } else if self.choice().is_some_and(|s| !s.can_link) {
                 "You cannot add rooms to this space. Choose a space you can manage."
-            } else {
-                help
-            };
-            self.view
-                .label(cx, ids!(details_help))
-                .set_text(cx, crate::i18n::tr(guidance));
+            } else if agent_room {
+                "This Agent space connects your room automatically. Invite people and add Agents after creating it."
+            } else { help };
+            self.view.label(cx, ids!(details_help)).set_text(cx, crate::i18n::tr(guidance));
         }
-        self.view
-            .button(cx, ids!(wizard_next))
-            .set_enabled(cx, !self.busy);
-        self.view
-            .button(cx, ids!(wizard_back))
-            .set_enabled(cx, !self.busy);
-        self.view
-            .button(cx, ids!(finish_setup))
-            .set_visible(cx, self.setup_pending);
-        self.view
-            .button(cx, ids!(finish_setup))
-            .set_enabled(cx, !self.busy);
-        self.view
-            .button(cx, ids!(create_child))
-            .set_visible(cx, self.created_space && !self.setup_pending);
-        self.view
-            .button(cx, ids!(invite_created))
-            .set_enabled(cx, !self.busy && !self.setup_pending);
-        self.view.label(cx,ids!(done_help)).set_text(cx,crate::i18n::tr(if self.setup_pending {"The space or room exists. Finish its setup here; it will not be created again."} else if self.created_space {"Next, create a room in this space and invite its members. Space membership does not automatically join its rooms."} else if self.setup_project.is_some() {"Invite people, then open chat information → Members → Add Agent. The Agent owner must join this space and room. In a group, everyone must @ the Agent they want to answer."} else {"Invite people to start chatting. This room belongs to an ordinary space; Agents are not enabled."}));
-
-        self.view
-            .view(cx, ids!(create_form))
-            .set_visible(cx, !self.manage);
-        self.view
-            .view(cx, ids!(manage_form))
-            .set_visible(cx, self.manage);
-        self.view.button(cx, ids!(create)).set_enabled(
-            cx,
-            !self.busy
-                && (!room || self.choice().is_some_and(|c| c.can_link) && self.data.projects_known)
-                && self.created.is_none(),
-        );
-        self.view
-            .button(cx, ids!(save))
-            .set_enabled(cx, !self.busy && self.choice().is_some_and(|c| c.can_edit));
-        self.view
-            .button(cx, ids!(created))
-            .set_visible(cx, self.created.is_some());
-        self.filtered = self
-            .data
-            .rooms
-            .iter()
-            .filter(|room| {
-                Some(room.room_id()) != self.parent.as_ref()
-                    && (room.display().to_lowercase().contains(&self.query)
-                        || room.room_id().as_str().to_lowercase().contains(&self.query))
-            })
-            .cloned()
-            .collect();
+        let name = self.view.text_input(cx, ids!(name)).text();
+        let topic = self.view.text_input(cx, ids!(topic)).text();
+        let name_valid = !name.trim().is_empty() && name.trim().chars().count() <= 255;
+        let topic_valid = topic.chars().count() <= 4096;
+        let invalid = name.trim().chars().count() > 255 || !topic_valid;
+        self.view.label(cx, ids!(name_error)).set_visible(cx, invalid);
+        self.view.label(cx, ids!(name_error)).set_text(cx, crate::i18n::tr(if !topic_valid {"The description is too long."} else {"Use a name of 255 characters or fewer."}));
+        self.view.button(cx, ids!(create)).set_enabled(cx, !self.busy && name_valid && topic_valid
+            && (!room || self.choice().is_some_and(|c| c.can_link) && self.data.projects_known)
+            && self.created.is_none());
+        self.view.button(cx, ids!(create)).set_text(cx, crate::i18n::tr(if self.busy {"Creating…"} else if room {"Create room"} else {"Create space"}));
+        for id in [id!(wizard_next),id!(wizard_back),id!(finish_setup),id!(create_child)] {
+            self.view.button(cx, &[id]).set_enabled(cx, !self.busy);
+        }
+        self.view.button(cx, ids!(finish_setup)).set_visible(cx, self.setup_pending);
+        self.view.button(cx, ids!(create_child)).set_visible(cx, self.created_space && !self.setup_pending);
+        self.view.button(cx, ids!(invite_created)).set_enabled(cx, !self.busy && !self.setup_pending);
+        self.view.button(cx, ids!(invite_created)).set_visible(cx, !self.setup_pending);
+        self.view.label(cx, ids!(created_name)).set_text(cx, &self.created.as_ref().map(|r|r.display()).unwrap_or_default());
+        self.view.label(cx, ids!(done_help)).set_text(cx, crate::i18n::tr(if self.setup_pending {
+            "The space or room exists. Finish its setup here; it will not be created again."
+        } else if self.created_space {
+            "Next, create a room in this space and invite its members. Space membership does not automatically join its rooms."
+        } else if self.setup_project.is_some() {
+            "Invite people, then open chat information → Members → Add Agent. The Agent owner must join this space and room. In a group, everyone must @ the Agent they want to answer."
+        } else {"Invite people to start chatting. This room belongs to an ordinary space; Agents are not enabled."}));
+        let mut badge = self.view.view(cx, ids!(done_badge));
+        let mut icon = self.view.icon(cx, ids!(done_icon));
+        if self.setup_pending {
+            script_apply_eval!(cx, badge, {draw_bg +: {color: mod.widgets.RINX_WARNING_BG}});
+            script_apply_eval!(cx, icon, {draw_icon +: {svg: mod.widgets.ICON_LINK color: mod.widgets.RINX_WARNING_FG}});
+        } else {
+            script_apply_eval!(cx, badge, {draw_bg +: {color: mod.widgets.RINX_SUCCESS_BG}});
+            script_apply_eval!(cx, icon, {draw_icon +: {svg: mod.widgets.ICON_CHECKMARK color: mod.widgets.RINX_SUCCESS_FG}});
+        }
+        self.view.view(cx, ids!(create_form)).set_visible(cx, !self.manage);
+        self.view.view(cx, ids!(manage_form)).set_visible(cx, self.manage);
+        self.view.button(cx, ids!(save)).set_enabled(cx, !self.busy && self.choice().is_some_and(|c| c.can_edit));
+        self.view.button(cx, ids!(created)).set_visible(cx, self.created.is_some());
+        self.filtered = self.data.rooms.iter().filter(|room| {
+            Some(room.room_id()) != self.parent.as_ref()
+                && (room.display().to_lowercase().contains(&self.query)
+                    || room.room_id().as_str().to_lowercase().contains(&self.query))
+        }).cloned().collect();
         self.view.redraw(cx);
     }
     fn load(&mut self, cx: &mut Cx) {
@@ -797,6 +962,7 @@ impl Widget for SpaceManagementPanel {
                         if created.is_some() {
                             self.created = created.clone();
                             self.wizard_step = 2;
+                            self.view.view(cx, ids!(create_form)).set_scroll_pos(cx, dvec2(0.0, 0.0));
                             self.setup_pending = *pending;
                         }
                         self.status(cx, message);
@@ -822,18 +988,21 @@ impl Widget for SpaceManagementPanel {
             return;
         }
         for (index,button) in [(0,id!(ordinary_kind)),(1,id!(agent_kind)),(2,id!(room_kind))] {
-            if self.view.button(cx,&[button]).clicked(actions) {
+            if self.view.navigation_bar_button(cx,&[button]).clicked(actions) {
                 self.view.drop_down(cx,ids!(kind)).set_selected_item(cx,index);
                 self.sync(cx);return;
             }
         }
         if self.view.button(cx, ids!(wizard_next)).clicked(actions) {
             self.wizard_step = 1;
+            self.view.view(cx, ids!(create_form)).set_scroll_pos(cx, dvec2(0.0, 0.0));
             self.sync(cx);
+            self.view.text_input(cx, ids!(name)).set_key_focus(cx);
             return;
         }
         if self.view.button(cx, ids!(wizard_back)).clicked(actions) {
             self.wizard_step = 0;
+            self.view.view(cx, ids!(create_form)).set_scroll_pos(cx, dvec2(0.0, 0.0));
             self.sync(cx);
             return;
         }
@@ -883,6 +1052,16 @@ impl Widget for SpaceManagementPanel {
                 .map(|s| s.name.room_id().clone());
             self.data.children.clear();
             self.load(cx);
+        }
+        if self.view.check_box(cx, ids!(public)).changed(actions) == Some(true) {
+            self.view.check_box(cx, ids!(encrypted)).set_active(cx, false, Animate::Yes);
+        }
+        if self.view.check_box(cx, ids!(encrypted)).changed(actions) == Some(true) {
+            self.view.check_box(cx, ids!(public)).set_active(cx, false, Animate::Yes);
+        }
+        if self.view.text_input(cx, ids!(name)).changed(actions).is_some()
+            || self.view.text_input(cx, ids!(topic)).changed(actions).is_some() {
+            self.sync(cx);
         }
         if let Some(query) = self.view.text_input(cx, ids!(search)).changed(actions) {
             self.query = query.to_lowercase();
@@ -1217,7 +1396,7 @@ impl SpaceManagementPanelRef {
                 inner.view.text_input(cx, ids!(name)).set_text(cx, "");
                 inner.view.text_input(cx, ids!(topic)).set_text(cx, "");
                 inner.view.text_input(cx, ids!(search)).set_text(cx, "");
-                inner.status(cx, "Create a room or space, or manage a joined space.");
+                inner.status(cx, "");
                 inner.load(cx);
                 modal.open(cx);
             }
@@ -1261,6 +1440,7 @@ mod tests {
     #[test]
     fn creation_wizard_explains_three_paths_and_requires_a_known_writable_space() {
         let (mut cx, mut panel) = panel();
+        panel.view.text_input(&mut cx, ids!(name)).set_text(&mut cx, "Team");
         for kind in 0..3 {
             panel
                 .view
