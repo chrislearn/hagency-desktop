@@ -14,7 +14,7 @@ version = "0.5.0"
 metadata.makepad-auto-version = "zqpv-Yj-K7WNVK2I8h5Okhho46Q="
 
 [dependencies]
-hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "d90c92fe7a792988cadd2f47b3bc338194eceb4f" }
+hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "779bceb5b500314a783e4ef4188066e6baa3cb1d" }
 octosense-theme-contract = { path = "crates/theme-contract", version = "0.1.0" }
 rinx-system-apps = { path = "crates/system-apps" }
 article-core = { path = "crates/article-core", features = ["l0"] }
@@ -149,7 +149,7 @@ reqwest = { version = "0.12", default-features = false, optional = true, feature
 
 [dev-dependencies]
 # Native writer fixtures must never acquire the user's installation authority.
-hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "d90c92fe7a792988cadd2f47b3bc338194eceb4f", features = ["test-support"] }
+hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "779bceb5b500314a783e4ef4188066e6baa3cb1d", features = ["test-support"] }
 
 [[example]]
 name = "article_editor_review"
@@ -568,4 +568,8 @@ required-features = ["palpo-instrument"]
 
 [[example]]
 name = "space_creation_review"
+required-features = ["onboarding-test-support"]
+
+[[example]]
+name = "agent_picker_review"
 required-features = ["onboarding-test-support"]

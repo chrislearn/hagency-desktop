@@ -157,18 +157,18 @@ script_mod! {
                     popup_menu: RobrixSettingsPopupMenu {width: 310 menu_item: RobrixSettingsPopupMenuItem {height: 36}}}
                 buttons_view := ModalButtonsRow {
                     close_agent_picker := RobrixNeutralIconButton {
-                        width: Fit{min: FitBound.Abs(120.0)} align: Align{x: 0.5 y: 0.5} padding: 12
+                        width: Fit{min: FitBound.Abs(120.0)} height: 44 align: Align{x: 0.5 y: 0.5} padding: 12
                         text: #(crate::i18n::tr("Cancel")) i18n_text: "Cancel"
                         draw_icon.svg: ICON_FORBIDDEN icon_walk: Walk{width: 16 height: 16 margin: Inset{left: -2 right: -1}}
                     }
                     invite_selected_agent := RobrixPositiveIconButton {
-                        width: Fit{min: FitBound.Abs(120.0)} align: Align{x: 0.5 y: 0.5} padding: 12
+                        width: Fit{min: FitBound.Abs(120.0)} height: 44 align: Align{x: 0.5 y: 0.5} padding: 12
                         text: #(crate::i18n::tr("Add agent")) i18n_text: "Add agent"
                         draw_icon.svg: ICON_ROBOT icon_walk: Walk{width: 16 height: 16 margin: Inset{left: -2 right: -1}}
                     }
                 }
                 agent_status := ModalBody {}
-                resume_agent_requests := RobrixNeutralIconButton {visible: false text: "Resume original request in Agents" height: 40 margin: Inset{top: 12} icon_walk: Walk{width: 0 height: 0}}
+                resume_agent_requests := RobrixNeutralIconButton {visible: false text: #(crate::i18n::tr("Resume original request in Agents")) i18n_text: "Resume original request in Agents" height: 40 margin: Inset{top: 12} icon_walk: Walk{width: 0 height: 0}}
             }
         }
     }
@@ -269,6 +269,33 @@ struct RoomAgentsLoaded {
     result: Result<serde_json::Value, String>,
 }
 #[derive(Debug)]
+struct RoomAgentsSlow {
+    owner: OwnedUserId, origin: String, epoch: u64, room_id: OwnedRoomId,
+    request: u64, binding: bool,
+}
+impl RoomAgentsSlow {
+    fn call(&self) -> RoomAgentsLoaded {
+        RoomAgentsLoaded {owner:self.owner.clone(),origin:self.origin.clone(),epoch:self.epoch,
+            room_id:self.room_id.clone(),request:self.request,binding:self.binding,result:Err(String::new())}
+    }
+}
+
+fn agent_binding_error(code: &str) -> &'static str {
+    match code {
+        "room_project_registration_required" => "To chat with Agents, use an Agent space. Open + → Create a space or room, choose Agent space, then create a room inside it.",
+        "room_join_required" | "room_membership_required" => "Join this room and its Agent space before adding an Agent.",
+        "service_invitation_denied" | "agent_service_invite_permission_required" => "The Hagency service needs permission to invite Agents. Ask a room administrator to allow it to invite members, then retry.",
+        "agent_service_banned" => "The Hagency service is banned from this room. Ask a room administrator to unban it, then retry.",
+        "matrix_permission_denied" => "You do not have permission to invite members to this room. Ask a room administrator to enable invitations.",
+        "agent_creation_denied" => "This space or room does not allow you to add Agents. Ask its owner to update the Agent permissions.",
+        "agent_command_recovery_required" => "An original binding request needs confirmation. Resume it in Agents.",
+        "sign_in_required" | "matrix_account_changed" => "Your account session changed. Reopen this room after signing in.",
+        "invalid_server_response" => "The server returned an invalid binding result. Retry to check the original request.",
+        "agent_binding_suspended" => "The Agent could not join this room. Check its membership and room permissions, then check the request again.",
+        _ => "Could not confirm the binding. Retry to check the original request; no duplicate Agent will be created.",
+    }
+}
+#[derive(Debug)]
 struct ChatInfoLoaded {
     owner: OwnedUserId,
     origin: String,
@@ -331,6 +358,9 @@ pub struct MobileChatInfo {
     #[rust] rendered_members: HashMap<WidgetUid, UserProfile>,
     #[rust] agent_request: u64,
     #[rust] agent_busy: bool,
+    #[rust] agent_added: bool,
+    #[rust] agent_pending: bool,
+    #[rust] agent_slow: bool,
     #[rust] agent_project: String,
     #[rust] agents: Vec<serde_json::Value>,
     #[rust] agent_command: Option<(String, String)>,
@@ -339,6 +369,8 @@ pub struct MobileChatInfo {
     #[rust] services_busy: bool,
     #[rust] services_request: u64,
     #[rust] services: Vec<serde_json::Value>,
+    #[cfg(feature = "onboarding-test-support")]
+    #[rust] review_mode: bool,
 }
 
 fn is_hagency_service(user: &matrix_sdk::ruma::UserId, owner: &matrix_sdk::ruma::UserId) -> bool {
@@ -481,6 +513,8 @@ impl MobileChatInfo {
     }
 
     fn pin_is_current(&self) -> bool {
+        #[cfg(feature = "onboarding-test-support")]
+        if self.review_mode {return get_client().is_none();}
         self.owner == current_user_id()
             && self.epoch == crate::account_session::epoch()
             && !crate::sliding_sync::account_changing()
@@ -507,9 +541,12 @@ impl MobileChatInfo {
         self.owner.as_ref()==Some(&loaded.owner) && self.origin==loaded.origin && self.epoch==loaded.epoch && self.request==loaded.request
             && self.room.as_ref().is_some_and(|room|room.room_id()==&loaded.room_id)
     }
-    fn agent_response_matches(&self, loaded: &RoomAgentsLoaded) -> bool {
+    fn agent_call_matches(&self, loaded: &RoomAgentsLoaded) -> bool {
         self.owner.as_ref() == Some(&loaded.owner) && self.origin == loaded.origin && self.epoch == loaded.epoch && self.agent_request == loaded.request
             && self.room.as_ref().is_some_and(|room| room.room_id() == &loaded.room_id)
+    }
+    fn agent_response_matches(&self, loaded: &RoomAgentsLoaded) -> bool {
+        self.agent_call_matches(loaded)
             && loaded.result.as_ref().map_or(true, |value| if loaded.binding {value["creation"]["binding"]["roomId"] == loaded.room_id.as_str()} else {value["roomId"] == loaded.room_id.as_str()})
     }
     fn close_agent_picker(&mut self, cx: &mut Cx) {
@@ -520,10 +557,65 @@ impl MobileChatInfo {
             self.view.redraw(cx);
         }
     }
+    fn show_agent_slow(&mut self, cx: &mut Cx, binding: bool) {
+        self.agent_slow=true;
+        self.view.label(cx,ids!(agent_status)).set_text(cx,crate::i18n::tr(if binding {
+            "Still waiting for the server. You can close this panel; the original request will continue."
+        } else {"Checking is taking longer than expected. You can close this panel and return later."}));
+        self.view.redraw(cx);
+    }
+    fn finish_agent_request(&mut self, cx: &mut Cx, loaded: &RoomAgentsLoaded) {
+        // A response for this exact call always releases its waiting state.
+        // A malformed/cross-room payload is an error, not an ignored completion.
+        self.agent_busy=false;
+        self.agent_slow=false;
+        self.agent_added=false;
+        self.agent_pending=false;
+        self.view.button(cx,ids!(resume_agent_requests)).set_visible(cx,false);
+        let result = if self.agent_response_matches(loaded) {loaded.result.clone()}
+            else {Err("invalid_server_response".into())};
+        let mut error = None;
+        let message = match &result {
+            Ok(value) if loaded.binding => match value["commandState"].as_str() {
+                Some("active") if value["creation"]["binding"]["state"] == "active" => {
+                    self.agent_added=true;
+                    "Agent added. In a group, @ the Agent to request a reply."
+                }
+                Some("pending") => {
+                    self.agent_pending=true;
+                    "The request is saved. The Agent is still joining. You can close this panel or check its status."
+                }
+                Some("suspended") => {error=Some("agent_binding_suspended");agent_binding_error("agent_binding_suspended")}
+                _ => {error=Some("invalid_server_response");agent_binding_error("invalid_server_response")}
+            },
+            Ok(value) => {
+                self.agent_project=value["projectId"].as_str().unwrap_or("").into();
+                self.agents=value["agents"].as_array().map(|rows|rows.iter().filter(|a|a["state"] == "active").cloned().collect()).unwrap_or_default();
+                let labels=std::iter::once(crate::i18n::tr("Choose my Agent").to_owned()).chain(self.agents.iter().map(|a|a["displayName"].as_str().filter(|name|!name.is_empty()).unwrap_or("Agent").to_owned())).collect();
+                self.view.drop_down(cx,ids!(my_agents)).set_labels(cx,labels);
+                self.view.drop_down(cx,ids!(my_agents)).set_selected_item(cx,0);
+                if self.agents.is_empty() {"No active Agents owned by you are available."}
+                else {"Choose an Agent you own to bind to this Room."}
+            },
+            Err(code) => {error=Some(code.as_str());agent_binding_error(code)},
+        };
+        let mut label=self.view.label(cx,ids!(agent_status));
+        label.set_text(cx,crate::i18n::tr(message));
+        if error.is_some() {script_apply_eval!(cx,label,{draw_text +: {color: mod.widgets.RINX_DANGER_FG}});}
+        else if self.agent_added {script_apply_eval!(cx,label,{draw_text +: {color: mod.widgets.RINX_SUCCESS_FG}});}
+        else {script_apply_eval!(cx,label,{draw_text +: {color: mod.widgets.RINX_MUTED}});}
+        self.view.button(cx,ids!(resume_agent_requests)).set_visible(cx,error==Some("agent_command_recovery_required"));
+        self.view.redraw(cx);
+    }
     fn request_agents(&mut self, cx: &mut Cx, binding: bool) {
         if self.agent_busy || !self.pin_is_current() {return;}
         let (Some(owner),Some(room)) = (self.owner.clone(),self.room.clone()) else {return;};
-        let service = match crate::hagency::backend::Service::for_current() {Ok(service)=>service,Err(_)=>return};
+        let service = crate::hagency::backend::Service::for_current().ok();
+        #[cfg(feature = "onboarding-test-support")]
+        let offline_review = self.review_mode && get_client().is_none();
+        #[cfg(not(feature = "onboarding-test-support"))]
+        let offline_review = false;
+        if service.is_none() && !offline_review {return;}
         let command = if binding {
             let Some(index) = self.view.drop_down(cx,ids!(my_agents)).selected_item().checked_sub(1) else {return;};
             let Some(agent) = self.agents.get(index).and_then(|a| a["id"].as_str()) else {return;};
@@ -539,16 +631,33 @@ impl MobileChatInfo {
         let epoch=self.epoch;
         let room_id=room.room_id().clone();
         self.agent_busy=true;
+        self.agent_slow=false;
+        self.agent_added=false;
+        self.agent_pending=false;
         self.tab=InfoTab::Members;
         self.agent_picker_open=true;
         self.view.label(cx, ids!(agent_room)).set_text(cx, &room.to_string());
         self.view.modal(cx, ids!(agent_picker_modal)).open(cx);
-        self.view.label(cx,ids!(agent_status)).set_text(cx,if binding {"Adding Agent to this Room…"} else {"Checking this Room and your Agents…"});
-        if !binding {self.view.button(cx, ids!(resume_agent_requests)).set_visible(cx, false);self.agents.clear(); self.agent_project.clear(); self.view.drop_down(cx,ids!(my_agents)).set_labels(cx,vec!["Choose my Agent".into()]);}
-        spawn_async_task(async move {
-            let result=if let Some(command)=command {service.execute(command).await} else {service.agents_for_registered_room(room_id.as_str()).await};
-            Cx::post_action(RoomAgentsLoaded {owner,origin,epoch,room_id,request,binding,result});
-        });
+        self.view.label(cx,ids!(agent_status)).set_text(cx,crate::i18n::tr(if binding {"Adding Agent to this Room…"} else {"Checking this Room and your Agents…"}));
+        let mut status = self.view.label(cx,ids!(agent_status));
+        script_apply_eval!(cx,status,{draw_text +: {color: mod.widgets.RINX_MUTED}});
+        self.view.button(cx,ids!(resume_agent_requests)).set_visible(cx,false);
+        if !binding {self.view.button(cx, ids!(resume_agent_requests)).set_visible(cx, false);self.agents.clear(); self.agent_project.clear(); self.view.drop_down(cx,ids!(my_agents)).set_labels(cx,vec![crate::i18n::tr("Choose my Agent").into()]);}
+        if let Some(service) = service {spawn_async_task(async move {
+            let future = async {
+                if let Some(command)=command {service.bind_agent_to_room(command).await}
+                else {service.agents_for_registered_room(room_id.as_str()).await}
+            };
+            tokio::pin!(future);
+            let result = tokio::select! {
+                result = &mut future => result,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {
+                    Cx::post_action(RoomAgentsSlow {owner:owner.clone(),origin:origin.clone(),epoch,room_id:room_id.clone(),request,binding});
+                    future.await
+                }
+            };
+            Cx::post_action(RoomAgentsLoaded {owner,origin,epoch,room_id:room_id.clone(),request,binding,result});
+        });}
         self.view.redraw(cx);
     }
     fn clear(&mut self) {
@@ -566,6 +675,9 @@ impl MobileChatInfo {
         self.rendered_rows.clear(); self.rendered_members.clear();
         self.agent_request = 0;
         self.agent_busy = false;
+        self.agent_added = false;
+        self.agent_pending = false;
+        self.agent_slow = false;
         self.agent_project.clear();
         self.agents.clear();
         self.agent_command = None;
@@ -625,33 +737,15 @@ impl Widget for MobileChatInfo {
                 ) {
                     self.clear();
                 }
+                if let Some(slow) = action.downcast_ref::<RoomAgentsSlow>() {
+                    let call = slow.call();
+                    if self.pin_is_current() && self.agent_call_matches(&call) && self.agent_busy {
+                        self.show_agent_slow(cx, slow.binding);
+                    }
+                }
                 if let Some(loaded)=action.downcast_ref::<RoomAgentsLoaded>() {
-                    if self.pin_is_current() && self.agent_response_matches(loaded) {
-                        self.agent_busy=false;
-                        match &loaded.result {
-                            Ok(value) if loaded.binding=> {
-                                self.view.label(cx,ids!(agent_status)).set_text(cx,if value["commandState"] == "pending" {crate::i18n::tr("Agent binding saved. Joining this room…")} else {crate::i18n::tr("Agent added. In a group, @ the Agent to request a reply.")});
-                            }
-                            Ok(value)=> {
-                                self.agent_project=value["projectId"].as_str().unwrap_or("").into();
-                                self.agents=value["agents"].as_array().map(|rows|rows.iter().filter(|a|a["state"] == "active").cloned().collect()).unwrap_or_default();
-                                let labels=std::iter::once("Choose my Agent".to_owned()).chain(self.agents.iter().map(|a|a["displayName"].as_str().filter(|name|!name.is_empty()).unwrap_or("Agent").to_owned())).collect();
-                                self.view.drop_down(cx,ids!(my_agents)).set_labels(cx,labels);
-                                self.view.drop_down(cx,ids!(my_agents)).set_selected_item(cx,0);
-                                self.view.label(cx,ids!(agent_status)).set_text(cx,if self.agents.is_empty() {"No active Agents owned by you are available."} else {"Choose an Agent you own to bind to this Room."});
-                            }
-                            Err(error)=> {
-                                self.view.label(cx,ids!(agent_status)).set_text(cx,match error.as_str() {
-                                    "room_project_registration_required"=>crate::i18n::tr("To chat with Agents, use an Agent space. Open + → Create a space or room, choose Agent space, then create a room inside it."),
-                                    "room_join_required"=>"Join this Room before adding an Agent.",
-                                    "agent_command_recovery_required"=>"An original binding request needs confirmation. Resume it in Agents.",
-                                    _ if loaded.binding=>"Could not confirm the binding. Retry the same request, or resume its saved request in Agents.",
-                                    _=>"Could not verify this Room and your Agents. Retry when connected.",
-                                });
-                                self.view.button(cx,ids!(resume_agent_requests)).set_visible(cx,loaded.binding);
-                            }
-                        }
-                        self.view.redraw(cx);
+                    if self.pin_is_current() && self.agent_call_matches(loaded) {
+                        self.finish_agent_request(cx, loaded);
                     }
                 }
                 if let Some(loaded) = action.downcast_ref::<MemberOwnershipLoaded>() {
@@ -725,7 +819,15 @@ impl Widget for MobileChatInfo {
                 self.close_agent_picker(cx);
                 return;
             }
-            if self.tab == InfoTab::Members && self.view.button(cx,ids!(invite_my_agent)).clicked(actions) {self.request_agents(cx,false);return;}
+            if self.view.drop_down(cx,ids!(my_agents)).changed(actions).is_some() && !self.agent_busy {
+                self.agent_added=false;self.agent_pending=false;
+                self.view.label(cx,ids!(agent_status)).set_text(cx,crate::i18n::tr("Choose an Agent you own to bind to this Room."));
+                self.view.redraw(cx);
+            }
+            if self.tab == InfoTab::Members && self.view.button(cx,ids!(invite_my_agent)).clicked(actions) {
+                if self.agent_busy {self.agent_picker_open=true;self.view.modal(cx,ids!(agent_picker_modal)).open(cx);self.view.redraw(cx);}
+                else {self.request_agents(cx,false);}return;
+            }
             if self.tab == InfoTab::Members && self.view.button(cx,ids!(invite_selected_agent)).clicked(actions) {self.request_agents(cx,true);return;}
             if self.view.button(cx,ids!(resume_agent_requests)).clicked(actions) {self.close_agent_picker(cx);cx.action(crate::hagency::ui::HagencyAction::OpenAgents);return;}
             if self.view.button(cx, ids!(retry)).clicked(actions) {
@@ -802,9 +904,12 @@ impl Widget for MobileChatInfo {
             if selected {script_apply_eval!(cx, button, {draw_bg +: {color: mod.widgets.RINX_SELECTED} draw_text +: {color: mod.widgets.RINX_ACCENT}});}
             else {script_apply_eval!(cx, button, {draw_bg +: {color: mod.widgets.RINX_SURFACE} draw_text +: {color: mod.widgets.RINX_INK}});}
         }
-        self.view.button(cx,ids!(invite_my_agent)).set_enabled(cx,self.owner.is_some() && !self.agent_busy);
+        self.view.button(cx,ids!(invite_my_agent)).set_enabled(cx,self.owner.is_some());
         let selected=self.view.drop_down(cx,ids!(my_agents)).selected_item().checked_sub(1).is_some_and(|i|i<self.agents.len());
-        self.view.button(cx,ids!(invite_selected_agent)).set_enabled(cx,selected && !self.agent_project.is_empty() && !self.agent_busy);
+        self.view.button(cx,ids!(invite_selected_agent)).set_enabled(cx,selected && !self.agent_project.is_empty() && !self.agent_busy && !self.agent_added);
+        self.view.drop_down(cx,ids!(my_agents)).set_disabled(cx,self.agent_busy);
+        self.view.button(cx,ids!(invite_selected_agent)).set_text(cx,crate::i18n::tr(if self.agent_added {"Added"} else if self.agent_pending {"Check status"} else {"Add agent"}));
+        self.view.button(cx,ids!(close_agent_picker)).set_text(cx,crate::i18n::tr(if self.agent_added {"Done"} else {"Close"}));
         self.view.label(cx, ids!(status)).set_text(cx, &self.status);
         self.view
             .label(cx, ids!(status))
@@ -898,6 +1003,34 @@ impl Widget for MobileChatInfo {
 }
 
 impl MobileChatInfoRef {
+    /// Isolated native UX fixtures: no signed-in client or network commands.
+    #[cfg(feature = "onboarding-test-support")]
+    pub fn review_agent_picker(&self, cx: &mut Cx, scenario: &str) {
+        assert!(get_client().is_none(), "Agent picker review requires an offline profile");
+        let Some(mut panel) = self.borrow_mut() else {return;};
+        panel.review_mode=true;
+        panel.owner=Some("@review:example.invalid".try_into().unwrap());
+        panel.origin="https://example.invalid/".into();
+        let room: OwnedRoomId="!review:example.invalid".try_into().unwrap();
+        panel.room=Some(RoomNameId::new(matrix_sdk::RoomDisplayName::Named("Team room".into()),room.clone()));
+        panel.tab=InfoTab::Members;
+        panel.agent_picker_open=true;
+        panel.view.modal(cx,ids!(agent_picker_modal)).open(cx);
+        panel.view.label(cx,ids!(agent_room)).set_text(cx,"Team room");
+        if scenario=="slow" {panel.show_agent_slow(cx,true);return;}
+        let result=match scenario {
+            "ready" => Ok(serde_json::json!({"roomId":room,"projectId":"review-project","agents":[{"id":"review-agent","displayName":"小白菜","state":"active"}]})),
+            "success" => Ok(serde_json::json!({"commandState":"active","creation":{"binding":{"roomId":room,"state":"active"}}})),
+            "pending" => Ok(serde_json::json!({"commandState":"pending","creation":{"binding":{"roomId":room,"state":"pending"}}})),
+            "malformed" => Ok(serde_json::json!({"commandState":"active"})),
+            error => Err(error.to_owned()),
+        };
+        let loaded=RoomAgentsLoaded {owner:panel.owner.clone().unwrap(),origin:panel.origin.clone(),epoch:panel.epoch,
+            room_id:room,request:panel.agent_request,binding:scenario!="ready",result};
+        panel.finish_agent_request(cx,&loaded);
+        if scenario=="ready" {panel.view.drop_down(cx,ids!(my_agents)).set_selected_item(cx,1);}
+        panel.view.redraw(cx);
+    }
     #[cfg(test)]
     pub(crate) fn displayed_room_id(&self) -> Option<OwnedRoomId> {
         self.borrow()
@@ -1151,6 +1284,22 @@ mod information_target_tests {
         result.result=Ok(serde_json::json!({"roomId":"!other:server"}));assert!(!info.agent_response_matches(&result));
         result.binding=true;result.result=Ok(serde_json::json!({"creation":{"binding":{"roomId":"!target:server"}}}));assert!(info.agent_response_matches(&result));
         result.result=Ok(serde_json::json!({"creation":{"binding":{"roomId":"!other:server"}}}));assert!(!info.agent_response_matches(&result));
+        assert!(info.agent_call_matches(&result));
+        info.agent_busy=true;
+        info.finish_agent_request(&mut cx,&result);
+        assert!(!info.agent_busy, "a malformed completion must release its exact call");
+        assert!(!info.agent_added);
+        assert!(info.view.label(&mut cx,ids!(agent_status)).text().contains("invalid binding result"));
+        result.result=Ok(serde_json::json!({"commandState":"pending","creation":{"binding":{"roomId":"!target:server","state":"pending"}}}));
+        info.finish_agent_request(&mut cx,&result);
+        assert!(info.agent_pending && !info.agent_added && !info.agent_busy);
+        result.result=Ok(serde_json::json!({"commandState":"active","creation":{"binding":{"roomId":"!target:server","state":"active"}}}));
+        info.finish_agent_request(&mut cx,&result);
+        assert!(info.agent_added && !info.agent_pending && !info.agent_busy);
+        result.result=Err("agent_service_invite_permission_required".into());
+        info.finish_agent_request(&mut cx,&result);
+        assert!(!info.agent_added && !info.agent_busy);
+        assert!(info.view.label(&mut cx,ids!(agent_status)).text().contains("permission to invite"));
         result.result=Err("offline".into());assert!(info.agent_response_matches(&result));
         result.epoch=3;assert!(!info.agent_response_matches(&result));result.epoch=4;
         result.origin="https://other/".into();assert!(!info.agent_response_matches(&result));result.origin="https://server/".into();

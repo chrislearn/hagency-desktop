@@ -8,6 +8,18 @@ use std::{
     sync::{Arc, LazyLock, Mutex, Weak},
 };
 
+fn matching_binding_recovery(command: &Command, saved: &Value) -> Option<Command> {
+    let Command::BindAgent { agent_id, input } = command else {return None;};
+    let mut matches = saved["commands"].as_array()?.iter().filter(|record|
+        record["operation"] == "agent.bind" && record["agentId"] == *agent_id
+        && record["input"]["projectId"] == input["projectId"]
+        && record["input"]["roomId"] == input["roomId"]
+        && matches!(record["state"].as_str(), Some("unknown" | "pending")));
+    let id = matches.next()?["id"].as_str()?.to_owned();
+    if matches.next().is_some() {return None;}
+    Some(Command::ResumeAgentCommand { id })
+}
+
 /// A UI waiting deadline may detach only these reads. The request itself must
 /// keep running: even a first read bootstraps owner authorization and a device.
 /// Never extend this list to actions that create, resume, save or run anything.
@@ -529,6 +541,27 @@ impl Service {
         }
         result
     }
+    /// A picker retry recovers the exact saved intent, including after reopening
+    /// the panel. Pending joins are checked for a bounded period; mutation
+    /// futures are never cancelled by the UI's waiting deadline.
+    pub async fn bind_agent_to_room(&self, mut command: Command) -> Result<Value, String> {
+        let original = command.clone();
+        let mut result = self.execute(command.clone()).await;
+        if result.as_ref().err().is_some_and(|e| e == "agent_command_recovery_required") {
+            let saved = self.execute(Command::AgentCommands).await?;
+            command = matching_binding_recovery(&original, &saved)
+                .ok_or("agent_command_recovery_required")?;
+            result = self.execute(command.clone()).await;
+        }
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        while result.as_ref().is_ok_and(|value| value["commandState"] == "pending")
+            && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            self.check()?;
+            result = self.execute(command.clone()).await;
+        }
+        result
+    }
     async fn native_owner(&self) -> Result<NativeOwner, String> {
         let native = {
             let mut native = self.0.native.lock().await;
@@ -744,5 +777,25 @@ mod tests {
             Command::Local {agent_id:"a".into(),action:LocalAction::Runtime,input:Some(serde_json::json!({})),binding_id:None,requester:None}] {
             assert!(!management_read(&command), "{command:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod binding_recovery_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn binding_retry_recovers_only_the_exact_agent_room_and_project() {
+        let original = Command::BindAgent {agent_id:"a".into(),input:json!({"projectId":"p","roomId":"!r:s","idempotencyKey":"new"})};
+        let record = json!({"operation":"agent.bind","agentId":"a","id":"original-journal","state":"unknown","input":{"projectId":"p","roomId":"!r:s","idempotencyKey":"original"}});
+        let saved = json!({"commands":[record.clone()]});
+        assert!(matches!(matching_binding_recovery(&original,&saved),Some(Command::ResumeAgentCommand{id}) if id=="original-journal"));
+        for field in ["projectId","roomId"] {
+            let mut foreign=record.clone();foreign["input"][field]=json!("different");
+            assert!(matching_binding_recovery(&original,&json!({"commands":[foreign]})).is_none());
+        }
+        let mut foreign=record.clone();foreign["agentId"]=json!("other");
+        assert!(matching_binding_recovery(&original,&json!({"commands":[foreign]})).is_none());
+        assert!(matching_binding_recovery(&original,&json!({"commands":[record.clone(),record]})).is_none());
     }
 }
