@@ -775,7 +775,6 @@ impl HomeScreen {
             })
         });
         let rooms = self.view.dock(cx, ids!(dock)).splitter_position(id!(root))
-            .filter(|width| *width > 0.0)
             .unwrap_or(ROOMS_DEFAULT);
         let covers = side.prepare(cx, size.x - rail - inset, rooms, desktop, saved_width);
         // Only the desktop page beside the left bar gives way to an overlay;

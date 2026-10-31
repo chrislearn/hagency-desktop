@@ -304,6 +304,10 @@ impl Widget for RoomsSideBar {
     }
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
+        let collapsed=crate::home::home_screen::effective_is_desktop(cx)
+            && cx.peek_walk_turtle(walk).size.x <= 0.5;
+        self.view.view(cx,ids!(Desktop)).set_visible(cx,!collapsed);
+        if collapsed {return DrawStep::done();}
         // The desktop layout has no spaces tree (the rail lists spaces instead).
         let spaces = cx.global::<ChatsViewState>().spaces
             && !crate::home::home_screen::effective_is_desktop(cx);

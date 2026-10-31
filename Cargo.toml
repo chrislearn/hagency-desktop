@@ -577,3 +577,7 @@ required-features = ["onboarding-test-support"]
 [[example]]
 name = "member_invite_review"
 required-features = ["onboarding-test-support"]
+
+[[example]]
+name = "rooms_collapse_review"
+required-features = ["onboarding-test-support"]

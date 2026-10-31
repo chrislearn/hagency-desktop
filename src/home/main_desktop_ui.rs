@@ -158,6 +158,32 @@ impl Widget for MainDesktopUI {
 }
 
 impl MainDesktopUI {
+    /// The root pane contains the room browser. Below a usable width it snaps
+    /// shut instead of inheriting Dock's generic 50-point minimum sliver.
+    fn normalize_rooms_width(&mut self, cx: &mut Cx, align: SplitterAlign, total: f64, save: bool) {
+        let width = match align {
+            SplitterAlign::FromA(width) => width,
+            SplitterAlign::FromB(width) => total - width,
+            SplitterAlign::Weighted(weight) => total * weight,
+        };
+        if !width.is_finite() || total <= 0.0 {return;}
+        let snapped = if width < 160.0 {0.0} else {width.max(220.0)};
+        if (snapped - width).abs() > 0.5 {
+            self.view.dock(cx,ids!(dock)).set_splitter_align(cx,id!(root),SplitterAlign::FromA(snapped),save);
+            self.view.redraw(cx);
+        }
+    }
+
+    fn reveal_rooms(&mut self, cx: &mut Cx) {
+        let dock=self.view.dock(cx,ids!(dock));
+        let collapsed=matches!(dock.clone_state().and_then(|items|items.get(&id!(root)).cloned()),Some(DockItem::Splitter {align:SplitterAlign::FromA(width),..}) if width < 160.0);
+        if collapsed {
+            dock.set_splitter_align(cx,id!(root),SplitterAlign::FromA(300.0),true);
+            self.view.redraw(cx);
+            cx.action(MainDesktopUiAction::SaveDockIntoAppState);
+        }
+    }
+
     /// Moves or adds the given room the the end of the `room_order`, the most recent spot.
     fn mark_room_as_recent(&mut self, room: &SelectedRoom) {
         self.room_order.retain(|sr| sr != room);
@@ -514,6 +540,12 @@ impl MainDesktopUI {
         self.open_rooms = open_rooms;
 
         dock.load_state(cx, dock_items);
+        if let Some(DockItem::Splitter {align,axis:SplitterAxis::Horizontal,..}) = dock.clone_state().and_then(|items|items.get(&id!(root)).cloned()) {
+            // Also repair a narrow pane saved by an earlier build. Its chat
+            // tabs and selection remain intact.
+            let width=dock.area().rect(cx).size.x;
+            self.normalize_rooms_width(cx,align,width,true);
+        }
         // Lazily populate the dock content to avoid initializing tabs that aren't visible.
         self.init_all_visible_tabs(cx);
 
@@ -619,10 +651,12 @@ impl WidgetMatchEvent for MainDesktopUI {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions, scope: &mut Scope) {
         let mut should_save_dock_action: bool = false;
         for action in actions {
+            if matches!(action.downcast_ref(),Some(NavigationBarAction::GoToHome)) {self.reveal_rooms(cx);}
             if matches!(action.downcast_ref(), Some(MainDesktopUiAction::ShowChats)) {
                 if self.selected_space.is_some() {
                     self.switch_dock_to_space(cx, scope.data.get_mut::<AppState>().unwrap(), None);
                 }
+                self.reveal_rooms(cx);
                 self.select_room(cx, self.room_order.last().cloned());
                 continue;
             }
@@ -679,6 +713,7 @@ impl WidgetMatchEvent for MainDesktopUI {
             // If the currently-selected space has been changed, we must handle that
             // by switching the dock to show the layout for another space.
             if let Some(NavigationBarAction::TabSelected(tab)) = action.downcast_ref() {
+                if matches!(tab,SelectedTab::Home | SelectedTab::Space {..}) {self.reveal_rooms(cx);}
                 let new_space = match (tab, self.selected_space.as_ref()) {
                     (SelectedTab::Space { space_name_id }, space_id_opt)
                         if space_id_opt.is_none_or(|id| id != space_name_id.room_id()) => 
@@ -690,12 +725,19 @@ impl WidgetMatchEvent for MainDesktopUI {
                 };
                 let app_state = scope.data.get_mut::<AppState>().unwrap();
                 self.switch_dock_to_space(cx, app_state, new_space);
+                self.reveal_rooms(cx);
                 self.redraw(cx);
                 continue;
             }
 
             // Handle actions emitted by the dock within the MainDesktopUI
             match widget_action.cast() {
+                DockAction::SplitPanelChanged {panel_id,axis:SplitterAxis::Horizontal,align} if panel_id==id!(root)
+                    && widget_action.is_some_and(|action|action.widget_uid == self.view.dock(cx,ids!(dock)).widget_uid()) => {
+                    let width=self.view.dock(cx,ids!(dock)).area().rect(cx).size.x;
+                    self.normalize_rooms_width(cx,align,width,true);
+                    should_save_dock_action=true;
+                }
                 // Whenever a tab (except for the home_tab) is pressed, notify the app state.
                 DockAction::TabWasPressed(tab_id) => {
                     if tab_id == id!(home_tab) {
