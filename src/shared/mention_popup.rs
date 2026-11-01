@@ -565,13 +565,14 @@ fn build_row(cx: &mut Cx, list: &mut PortalList, index: usize, item: &MentionIte
     match item {
         MentionItem::User { user_id, display_name, avatar_url } => {
             let new_widget = list.item(cx, index, id!(row));
-            new_widget.label(cx, ids!(info.title)).set_text(cx, display_name);
-            new_widget.label(cx, ids!(info.subtitle)).set_text(cx, user_id.as_str());
+            new_widget.label(cx, ids!(info.title)).set_text(cx, super::mention_text::user_label(user_id, Some(display_name)));
+            new_widget.label(cx, ids!(info.subtitle)).set_visible(cx, false);
             *fully_drawn &= set_user_avatar(cx, &new_widget, user_id, avatar_url.as_ref(), display_name);
             new_widget
         }
         MentionItem::NotifyRoom { room_name } => {
             let new_widget = list.item(cx, index, id!(row));
+            new_widget.label(cx, ids!(info.subtitle)).set_visible(cx, true);
             new_widget.label(cx, ids!(info.title)).set_text(cx, "Notify the entire room");
             new_widget.label(cx, ids!(info.subtitle)).set_text(cx, "@room");
             let first = room_name.chars().next().map(|c| c.to_string()).unwrap_or_else(|| "@".into());
@@ -580,6 +581,7 @@ fn build_row(cx: &mut Cx, list: &mut PortalList, index: usize, item: &MentionIte
         }
         MentionItem::Room(candidate) => {
             let new_widget = list.item(cx, index, id!(row));
+            new_widget.label(cx, ids!(info.subtitle)).set_visible(cx, true);
             let name = if candidate.is_space {
                 format!("[Space] {}", candidate.room_name_id)
             } else {

@@ -250,7 +250,7 @@ impl Widget for EditingPane {
             if self.button(cx, ids!(accept_button)).clicked(actions)
                 || edit_text_input.returned(actions).is_some()
             {
-                let edited_text = edit_text_input.text().trim().to_string();
+                let edited_text = mentionable_input.markdown_text().trim().to_string();
                 let edited_content = match info.event_tl_item.content() {
                     TimelineItemContent::MsgLike(msg_like_content) => {
                         match &msg_like_content.kind {

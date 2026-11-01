@@ -478,11 +478,16 @@ impl MatrixLinkPill {
                 user_id.clone(),
                 None,
                 true,
-                |profile, _| { (profile.displayable_name().to_owned(), profile.avatar_state.clone()) }
+                |profile, _| { (profile.username.clone(), profile.avatar_state.clone()) }
             );
             let profile_found = profile_pair.is_some();
-            let (name, avatar_state) = profile_pair
-                .unwrap_or_else(|| (user_id.to_string(), AvatarState::Unknown));
+            let (profile_name, avatar_state) = profile_pair.unwrap_or((None, AvatarState::Unknown));
+            // Keep the room-specific name carried by the mention while profile
+            // data loads; never flash the full ID in its place.
+            let label = if link_text.trim().is_empty() || link_text == user_id.as_str() || link_text.starts_with("https://matrix.to/") {
+                profile_name.as_deref()
+            } else { Some(link_text) };
+            let name = super::mention_text::user_label(user_id, label).to_owned();
             self.set_text(cx, &name);
             let avatar_final = self.populate_avatar(cx, &avatar_state, &name);
             self.is_waiting_for_data = !(profile_found && avatar_final);

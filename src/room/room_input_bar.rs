@@ -628,7 +628,7 @@ impl RoomInputBar {
     fn apply_replacement(&mut self, cx: &mut Cx, replacement: Replacement) {
         let mentionable = self.mentionable_text_input(cx, ids!(mentionable_text_input));
         let undo = if replacement.continues { text_input::UndoGroup::Extend } else { text_input::UndoGroup::New };
-        match mentionable.text_input_ref().replace_range(cx, replacement.range, &replacement.text, undo) {
+        match mentionable.replace_range(cx, replacement.range, &replacement.text, undo) {
             Ok(()) => {
                 if let Some(speech) = self.speech.as_mut() {
                     speech.dictation.applied();
@@ -1206,7 +1206,7 @@ impl RoomInputBar {
                     other => other.body().to_owned(),
                 };
                 let mentionable_text_input = self.mentionable_text_input(cx, ids!(mentionable_text_input));
-                let existing = mentionable_text_input.text();
+                let existing = mentionable_text_input.markdown_text();
                 let new_text = if existing.trim().is_empty() {
                     restored
                 } else {
@@ -1233,7 +1233,7 @@ impl RoomInputBar {
         // A leading slash would run as a command when the person sends it.
         let draft = if draft.starts_with('/') { format!("/{draft}") } else { draft };
         let input = self.mentionable_text_input(cx, ids!(mentionable_text_input));
-        let existing = input.text();
+        let existing = input.markdown_text();
         let text = if existing.trim().is_empty() { draft } else { format!("{existing}\n{draft}") };
         input.set_text(cx, &text);
         self.enable_send_message_button(cx, true);

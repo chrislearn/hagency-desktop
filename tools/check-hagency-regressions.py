@@ -65,6 +65,7 @@ def main():
         ("chat-information", "home::mobile_chat_info"),
         ("agent-invitations", "hagency::backend::binding_recovery_tests"),
         ("modal-navigation", "app::back_navigation_tests"),
+        ("compact-mentions", "shared::mention"),
         ("chat-information-layout", "desktop_information_columns_tests"),
         ("chat-layout", "home::main_desktop_ui::chat_layout_tests"),
         ("miniapp-dock", "mini_apps_side_tests"),

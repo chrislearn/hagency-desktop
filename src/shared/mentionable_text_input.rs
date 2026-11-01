@@ -21,8 +21,9 @@ use crate::{
     home::rooms_list::RoomsListRef,
     shared::{mention_popup::{MentionItem, MentionablePopupRef}, slash_commands::{self, SlashCommandOutcome}},
     sliding_sync::{submit_async_request, MatrixRequest},
-    utils::{self, MatchQuality},
+    utils::MatchQuality,
 };
+use super::mention_text::{HistoryMove, MentionText, mention_label, user_label};
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -67,11 +68,16 @@ pub struct MentionableTextInput {
     /// Mentions may have been deleted after adding them, so we have to check for them
     /// before sending the message in the textinput.
     #[rust] possible_mentions: Mentions,
+    #[rust] mention_text: MentionText,
+    #[cfg(feature = "onboarding-test-support")]
+    #[rust] review_members: Option<Vec<MentionItem>>,
 }
 
 impl Widget for MentionableTextInput {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         let uid = self.widget_uid();
+        // External edits (dictation, toolbar insertions) use TextInput directly.
+        self.sync_mentions();
 
         let popup_ref = self.popup_ref(cx);
         // Handle events/actions that are relevant to a currently-open mention popup.
@@ -138,7 +144,16 @@ impl Widget for MentionableTextInput {
             }
         }
 
+        let selection = self.text_input_ref().selection();
+        let movement = match event {
+            Event::KeyDown(key) if key.key_code == KeyCode::KeyZ && key.modifiers.is_primary() => {
+                if key.modifiers.shift { HistoryMove::Redo } else { HistoryMove::Undo }
+            }
+            _ => HistoryMove::Edit,
+        };
+        let forward_delete = matches!(event, Event::KeyDown(key) if key.key_code == KeyCode::Delete);
         self.view.handle_event(cx, event, scope);
+        self.mention_text.sync(&self.text_input_ref().text(), Some(selection.start().index..selection.end().index), forward_delete, movement);
 
         if let Event::Actions(actions) = event {
             for action in actions {
@@ -175,10 +190,11 @@ impl Widget for MentionableTextInput {
     }
 
     fn set_text(&mut self, cx: &mut Cx, text: &str) {
-        self.text_input_ref().set_text(cx, text);
-        if text.trim().is_empty() {
-            self.possible_mentions = Mentions::new();
-        }
+        self.close_popup(cx);
+        self.mention_text.reset(text);
+        self.text_input_ref().set_text(cx, self.mention_text.text());
+        self.possible_mentions.user_ids = self.mention_text.users().cloned().collect();
+        self.possible_mentions.room &= contains_room_mention(text);
         self.redraw(cx);
     }
 
@@ -188,6 +204,10 @@ impl Widget for MentionableTextInput {
 }
 
 impl MentionableTextInput {
+    fn sync_mentions(&mut self) {
+        self.mention_text.sync(&self.text_input_ref().text(), None, false, HistoryMove::Edit);
+    }
+
     fn text_input_ref(&self) -> TextInputRef {
         self.child_by_path(ids!(text_input)).as_text_input()
     }
@@ -253,6 +273,17 @@ impl MentionableTextInput {
     fn match_members(&mut self, cx: &mut Cx, popup_ref: &MentionablePopupRef, query: &str) {
         let uid = self.widget_uid();
         self.request_id = self.request_id.wrapping_add(1);
+        #[cfg(feature = "onboarding-test-support")]
+        if let Some(members) = &self.review_members {
+            assert!(crate::sliding_sync::get_client().is_none());
+            let query = query.to_lowercase();
+            let items = members.iter().filter(|m| match m {
+                MentionItem::User {user_id, display_name, ..} => user_match_priority(&display_name.to_lowercase(), &user_id.localpart().to_lowercase(), &query).is_some(),
+                _ => false,
+            }).cloned().collect();
+            popup_ref.set_results(cx, uid, Arc::new(items), false, TriggerKind::User.empty_message());
+            return;
+        }
         // Show the loading spinner while we wait for the member list / ranking.
         popup_ref.set_results(cx, uid, Arc::new(Vec::new()), true, TriggerKind::User.empty_message());
 
@@ -299,8 +330,7 @@ impl MentionableTextInput {
 
         let text_to_insert = match &item {
             MentionItem::User { user_id, display_name, .. } => {
-                self.possible_mentions.user_ids.insert(user_id.clone());
-                format!("[{}]({}) ", display_name, user_id.matrix_to_uri())
+                format!("{} ", mention_label(user_id, display_name))
             }
             MentionItem::NotifyRoom { .. } => {
                 self.possible_mentions.room = true;
@@ -327,9 +357,14 @@ impl MentionableTextInput {
         let end = text[start..]
             .find(char::is_whitespace)
             .map_or(text.len(), |i| start + i);
-        let new_text = utils::safe_replace_by_byte_indices(&text, start, end, &text_to_insert);
-
-        text_input.set_text(cx, &new_text);
+        if text_input.replace_range(cx, start..end, &text_to_insert, text_input::UndoGroup::New).is_err() {
+            return;
+        }
+        self.mention_text.sync(&text_input.text(), Some(start..end), false, HistoryMove::Edit);
+        if let MentionItem::User {user_id, ..} = item {
+            self.possible_mentions.user_ids.insert(user_id.clone());
+            self.mention_text.bind(start..start + text_to_insert.len() - 1, user_id);
+        }
         text_input.set_cursor(
             cx,
             Cursor { index: start + text_to_insert.len(), prefer_next_row: false },
@@ -367,16 +402,29 @@ impl MentionableTextInputRef {
     /// emoji row) go through, so they behave exactly like typing.
     pub fn insert_at_cursor(&self, cx: &mut Cx, text: &str) {
         let Some(mut inner) = self.borrow_mut() else { return };
+        inner.sync_mentions();
         let text_input = inner.text_input_ref();
         let selection = text_input.selection();
         let range = selection.start().index..selection.end().index;
-        if let Err(error) = text_input.replace_range(cx, range, text, text_input::UndoGroup::New) {
+        if let Err(error) = text_input.replace_range(cx, range.clone(), text, text_input::UndoGroup::New) {
             log!("Composer shortcut could not update the draft: {error:?}");
             return;
         }
+        inner.mention_text.sync(&text_input.text(), Some(range), false, HistoryMove::Edit);
         text_input.set_key_focus(cx);
         inner.refresh_popup(cx);
         inner.redraw(cx);
+    }
+
+    /// Dictation supplies the precise replacement range, which also disambiguates
+    /// edits beside identical visible names.
+    pub fn replace_range(&self, cx: &mut Cx, range: std::ops::Range<usize>, text: &str, undo: text_input::UndoGroup) -> Result<(), text_input::ReplaceRangeError> {
+        let Some(mut inner) = self.borrow_mut() else { return Ok(()) };
+        inner.sync_mentions();
+        let input = inner.text_input_ref();
+        input.replace_range(cx, range.clone(), text, undo)?;
+        inner.mention_text.sync(&input.text(), Some(range), false, HistoryMove::Edit);
+        Ok(())
     }
 
     /// Updates whether the user can `@room`. Refreshes an open `@` popup so the
@@ -441,25 +489,29 @@ impl MentionableTextInputRef {
 
     /// Returns a saved instance of this widget's state.
     pub fn save_state(&self) -> MentionableTextInputState {
-        self.borrow().map_or_else(
+        self.borrow_mut().map_or_else(
             MentionableTextInputState::default,
-            |inner| MentionableTextInputState {
+            |mut inner| { inner.sync_mentions(); MentionableTextInputState {
                 text_input_state: inner.text_input_ref().save_state(),
                 possible_mentions: inner.possible_mentions.clone(),
-            }
+                mention_text: inner.mention_text.clone(),
+            }}
         )
     }
 
     pub fn restore_state(&self, cx: &mut Cx, state: MentionableTextInputState) {
         let Some(mut inner) = self.borrow_mut() else { return };
+        inner.close_popup(cx);
         inner.text_input_ref().restore_state(cx, state.text_input_state);
         inner.possible_mentions = state.possible_mentions;
+        inner.mention_text = state.mention_text;
     }
 
     /// Clears the possible mentions, e.g., after we've sent the edit.
     pub fn clear_mentions(&self) {
         if let Some(mut inner) = self.borrow_mut() {
             inner.possible_mentions = Mentions::new();
+            inner.mention_text.clear();
         }
     }
 
@@ -468,7 +520,17 @@ impl MentionableTextInputRef {
     /// Returns the outcome: send a message, run a command, or show an error.
     /// If it's a message, it will already contain the mentions present in `entered_text`.
     pub fn parse_input(&self, entered_text: &str) -> SlashCommandOutcome {
-        let Some(inner) = self.borrow() else { return slash_commands::parse_input(entered_text) };
+        let Some(mut inner) = self.borrow_mut() else { return slash_commands::parse_input(entered_text) };
+        inner.sync_mentions();
+        let visible_text = entered_text;
+        let markdown = inner.mention_text.markdown(entered_text);
+        let entered_text = markdown.as_str();
+        // These commands format literal text themselves; feeding them Markdown
+        // links would visibly print the hidden URI (e.g. /plain or /spoiler).
+        let command_text = if slash_commands::split_command(entered_text).is_some_and(|(name, _)| {
+            ["plain", "html", "spoiler", "rainbow", "rainbowme", "shrug", "tableflip", "unflip", "lenny", "nick"]
+                .iter().any(|literal| name.eq_ignore_ascii_case(literal))
+        }) { visible_text } else { entered_text };
         if slash_commands::split_command(entered_text).is_some_and(|(name, _)| crate::agent_access::commands::addressed_to_registered(name) || crate::agent_access::commands::contains(crate::agent_access::commands::enabled(inner.room_id.as_deref(), inner.room_members.as_deref().map(Vec::as_slice)), name)) {
             return SlashCommandOutcome::Message(matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(entered_text));
         }
@@ -483,10 +545,10 @@ impl MentionableTextInputRef {
                 matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_markdown(entered_text)
             )
         } else {
-            slash_commands::parse_input(entered_text)
+            slash_commands::parse_input(command_text)
         };
         #[cfg(not(feature = "agent_chat"))]
-        let outcome = slash_commands::parse_input(entered_text);
+        let outcome = slash_commands::parse_input(command_text);
         match outcome {
             SlashCommandOutcome::Message(message) => SlashCommandOutcome::Message(
                 message.add_mentions(inner.real_mentions_in_markdown(entered_text))
@@ -498,6 +560,20 @@ impl MentionableTextInputRef {
     /// Returns the mentions whose links still exist in the given `text`.
     pub fn get_mentions_in(&self, text: &str) -> Mentions {
         self.borrow().map_or_else(Mentions::new, |inner| inner.real_mentions_in_markdown(text))
+    }
+
+    /// Wire representation for editing/saving a message. Visible widget text
+    /// and native clipboard operations continue to use compact @names.
+    pub fn markdown_text(&self) -> String {
+        let Some(mut inner) = self.borrow_mut() else { return String::new() };
+        inner.sync_mentions();
+        inner.mention_text.markdown(inner.mention_text.text())
+    }
+
+    #[cfg(feature = "onboarding-test-support")]
+    pub fn review_members(&self, members: Vec<MentionItem>) {
+        assert!(crate::sliding_sync::get_client().is_none());
+        if let Some(mut inner) = self.borrow_mut() { inner.review_members = Some(members); }
     }
 }
 
@@ -527,6 +603,7 @@ impl MentionableTextInput {
 pub struct MentionableTextInputState {
     text_input_state: TextInputState,
     possible_mentions: Mentions,
+    mention_text: MentionText,
 }
 
 /// Matched users or rooms/spaces, ranked on a background thread.
@@ -603,7 +680,7 @@ fn contains_room_mention(text: &str) -> bool {
 }
 
 fn member_display_name(member: &RoomMember) -> &str {
-    member.display_name().unwrap_or_else(|| member.user_id().as_str())
+    user_label(member.user_id(), member.display_name())
 }
 
 /// Ranks and builds all matching members.
