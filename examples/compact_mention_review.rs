@@ -29,10 +29,7 @@ script_mod! {
                     Label {text: "@ Mention" draw_text.color: mod.widgets.RINX_INK}
                     preview := HtmlOrPlaintext {width: Fill height: Fit}
                     View {height: Fill width: Fill}
-                    composer := MentionableTextInput {
-                        width: Fill height: 130
-                        text_input +: {width: Fill height: Fill is_multiline: true}
-                    }
+                    composer := RoomInputBar {width: Fill}
                 }
                 mention_popup := MentionablePopup {}
             }
@@ -70,7 +67,7 @@ impl AppMain for App {
                 preferences.package = Some(package);
                 rinx::theme::packages::apply(cx, preferences).unwrap();
             }
-            let input = self.ui.mentionable_text_input(cx, ids!(composer));
+            let input = self.ui.widget(cx, ids!(composer)).mentionable_text_input(cx, ids!(input_bar.mentionable_text_input));
             if command == "mentions:ready" {
                 set_global_mention_popup(cx, &self.ui);
                 input.review_members([
@@ -97,7 +94,8 @@ impl AppMain for App {
                 if let Some(html) = parsed.get("formatted_body").and_then(|v| v.as_str()) {
                     preview.show_html(cx, html);
                 } else { preview.show_plaintext(cx, parsed.get("body").and_then(|v| v.as_str()).unwrap_or("")); }
-                let report = serde_json::json!({"visible": visible, "markdown": input.markdown_text(), "message": parsed});
+                let report = serde_json::json!({"visible": visible, "markdown": input.markdown_text(), "message": parsed,
+                    "focused": cx.has_key_focus(input.text_input_ref().area())});
                 let path = std::path::PathBuf::from(std::env::var("HAGENCY_DESKTOP_DATA_DIR").unwrap()).join("mention-review.json");
                 std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
             }

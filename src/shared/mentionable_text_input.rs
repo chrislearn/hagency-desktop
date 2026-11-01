@@ -69,6 +69,7 @@ pub struct MentionableTextInput {
     /// before sending the message in the textinput.
     #[rust] possible_mentions: Mentions,
     #[rust] mention_text: MentionText,
+    #[rust] focus_after_draw: bool,
     #[cfg(feature = "onboarding-test-support")]
     #[rust] review_members: Option<Vec<MentionItem>>,
 }
@@ -182,7 +183,17 @@ impl Widget for MentionableTextInput {
     }
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
-        self.view.draw_walk(cx, scope, walk)
+        let step = self.view.draw_walk(cx, scope, walk);
+        // Closing the popup can redraw/reflow the room composer. Restore focus
+        // on its newly drawn area after all pointer-selection actions settle.
+        if step.is_done() && self.focus_after_draw {
+            let input = self.text_input_ref();
+            if !input.area().is_empty() {
+                input.set_key_focus(cx);
+                self.focus_after_draw = false;
+            }
+        }
+        step
     }
 
     fn text(&self) -> String {
@@ -190,6 +201,7 @@ impl Widget for MentionableTextInput {
     }
 
     fn set_text(&mut self, cx: &mut Cx, text: &str) {
+        self.focus_after_draw = false;
         self.close_popup(cx);
         self.mention_text.reset(text);
         self.text_input_ref().set_text(cx, self.mention_text.text());
@@ -374,6 +386,7 @@ impl MentionableTextInput {
         self.close_popup(cx);
         // give key focus back to the text input so the user can keep typing
         text_input.set_key_focus(cx);
+        self.focus_after_draw = true;
         self.redraw(cx);
     }
 
@@ -501,6 +514,7 @@ impl MentionableTextInputRef {
 
     pub fn restore_state(&self, cx: &mut Cx, state: MentionableTextInputState) {
         let Some(mut inner) = self.borrow_mut() else { return };
+        inner.focus_after_draw = false;
         inner.close_popup(cx);
         inner.text_input_ref().restore_state(cx, state.text_input_state);
         inner.possible_mentions = state.possible_mentions;

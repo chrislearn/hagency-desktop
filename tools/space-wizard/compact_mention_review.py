@@ -89,7 +89,12 @@ class MentionReview(InviteReview):
         time.sleep(.2)
         state = self.inspect([AGENT])
         assert state['visible'] == '@小黄 ', state
+        assert state['focused'], state
         assert AGENT in state['message']['formatted_body']
+        self.type('继续输入')
+        assert self.inspect([AGENT])['visible'] == '@小黄 继续输入'
+        self.key('Z', cmd=1)
+        assert self.inspect([AGENT])['visible'] == '@小黄 '
         self.capture('agent-name-and-rendered-message')
         self.key('Z', cmd=1)
         self.inspect([])
