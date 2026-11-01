@@ -15,7 +15,7 @@
 //! The order in Desktop view (vertically from top to bottom) is:
 //! 1. Profile/Settings
 //! 2. Home (All Rooms)
-//! 3. Contacts, Moments, Mini apps
+//! 3. Contacts, Agent, Moments, Mini apps
 //! 4. File Transfer (opens the same private File Transfer chat as before)
 //! 5. ----- separator -----
 //!      SpacesBar content
@@ -285,6 +285,15 @@ script_mod! {
             contacts_button := mod.widgets.NavigationTabButton {
                 tooltip_text: #(crate::i18n::tr("Contacts"))
                 icon.draw_icon.svg: ICON_PEOPLE
+            }
+            agent_button := mod.widgets.NavigationTabButton {
+                tooltip_text: #(crate::i18n::tr("Agent"))
+                spacing: 2
+                icon +: {icon_walk: Walk{width: 22 height: 22} draw_icon.svg: ICON_ROBOT}
+                label := Label {
+                    text: #(crate::i18n::tr("Agent")) i18n_text: "Agent"
+                    draw_text +: {color: RBX_NAV_FG text_style: theme.font_regular{font_size: (9 * mod.widgets.RINX_TEXT_SCALE)}}
+                }
             }
             moments_button := mod.widgets.NavigationTabButton {
                 tooltip_text: #(crate::i18n::tr("Moments"))
@@ -684,6 +693,9 @@ impl Widget for NavigationTabBar {
                 cx.action(crate::moments::ui::MomentsAction::Open {author: None});
             }
             if self.view.navigation_bar_button(cx,ids!(octoscript_apps_button)).clicked(actions) {cx.action(crate::octoscript_apps::MiniAppsAction::Open);}
+            if self.view.navigation_bar_button(cx, ids!(agent_button)).clicked(actions) {
+                cx.action(crate::octoscript_apps::MiniAppsAction::OpenAgent);
+            }
             if self.view.navigation_bar_button(cx, ids!(file_transfer_button)).clicked(actions) {
                 cx.action(crate::moments::ui::MomentsAction::FileTransfer);
             }
@@ -732,6 +744,7 @@ impl Widget for NavigationTabBar {
         for (id, tooltip) in [
             (ids!(home_button), crate::i18n::tr("All Rooms")),
             (ids!(contacts_button), crate::i18n::tr("Contacts")),
+            (ids!(agent_button), crate::i18n::tr("Agent")),
             (ids!(moments_button), crate::i18n::tr("Moments")),
             (ids!(octoscript_apps_button), crate::i18n::tr("Mini apps")),
             (ids!(file_transfer_button), crate::i18n::tr("File Transfer")),

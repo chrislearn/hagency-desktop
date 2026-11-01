@@ -71,7 +71,7 @@ impl SurfaceKey {
     pub fn for_action(action: &MiniAppsAction) -> Option<Self> {
         match action {
             MiniAppsAction::Open => Some(Self::Catalog),
-            MiniAppsAction::OpenPalpo(_) => Some(Self::App(super::palpo::APP_ID.to_owned())),
+            MiniAppsAction::OpenAgent | MiniAppsAction::OpenPalpo(_) => Some(Self::App(super::palpo::APP_ID.to_owned())),
             _ => None,
         }
     }
@@ -191,7 +191,7 @@ impl MiniAppsSurface {
             Some(true) => crate::i18n::tr("Local agents").to_owned(),
             Some(false) => crate::i18n::tr("Agent spaces").to_owned(),
             None => self.panel(cx).current_app()
-                .map(|(_, name)| name)
+                .map(|(id, name)| if id == super::palpo::APP_ID {crate::i18n::tr("Agent").to_owned()} else {name})
                 .unwrap_or_else(|| crate::i18n::tr("Mini apps").to_owned()),
         }
     }
@@ -199,6 +199,14 @@ impl MiniAppsSurface {
     fn action(&mut self, cx: &mut Cx, action: &MiniAppsAction) {
         if matches!(action, MiniAppsAction::Close) {
             self.close(cx);
+            return;
+        }
+        // Re-selecting Agent preserves both its script page and any native
+        // management page opened over it, including unsaved form values.
+        if matches!(action, MiniAppsAction::OpenAgent)
+            && self.panel(cx).current_app().is_some_and(|(id, _)| id == super::palpo::APP_ID)
+        {
+            self.panel(cx).action(cx, ModalRef::default(), action);
             return;
         }
         self.show_apps(cx);

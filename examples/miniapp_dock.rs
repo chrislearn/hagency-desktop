@@ -19,7 +19,9 @@ script_mod! {
                 window.inner_size: vec2(1200, 850)
                 window.title: "Hagency · Dock review · Offline"
                 body +: {flow: Overlay
-                    main := View {width: Fill height: Fill flow: Down padding: 16 spacing: 12 show_bg: true draw_bg.color: RINX_PAGE
+                    main := View {width: Fill height: Fill flow: Right show_bg: true draw_bg.color: RINX_PAGE
+                    navigation := NavigationTabBar {}
+                    View {width: Fill height: Fill flow: Down padding: 16 spacing: 12
                     View {width: Fill height: Fit flow: Right spacing: 12
                         apps := RinxPrimaryButton {text: "Mini apps"}
                         web := RinxPrimaryButton {text: "Web page"}
@@ -34,6 +36,7 @@ script_mod! {
                             draft := RinxInput {text: "Unsent chat draft"}
                         }
                         dock := MiniAppsSideRegion {}
+                    }
                     }
                     }
                     menu := SidebarActionMenu {}
@@ -64,6 +67,14 @@ impl MatchEvent for App {
         }
         if self.ui.button(cx, ids!(edit)).clicked(actions) {dock.article_action(cx, &ArticleAction::Open);}
         for action in actions {
+            if let Some(action) = action.downcast_ref::<MiniAppsAction>() {
+                let wanted = rinx::miniapps::surface::SurfaceKey::for_action(action);
+                if wanted.is_some() && host.surface_key(cx) == wanted {
+                    host.action(cx, action);
+                } else {
+                    dock.open(cx, action);
+                }
+            }
             if let Some(action) = action.downcast_ref::<ArticleAction>() {dock.article_action(cx, action);}
             if matches!(action.downcast_ref(), Some(MiniAppsSideAction::PopOut)) {
                 if let Some(surface) = dock.take_front(cx) {

@@ -1148,7 +1148,8 @@ impl App {
         let window = self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host));
         let side = self.ui.mini_apps_side_region(cx, ids!(mini_apps_side));
         let in_window = match SurfaceKey::for_action(action) {
-            Some(wanted) => window.surface_key(cx) == Some(wanted),
+            Some(wanted) => window.surface_key(cx) == Some(wanted)
+                || matches!(action, MiniAppsAction::OpenAgent) && window.surface_key(cx) == Some(SurfaceKey::Management),
             // The assistant's reviewed app: docked if a tab shows an app, else the window's.
             None => matches!(action, MiniAppsAction::OpenReviewed)
                 && matches!(window.surface_key(cx), Some(SurfaceKey::App(_)))

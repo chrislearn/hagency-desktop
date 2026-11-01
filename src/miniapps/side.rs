@@ -591,7 +591,9 @@ impl MiniAppsSideRegion {
             return;
         }
         let existing = match SurfaceKey::for_action(action) {
-            Some(key) => self.find(cx, &key),
+            Some(key) => self.find(cx, &key).or_else(|| {
+                matches!(action, MiniAppsAction::OpenAgent).then(|| self.find(cx, &SurfaceKey::Management)).flatten()
+            }),
             // The assistant opens the app reviewed in the tab in front, or in another app tab.
             None if matches!(action, MiniAppsAction::OpenReviewed) => self
                 .selected

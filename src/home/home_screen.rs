@@ -1301,6 +1301,34 @@ mod mini_apps_side_tests {
     }
 
     #[test]
+    fn agent_sidebar_opens_hagency_and_reselects_its_retained_management_page() {
+        let width = 1440.0;
+        let (mut cx, mut home, mut state) = home(width);
+        frame(&mut cx, &mut home, &mut state, width);
+        let button = home.view.widget(&mut cx, ids!(agent_button));
+        assert!(!button.is_empty());
+        let target = button.area().rect(&cx);
+        assert!(target.size.x >= 44.0 && target.size.y >= 44.0);
+        let pressed = cx.capture_actions(|cx| cx.widget_action(button.widget_uid(), NavigationBarButtonAction::Clicked));
+        let emitted = cx.capture_actions(|cx| home.handle_event(cx, &Event::Actions(pressed), &mut Scope::with_data(&mut state)));
+        let open = emitted.iter().find_map(|action| action.downcast_ref::<MiniAppsAction>());
+        assert!(matches!(open, Some(MiniAppsAction::OpenAgent)));
+        let region = side(&mut cx, &home);
+        region.open(&mut cx, open.unwrap());
+        let agent = region.selected().unwrap();
+        assert_eq!(region.key(&mut cx, agent), Some(SurfaceKey::App(crate::miniapps::palpo::APP_ID.to_owned())));
+        region.hagency_action(&mut cx, &HagencyAction::OpenProjects);
+        assert_eq!(region.key(&mut cx, agent), Some(SurfaceKey::Management));
+        region.open(&mut cx, &MiniAppsAction::Open);
+        assert_eq!(region.tabs().len(), 2);
+        region.open(&mut cx, &MiniAppsAction::OpenAgent);
+        assert_eq!(region.selected(), Some(agent));
+        assert_eq!(region.tabs().len(), 2, "Agent reuses its tab instead of making a duplicate");
+        assert_eq!(region.key(&mut cx, agent), Some(SurfaceKey::Management), "reselecting Agent keeps the page open");
+        region.close_all(&mut cx);
+    }
+
+    #[test]
     fn opening_mini_apps_docks_tabs_beside_the_chat_and_closing_the_last_hides_them() {
         let width = 1440.0;
         let (mut cx, mut home, mut state) = home(width);

@@ -71,6 +71,8 @@ fn eligible_project_room(room: &matrix_sdk::Room, account: &ruma::UserId) -> boo
 #[derive(Clone, Debug)]
 pub enum MiniAppsAction {
     Open,
+    /// The Agent sidebar entry: open or focus Hagency without notification routing.
+    OpenAgent,
     /// The assistant opened the reviewed app: show its review; Run grants it.
     OpenReviewed,
     /// Untrusted notification routing hint; backend authorization remains mandatory.
@@ -332,7 +334,7 @@ script_mod! {
         draw_bg +: {color: instance(mod.widgets.RINX_PAGE) pixel: fn() {return self.color}}
         header := View {width: Fill height: Fit flow: Right spacing: 12
             close := RinxButton {width: 44 text: "" icon_walk: Walk{width: 20 height: 20} draw_icon.svg: ICON_ARROW_BACK}
-            RinxPageTitle {text: #(crate::i18n::tr("Mini apps")) i18n_text: "Mini apps"}
+            title := RinxPageTitle {text: #(crate::i18n::tr("Mini apps")) i18n_text: "Mini apps"}
         }
         library := MiniAppLibrary {visible: false}
         catalog := View {width: Fill height: Fill flow: Down spacing: 12
@@ -570,6 +572,11 @@ pub struct MiniAppsPanel {
     open: bool,
     #[rust]
     showing_catalog: bool,
+    /// Actual built-in indices for the rows drawn in the current layout.
+    #[rust]
+    catalog_apps: Vec<usize>,
+    #[rust]
+    direct_agent: bool,
     #[rust]
     showing_hub: bool,
     #[rust]
@@ -708,6 +715,7 @@ impl Drop for MiniAppsPanel {
 }
 impl MiniAppsPanel {
     fn show_catalog(&mut self, cx: &mut Cx) {
+        self.direct_agent = false;
         self.stop(cx);
         self.package = None;
         self.palpo_action = None;
@@ -726,6 +734,7 @@ impl MiniAppsPanel {
         self.notice(cx, "");
     }
     fn show_hub(&mut self, cx: &mut Cx) {
+        self.direct_agent = false;
         self.stop(cx);
         self.package = None;
         self.palpo_action = None;
@@ -743,7 +752,7 @@ impl MiniAppsPanel {
         self.view.mini_app_library(cx, ids!(library)).begin(cx);
         self.notice(cx, "");
     }
-    // Returns true only at the outer catalog, where Back closes the modal.
+    // Back closes an outer entry; a native confirmation above it cancels first.
     fn navigate_back(&mut self, cx: &mut Cx) -> bool {
         if self.account_login.is_some(){self.close_account_login(cx);return false;}
         if self.reauthentication.is_some(){self.finish_reauthentication(cx,false);return false;}
@@ -757,6 +766,9 @@ impl MiniAppsPanel {
         if self.project_room_reply.is_some() {
             self.finish_room_picker(cx, false);
             return false;
+        }
+        if self.direct_agent {
+            return true;
         }
         if self.showing_hub {
             if !self.view.mini_app_library(cx, ids!(library)).back_to_list(cx) {
@@ -1943,7 +1955,9 @@ impl Widget for MiniAppsPanel {
             let list = self.view.portal_list(cx, ids!(catalog_list));
             for (index, item) in list.items_with_actions(actions) {
                 if !list.was_scrolling() && item.button(cx, ids!(launch)).clicked(actions) {
-                    if let Err(e) = self.open_builtin(cx, index) { self.notice(cx, &e); }
+                    if let Some(index) = self.catalog_apps.get(index).copied() {
+                        if let Err(e) = self.open_builtin(cx, index) { self.notice(cx, &e); }
+                    }
                     return;
                 }
             }
@@ -2009,12 +2023,18 @@ impl Widget for MiniAppsPanel {
         self.pump(cx);
     }
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
+        self.view.label(cx, ids!(header.title)).set_text(cx,
+            crate::i18n::tr(if self.direct_agent {"Agent"} else {"Mini apps"}));
         while let Some(item) = self.view.draw_walk(cx, scope, walk).step() {
             if let Some(mut list) = item.borrow_mut::<PortalList>() {
                 let apps = crate::system_apps::apps();
-                list.set_item_range(cx, 0, apps.len());
+                let desktop = crate::home::home_screen::effective_is_desktop(cx);
+                self.catalog_apps = apps.iter().enumerate()
+                    .filter(|(_, app)| !desktop || app.manifest.id != super::palpo::APP_ID)
+                    .map(|(index, _)| index).collect();
+                list.set_item_range(cx, 0, self.catalog_apps.len());
                 while let Some(index) = list.next_visible_item(cx) {
-                    if let Some(app) = apps.get(index) {
+                    if let Some(app) = self.catalog_apps.get(index).and_then(|index| apps.get(*index)) {
                         let row = list.item(cx, index, id!(App));
                         let operations = app.manifest.id == super::palpo::APP_ID;
                         row.widget(cx, ids!(article_icon)).set_visible(cx, !operations);
@@ -2093,6 +2113,20 @@ impl MiniAppsPanelRef {
                 MiniAppsAction::Open => {
                     inner.open = true;
                     inner.show_catalog(cx);
+                    modal.open(cx);
+                }
+                MiniAppsAction::OpenAgent => {
+                    let already_open = inner.open && !inner.showing_catalog && !inner.showing_hub
+                        && inner.package.as_ref().and_then(Package::builtin_id) == Some(super::palpo::APP_ID);
+                    inner.open = true;
+                    inner.direct_agent = true;
+                    if !already_open {
+                        inner.palpo_action = None;
+                        inner.board = None;
+                        if let Some(index) = crate::system_apps::apps().iter().position(|app| app.manifest.id == super::palpo::APP_ID) {
+                            if let Err(error) = inner.open_builtin(cx, index) { inner.notice(cx, &error); }
+                        }
+                    }
                     modal.open(cx);
                 }
                 MiniAppsAction::OpenPalpo(id) => {
