@@ -1,8 +1,19 @@
 fn main() {
     println!("cargo:rerun-if-changed=system-apps.json");
-    println!("cargo:rerun-if-changed=apps");
     let root = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let catalog = rinx_system_apps::pack(&root).expect("validate Rinx system apps");
+    // The catalog has already validated these paths. Watch whole bundle
+    // directories so added/deleted assets retrigger packaging, without watching
+    // unrelated controller sources or apps/owner-controller/target outputs.
+    let config: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join("system-apps.json")).expect("read system app inputs")
+    ).expect("parse validated system app inputs");
+    let source = root.join(config["source"].as_str().expect("validated source"));
+    for app in &catalog.apps {
+        let bundle = source.join(&app.directory).join("bundle");
+        println!("cargo:rerun-if-changed={}", bundle.join("manifest.json").display());
+        println!("cargo:rerun-if-changed={}", bundle.display());
+    }
     let catalog_path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("system-apps.json");
     std::fs::write(catalog_path, serde_json::to_vec(&catalog).unwrap()).expect("embed Rinx system apps");
 

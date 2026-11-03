@@ -91,7 +91,7 @@ fn calendar_note(calendar: &Calendar, now: u64) -> String {
     let Ok(period) = calendar.period_at(now) else {return tr("Enter a valid IANA time zone, such as America/Los_Angeles.").into()};
     let Ok(zone) = calendar.time_zone.parse::<chrono_tz::Tz>() else {return String::new()};
     let at = utc_at(period.end_ms).with_timezone(&zone);
-    format!("{} {} · {}. {}", tr("First reset:"), at.format("%Y-%m-%d %H:%M %Z"), calendar.time_zone, tr("Weeks start Monday. Unused tokens do not carry over; exhausted Agents wait for the next period."))
+    format!("{} {} · {}. {}", tr("First reset:"), at.format("%Y-%m-%d %H:%M %Z"), calendar.time_zone, tr(if calendar.cadence == Cadence::Weekly { "Weeks start Monday. Unused tokens do not carry over; exhausted Agents wait for the next period." } else { "Unused tokens do not carry over; exhausted Agents wait for the next period." }))
 }
 pub(super) fn calendar_fact(calendar: &Calendar, end_ms: Option<u64>, now: u64) -> Fact {
     let tr=crate::i18n::tr;

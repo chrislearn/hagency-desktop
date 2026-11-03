@@ -25,6 +25,14 @@ impl MiniAppsPanel {
             }
             return;
         }
+        // A repeated local click joins the same landing; it must not reject
+        // an outstanding cross-host handover for this owner.
+        if self.owner_approvals.as_ref().is_some_and(|pending|
+            pending.matches(owner, &pending.nonce)
+                && (handover_id.is_none() || handover_id == pending.handover_id)) {
+            self.pump_owner_approvals(cx);
+            return;
+        }
         self.finish_pending_owner_approvals(cx, false);
         let running = self.open && !self.showing_catalog && !self.showing_hub
             && self.package.as_ref().and_then(Package::builtin_id) == Some(octosense_app_contract::hagency::APP_ID);
@@ -88,6 +96,9 @@ impl MiniAppsPanel {
 
     pub(super) fn finish_pending_owner_approvals(&mut self, cx: &mut Cx, accepted: bool) {
         if let Some(pending) = self.owner_approvals.take() {
+            if !accepted && pending.sent {
+                self.view.splash(cx, ids!(card)).call_script_fn_with_strings(cx, id!(on_owner_approvals_cancelled), &[&pending.nonce]);
+            }
             if let Some(id) = pending.handover_id {
                 cx.action(crate::hagency::owner_dashboard::EmbeddedAction::Restored { id, owner: pending.owner, accepted });
             }

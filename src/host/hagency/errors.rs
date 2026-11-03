@@ -14,6 +14,15 @@ pub(crate) fn known_code(code: &str) -> Option<&'static str> {
         "daemon_owner_scope_mismatch",
         "daemon_logout_pending",
         "native_owner_restart_required",
+        "daemon_stopping",
+        "native_confirmation_expired",
+        "management_scope_changed",
+        "busy",
+        "daemon_bridge_result_too_large",
+        "daemon_bridge_journal_unavailable",
+        "daemon_command_recovery_required",
+        "daemon_command_receipt_expired",
+
     ];
     CODES.iter().copied().find(|known| *known == code)
 }
@@ -31,7 +40,7 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
             "The original request is not confirmed. Its identity is saved. Recover that request from saved commands; do not create a replacement.",
             "原请求的结果尚未确认，原请求标识已保存。请从已保存的命令恢复原请求，不要新建替代请求。",
         ),
-        "daemon_bridge_lease_expired" | "daemon_review_expired" | "daemon_grant_review_expired" => {
+        "daemon_bridge_lease_expired" | "daemon_review_expired" | "daemon_grant_review_expired" | "native_confirmation_expired" => {
             (
                 "This review expired. Close it and open the same saved request again before confirming.",
                 "此确认已过期。请关闭后重新打开同一个已保存的请求，再进行确认。",
@@ -48,6 +57,22 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         "native_owner_restart_required" => (
             "Resource custody changed. Close this panel and reopen it to reconnect.",
             "资源托管方式已更改。请关闭此面板后重新打开，以重新连接。",
+        ),
+        "daemon_stopping" => (
+            "The hosting service is stopping. Wait for it to finish, then reconnect to check this request.",
+            "托管服务正在停止。请等待完成后重新连接，检查此请求。",
+        ),
+        "management_scope_changed" => (
+            "The signed-in account or server changed. Reopen this panel under the original account to review the request.",
+            "登录账号或服务器已更改。请切回原账号并重新打开此面板，检查原请求。",
+        ),
+        "busy" => (
+            "The hosting service is busy. Wait for the current operation to finish, then check the same request again.",
+            "托管服务正忙。请等待当前操作完成后重新检查同一个请求。",
+        ),
+        "daemon_bridge_result_too_large" | "daemon_bridge_journal_unavailable" | "daemon_command_recovery_required" | "daemon_command_receipt_expired" => (
+            "The service cannot confirm the original operation from its saved receipt. Keep this request and its identity; check the current resource state before attempting recovery.",
+            "服务无法根据已保存的回执确认原操作。请保留此请求及其标识，先检查当前资源状态，再尝试恢复。",
         ),
         _ => return None,
     };

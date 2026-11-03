@@ -8,6 +8,20 @@ from check_full_bundle import APP, fixture
 
 CHECKS = r'''
 let calls=[]
+// No session: native cancellation or the deadline retires the one-shot intent.
+H.session=nil H.page="overview"
+on_owner_approvals_requested("@owner:test","cancelled-before-login")
+on_owner_approvals_cancelled("unrelated")
+assert(H.owner_review_pending.nonce=="cancelled-before-login")
+on_owner_approvals_cancelled("cancelled-before-login")
+assert(H.owner_review_pending==nil)
+on_owner_approvals_requested("@owner:test","expired-before-login")
+let expire=timers[timers.len()-1]
+expire()
+assert(H.owner_review_pending==nil)
+H.session={account:"@owner:test" canAdmitResources:false}
+A.owner_review_open()
+assert(H.page=="overview")
 host.request=fn(service,args,done){calls.push({service:service args:args done:done})}
 A.redraw=fn(){}
 H.ready=true H.restored=true H.session={account:"@owner:test" canAdmitResources:false}

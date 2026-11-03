@@ -129,18 +129,22 @@ async fn run(
                 digest: blake3::hash(b"hagency-desktop-native-recurring-grant-worker-v1").to_hex().to_string(),
                 instance: 1, account_epoch: epoch, permissions: vec![],
             };
-            if let Ok(access) = selection.grant_access(&owner, package).await {
-                let grant_gate = gate.clone();
-                if let Ok(access) = access.restrict_to_host(move || grant_gate()) {
-                    match access.renew_recurring().await {
-                        Err(error) if renewal_warnings.should_log(&error.code, Instant::now()) => {
-                            makepad_widgets::warning!("Recurring capacity renewal pending: {}", error.code);
-                        }
-                        Ok(_) => renewal_warnings = RenewalWarnings::default(),
-                        Err(_) => {},
-                    }
+            let grant_gate = gate.clone();
+            let result = match selection.grant_access(&owner, package).await
+                .and_then(|access| access.restrict_to_host(move || grant_gate())) {
+                Ok(access) => {
+                    let result = access.renew_recurring().await;
                     access.retire();
+                    result.map(|_| ())
                 }
+                Err(error) => Err(error),
+            };
+            match result {
+                Err(error) if renewal_warnings.should_log(&error.code, Instant::now()) => {
+                    makepad_widgets::warning!("Recurring capacity renewal pending: {}", error.code);
+                }
+                Ok(()) => renewal_warnings = RenewalWarnings::default(),
+                Err(_) => {},
             }
         }
         // No operation future is cancelled by a UI timeout or the wake signal.

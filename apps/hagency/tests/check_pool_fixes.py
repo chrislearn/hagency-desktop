@@ -37,6 +37,22 @@ let open=fn(row){
 let floor_reply={contributionId:"con_main" heldTokens:9000000 heldAgents:1 perRequestTokens:9000000 mostTokens:9000000 periodEndMs:1793491200000}
 '''
 CASES={
+'recurring_terminal_and_renewal_statuses_are_truthful': '''
+let row={state:"rejected" reservationState:"pending" blockingReason:nil runtimeState:"idle" currentPeriod:{state:"revoked"}}
+assert(A.pool_tone(row)=="attention")
+assert(A.pool_period_state(row)==A.t("Request declined","申请已拒绝"))
+row.state="expired"
+assert(A.pool_tone(row)=="")
+assert(A.pool_period_state(row)==A.t("Request expired","申请已过期"))
+row.state="open" row.currentPeriod.state="renewal_refused" row.blockingReason="agent_period_renewal_refused"
+assert(A.pool_tone(row)=="attention")
+assert(A.pool_period_state(row).search(A.t("Renewal refused","续期被拒绝"))>=0)
+row.currentPeriod.state="request_limit_exceeded"
+assert(A.pool_period_state(row).search(A.t("per-Agent maximum","单个 Agent 上限"))>=0)
+for code in ["agent_generation_overflow","agent_period_terms_changed","pool_agent_request_limit_exceeded"] {
+    assert(A.pool_reason(code).search(A.t("saved request is retained","已保存的请求"))<0)
+}
+''',
 'completed_resource_retry_replaces_submitting_notice': '''
 open(main)
 H.resource_id="resource_main"

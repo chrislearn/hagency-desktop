@@ -228,6 +228,9 @@ impl WidgetMatchEvent for InviteModal {
         if !matches!(self.state, InviteModalState::WaitingForInvite(_)) {
             let input = self.view.text_input(cx, ids!(user_id_input));
             if let Some(query) = input.changed(actions) {
+                // A directory reply for the old text is discarded. Its
+                // progress message must not remain after the person edits.
+                self.view.view(cx, ids!(status_label_view)).set_visible(cx, false);
                 let matches = self.local_matches(query.trim());
                 self.offer(cx, &matches);
             }

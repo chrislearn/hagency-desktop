@@ -3744,8 +3744,15 @@ A.owner_review_open=fn(){
     A.owner_review_finish(true)
 }
 let on_owner_approvals_requested=fn(owner,nonce){
+    if H.owner_review_pending!=nil {A.owner_review_finish(false)}
     H.owner_review_pending={owner:owner nonce:nonce}
+    start_timeout(55,||{
+        if H.owner_review_pending!=nil && H.owner_review_pending.nonce==nonce {A.owner_review_finish(false)}
+    })
     A.owner_review_open()
+}
+let on_owner_approvals_cancelled=fn(nonce){
+    if H.owner_review_pending!=nil && H.owner_review_pending.nonce==nonce {H.owner_review_pending=nil}
 }
 A.owner_review_tools=fn(){
     if H.busy || H.command!=nil {return}
@@ -4057,7 +4064,7 @@ A.connect = fn(){
         }
         if !A.entry_allowed(H.entry_role){H.entry_role=""}
         H.entry_choosing=H.entry_role==""
-        if H.owner_review_pending!=nil {A.owner_review_open() return}
+        if H.owner_review_pending!=nil {A.owner_review_open()}
         if H.entry_role=="owner" && H.page=="overview" && H.command==nil{A.open_accounts(nil)}else{A.refresh()}
     })
 }
@@ -7880,7 +7887,7 @@ A.retry_command = fn(){
             if A.pool_mutation(command.service) {
                 H.notice=A.pool_reason(r.error) H.pool_confirm="" H.reqs.confirm=nil H.reqs.deciding=""
                 if command.service=="hagency.pools.agents.request" && H.pool_draft!=nil {H.pool_draft.failure=r.error A.save()}
-                for code in ["invalid_pool_agent_room","invalid_managed_agent_definition","invalid_management_revision","management_revision_changed","pool_capacity_unavailable","pool_not_shared_with_account","pool_agent_resource_mismatch","pool_resource_owner_required","pool_agent_request_closed","pool_agent_authority_changed","pool_agent_request_capacity","management_receipt_capacity","agent_reallocation_unavailable","agent_generation_overflow","agent_period_allowance_fixed","agent_period_changed","agent_period_already_authorized","agent_not_recurring","agent_period_terms_changed","agent_allocation_fenced","agent_assignment_unavailable","pool_agent_renewal_mode_required"] {
+                for code in ["invalid_pool_agent_room","invalid_managed_agent_definition","invalid_management_revision","management_revision_changed","pool_capacity_unavailable","pool_not_shared_with_account","pool_agent_resource_mismatch","pool_resource_owner_required","pool_agent_request_closed","pool_agent_authority_changed","pool_agent_request_capacity","management_receipt_capacity","agent_reallocation_unavailable","agent_generation_overflow","agent_period_allowance_fixed","agent_period_changed","agent_period_already_authorized","agent_not_recurring","agent_period_terms_changed","pool_agent_request_limit_exceeded","agent_allocation_fenced","agent_assignment_unavailable","pool_agent_renewal_mode_required"] {
                     if r.error==code {
                         H.command=nil
                         if command.service=="hagency.pools.agents.request" && H.pool_draft!=nil {H.pool_draft.review=false H.pool_checked=false H.page="pool_apply"}
@@ -8602,6 +8609,9 @@ A.open_pool_agent=fn(id){
     A.request("hagency.pools.agents.get",{id:id},fn(v){H.pool_detail=v.request})
 }
 A.pool_tone=fn(r){
+    if r.state=="rejected" {return "attention"}
+    if r.state=="expired" || r.state=="cancelled" || r.state=="revoked" {return ""}
+    if r.blockingReason=="agent_period_renewal_refused" {return "attention"}
     if r.reservationState=="refused" {return "attention"}
     if r.state!="revoked" && r.state!="cancelled" && A.pool_period_state(r)!="" {return "waiting"}
     if r.blockingReason=="agent_period_ended" {return "waiting"}
@@ -8631,7 +8641,12 @@ A.pool_cadence=fn(c){
 A.pool_renewal=fn(r){if A.recipient_optional(r,"renewalMode")!="automatic" && A.recipient_optional(r,"renewalMode")!="owner" {return A.t("Renewal not selected","续期方式尚未选择")} return if A.recipient_optional(r,"renewalMode")=="automatic" {A.t("Automatic renewal","自动续期")} else {A.t("Resource owner renews","资源 owner 手动续期")}}
 A.pool_period=fn(r){return A.recipient_optional(r,"currentPeriod")}
 A.pool_period_state=fn(r){
+    if r.state=="rejected" {return A.t("Request declined","申请已拒绝")}
+    if r.state=="expired" {return A.t("Request expired","申请已过期")}
+    if r.state=="cancelled" {return A.t("Request cancelled","申请已取消")}
     let p=A.pool_period(r) if p==nil{return ""}
+    if p.state=="request_limit_exceeded"{return A.t("Paused · per-Agent maximum is too low","已暂停 · 单个 Agent 上限不足")}
+    if p.state=="renewal_refused"{return A.t("Renewal refused · owner can review and retry","续期被拒绝 · owner 可检查后重试")}
     if p.state=="exhausted"{return A.t("Paused · allowance used up","已暂停 · 本期额度已用完")}
     if p.state=="awaiting_owner"{return A.t("Paused · waiting for owner renewal","已暂停 · 等待 owner 续期")}
     if p.state=="awaiting_executor"{return A.t("Paused · waiting for executor or available capacity","已暂停 · 等待资源执行端确认可用额度")}
@@ -8714,6 +8729,10 @@ A.pool_reason=fn(code){
     if code=="agent_period_awaiting_capacity" {return A.t("Waiting for the owner’s pool to have capacity for this period. No tokens have been added.","等待资源池提供本期可用额度，尚未增加 token。")}
     if code=="agent_period_changed" {return A.t("The period changed while confirming. Refresh and review the new period before renewing.","确认期间周期已变化，请刷新后核对新周期再续期。")}
     if code=="agent_period_already_authorized" {return A.t("This period is already authorized. It cannot be refilled before the next period.","本期已经授权，下一周期开始前不能重复补充。")}
+    if code=="agent_generation_overflow" {return A.t("This Agent reached its generation limit. This request was not applied; create a new Agent if needed.","此 Agent 已达到代次上限。本次请求未应用；如有需要请创建新的 Agent。")}
+    if code=="agent_period_terms_changed" {return A.t("The period terms changed. This request was not applied; refresh and review the current allowance before confirming again.","周期条款已更改，本次请求未应用。请刷新并检查当前额度后重新确认。")}
+    if code=="agent_period_request_limit_exceeded" || code=="pool_agent_request_limit_exceeded" {return A.t("The per-Agent request maximum is below this Agent’s approved allowance. The owner can raise that maximum; total pool capacity alone is not enough.","单个 Agent 请求上限低于此 Agent 已批准的每期额度。资源 owner 可提高该上限；仅有资源池总额度并不足够。")}
+    if code=="agent_period_renewal_refused" {return A.t("The resource device refused this renewal. The owner can review available capacity and retry renewal.","资源执行端拒绝了本次续期。资源 owner 可检查可用额度后重试续期。")}
     if code=="agent_reallocation_unavailable" {return A.t("This Agent cannot be reauthorized yet. Refresh its pool and confirm the owner has published new capacity.","此 Agent 暂时无法重新授权。请刷新资源池，并确认 owner 已发布新额度。")}
     if code=="agent_not_recurring" {return A.t("This is a one-time allocation. It has no recurring authorization.","这是一次性额度，未授权周期续期。")}
     if code=="pool_agent_renewal_mode_required" {return A.t("Choose automatic or owner renewal and review your request again.","请选择自动或 owner 手动续期后重新核对申请。")}
