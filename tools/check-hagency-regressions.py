@@ -131,7 +131,7 @@ def main():
         run("native-server-journal", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "server_journal", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-owner-daemon", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "daemon::", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-owner-telemetry", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "console::native::telemetry::", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
-        run("native-metering-ledger", ["cargo", "test", "--locked", "-p", "hagency-metering", "--lib", "dashboard::"], cwd=args.client.resolve(), rust_tests=True)
+        run("native-metering-ledger", ["cargo", "test", "--locked", "-p", "hagency-metering", "--test", "dashboard"], cwd=args.client.resolve(), rust_tests=True)
         run("native-confirmation-deadlines", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "daemon::bridge::reviews::deadline_tests"], cwd=args.client.resolve(), rust_tests=True)
         run("native-recurring-quota", ["cargo", "test", "--locked", "-p", "hagency-core", "--lib", "recurring_quota"], cwd=args.client.resolve(), rust_tests=True)
         run("native-pool-wire", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "split_pool_limits_tests"], cwd=args.client.resolve(), rust_tests=True)
