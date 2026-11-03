@@ -301,6 +301,7 @@ impl App {
         if let Some(job) = &self.setup_job { while let Some(event) = job.try_recv() { events.push(event); } }
         let zh = self.dashboard(cx).locale() == Locale::ZhHans;
         for event in events {
+            let install_failure = matches!(&event, setup::Progress::InstallFailed(_));
             let text = match event {
                 setup::Progress::SigningIn => if zh { "请在浏览器中完成登录…" } else { "Complete sign-in in your browser…" },
                 setup::Progress::FinishingCancellation => if zh { "设置已超时，正在安全结束原操作。完成后即可重试…" } else { "Setup timed out. Finishing the original operation safely before retry is available…" },
@@ -317,9 +318,9 @@ impl App {
                     self.refresh(cx);
                     if zh { "服务已安装，正在确认托管状态…" } else { "Service installed. Confirming hosting status…" }
                 }
-                setup::Progress::Failed(code) => {
+                setup::Progress::Failed(code) | setup::Progress::InstallFailed(code) => {
                     self.setup_job = None;
-                    self.setup_install_only = code == "service_start_failed";
+                    self.setup_install_only = install_failure;
                     self.localize_setup(cx);
                     self.ui.button(cx, ids!(setup_enable)).set_enabled(cx, true);
                     match (code, zh) {

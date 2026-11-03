@@ -2,7 +2,7 @@
 use std::{io::{self, Read}, path::PathBuf, process::{ChildStdin, Command, Stdio}, sync::{Arc, Mutex, mpsc, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
 
 #[derive(Clone, Debug)]
-pub enum Progress { SigningIn, FinishingCancellation, Enabling, Installed, Failed(&'static str) }
+pub enum Progress { SigningIn, FinishingCancellation, Enabling, Installed, Failed(&'static str), InstallFailed(&'static str) }
 #[derive(Default)]
 struct Cancellation { stopped: AtomicBool, stdin: Mutex<Option<ChildStdin>> }
 pub struct Setup { events: mpsc::Receiver<Progress>, cancel: Arc<Cancellation> }
@@ -81,7 +81,8 @@ fn helper_failure(stderr: &str) -> &'static str {
         "daemon_owner_root_invalid", "daemon_handover_transition_refused", "unsupported_hagency_server",
         "daemon_enrollment_storage_unavailable", "daemon_session_storage_unavailable", "daemon_socket_unsafe",
         "matrix_authorization_unavailable", "matrix_authorization_required", "daemon_sign_in_cancelled",
-        "daemon_enrollment_cancelled", "daemon_enrollment_detached", "daemon_already_running"] {
+        "daemon_enrollment_cancelled", "daemon_enrollment_detached", "daemon_already_running",
+        "daemon_install_location_unsupported", "daemon_service_stop_pending"] {
         if stderr.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|word| word == code) { return code; }
     }
     if stderr.contains("already running") { return "daemon_already_running"; }
@@ -100,8 +101,8 @@ pub fn failure_message(code: &str, zh: bool) -> &'static str {
         ("daemon_other_owner_enrolled" | "matrix_account_mismatch", true) => "后台服务属于另一个账号。请使用这里显示的账号登录，或先退出原有服务账号。",
         ("daemon_logout_pending", false) => "The previous sign-out is still pending. Reconnect to finish it before setting up hosting.",
         ("daemon_logout_pending", true) => "上次退出尚未完成。请恢复连接，完成退出后再设置托管。",
-        ("setup_timed_out", false) => "Setup timed out. The original setup was cancelled safely; check the server connection and retry.",
-        ("setup_timed_out", true) => "设置超时，原设置已安全取消。请检查服务器连接后重试。",
+        ("setup_timed_out", false) => "Setup timed out. Check the current hosting status and server connection before retrying.",
+        ("setup_timed_out", true) => "设置超时。请先检查当前托管状态和服务器连接，再重试。",
         ("daemon_sign_in_cancelled" | "daemon_enrollment_cancelled" | "daemon_enrollment_detached", false) => "Sign-in was cancelled or expired. Retry when you are ready to finish in your browser.",
         ("daemon_sign_in_cancelled" | "daemon_enrollment_cancelled" | "daemon_enrollment_detached", true) => "登录已取消或过期。准备好后请重试并在浏览器中完成登录。",
         ("daemon_already_running", false) => "Another setup is running. Finish or close that setup, then retry here.",
@@ -112,6 +113,10 @@ pub fn failure_message(code: &str, zh: bool) -> &'static str {
         ("matrix_authorization_unavailable" | "matrix_authorization_required", true) => "浏览器授权暂不可用。请检查连接并完成浏览器登录后重试。",
         ("daemon_owner_root_invalid" | "daemon_handover_transition_refused" | "daemon_enrollment_storage_unavailable" | "daemon_session_storage_unavailable" | "daemon_socket_unsafe", false) => "Local hosting state could not be opened safely. Check the app installation and its data-folder permissions, then retry.",
         ("daemon_owner_root_invalid" | "daemon_handover_transition_refused" | "daemon_enrollment_storage_unavailable" | "daemon_session_storage_unavailable" | "daemon_socket_unsafe", true) => "无法安全打开本地托管状态。请检查应用安装和数据目录权限后重试。",
+        ("daemon_install_location_unsupported", false) => "Move Hagency Hosting to Applications, then retry starting the service.",
+        ("daemon_install_location_unsupported", true) => "请将 Hagency Hosting 移到“应用程序”目录，然后重试启动服务。",
+        ("daemon_service_stop_pending", false) => "The previous hosting service is still stopping. Wait for it to finish, then retry starting the service.",
+        ("daemon_service_stop_pending", true) => "之前的托管服务仍在停止。请等待完成后重试启动服务。",
         (_, false) => "Hosting setup failed. Check the server, account and app installation, then retry.",
         (_, true) => "托管设置失败。请检查服务器、账号和应用安装后重试。",
     }
@@ -135,7 +140,10 @@ impl Setup {
             emit(Progress::Enabling);
             let mut enable = Command::new(binary);
             enable.args(["daemon", "install", "--home"]).arg(home);
-            if run(enable, Duration::from_secs(30), &worker_cancel, false, || {}).is_err() { return emit(Progress::Failed("service_start_failed")); }
+            if let Err(error) = run(enable, Duration::from_secs(30), &worker_cancel, false, || {}) {
+                let code = failure_code(&error);
+                return emit(Progress::InstallFailed(if code == "setup_failed" { "service_start_failed" } else { code }));
+            }
             // launchctl accepting a job is installation, not executor readiness.
             emit(Progress::Installed);
         });
@@ -151,6 +159,8 @@ mod tests {
     fn helper_errors_are_classified_without_exposing_raw_output() {
         assert_eq!(helper_failure("Error: daemon_other_owner_enrolled account=private"), "daemon_other_owner_enrolled");
         assert_eq!(helper_failure("token=private provider message"), "setup_failed");
+        assert_eq!(helper_failure("daemon_install_location_unsupported: /private/account/path"), "daemon_install_location_unsupported");
+        assert_eq!(helper_failure("daemon_service_stop_pending: details"), "daemon_service_stop_pending");
         assert_eq!(failure_code(&io::Error::from(io::ErrorKind::TimedOut)), "setup_timed_out");
         assert!(!failure_message("untrusted provider output", false).contains("untrusted"));
     }
