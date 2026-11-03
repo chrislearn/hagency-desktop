@@ -216,6 +216,8 @@ struct ProjectRevoke {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Contribute {
+    #[serde(default)]
+    publication_first: bool,
     command_id: String,
     resource_id: String,
     expected_revision: String,
@@ -932,6 +934,7 @@ fn central_command(service: &str, args: Value) -> Result<Option<ManagementComman
         "hagency.connections.create" => {
             let a: Contribute = parse(args)?;
             ManagementCommand::Contribute {
+                publication_first: a.publication_first,
                 command_id: a.command_id,
                 resource_id: a.resource_id,
                 expected_revision: a.expected_revision,

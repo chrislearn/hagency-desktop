@@ -187,6 +187,7 @@ H.dpol=dpol
 let A = {}
 A.t = fn(en, zh){ if mod.rinx_i18n.language() == "zh-CN" { return zh } return en }
 A.state_text = fn(state){
+    if state == "draft" { return A.t("Publication draft", "发布草稿") }
     if state == "pending_admission" || state == "pending" { return A.t("Awaiting administrator", "等待管理员审批") }
     if state == "admitted" || state == "approved" { return A.t("Admission approved", "已批准加入") }
     if state == "rejected" { return A.t("Declined", "已拒绝") }
@@ -2203,8 +2204,28 @@ A.dpol_error=fn(code){
 }
 
 // Server & Publishing (owner): the pool's server connection as a detail page.
-// Its steps are the pool banner's: connect, the administrator's approval, publish.
+// New pools submit owner terms before administrator approval; legacy commands retain their flow.
+A.publication_first=fn(){
+    if H.session==nil {return false}
+    let {features=[]}=H.session
+    for feature in features {if feature=="pool-publication-first-v1" {return true}}
+    return false
+}
+A.publication_draft=fn(c){return c!=nil && c.state=="draft" && A.recipient_optional(c,"publicationFirst")==true}
+// Native confirmation submits capacity and the admission request together.
+// A cancelled form leaves only a private, resumable draft.
+A.publish_offer=fn(c){
+    if H.busy || H.command!=nil || !A.publication_draft(c) {return}
+    A.request("hagency.grants.review",{contributionId:c.id applicants:[H.session.account]},fn(v){
+        A.pool_keep_summary(c.id,v)
+        A.open_connection(c.id)
+    })
+}
 A.publish_steps_text=fn(step){
+    if A.publication_first() {
+        if step>3 {return A.t("Published · Approved","已发布 · 已批准")}
+        return if step==2 {A.t("Step 2 of 2 · Administrator approval","第 2 步，共 2 步 · 管理员批准")} else {A.t("Step 1 of 2 · Publish pool","第 1 步，共 2 步 · 发布资源池")}
+    }
     if step>3 {return A.t("All 3 steps done · Connect › Approval › Publish","3 步都已完成 · 连接服务器 › 管理员批准 › 发布额度")}
     return A.t("Step ","第 ")+step+A.t(" of 3 · Connect › Approval › Publish"," 步，共 3 步 · 连接服务器 › 管理员批准 › 发布额度")
 }
@@ -2218,6 +2239,7 @@ A.server_name=fn(){
 }
 A.server_status=fn(c){
     let cap=H.connection_capacity
+    if A.publication_draft(c) {return {text:A.t("Draft","草稿") tone:"waiting" step:1}}
     if c.state=="pending_admission" || c.state=="pending" {return {text:A.t("Waiting for approval","等管理员批准") tone:"waiting" step:2}}
     if c.state=="rejected" {return {text:A.t("Not approved","管理员没有批准") tone:"attention" step:2}}
     if c.state=="revoked" {return {text:A.t("Connection closed","连接已关闭") tone:"" step:1}}
@@ -2238,6 +2260,8 @@ A.server_publish=fn(c){
 }
 A.server_next=fn(c){
     let q=H.selected.request
+    if A.publication_draft(c) {return A.t("Confirm the pool terms once. It becomes available after administrator approval.","确认一次发布信息，管理员批准后即可使用。未确认的草稿不会送审。")}
+    if c.state=="pending_admission" && A.recipient_optional(c,"publicationFirst")==true {return A.t("Your capacity and access list are submitted. The pool becomes available when the administrator approves.","额度和可申请名单已提交，管理员批准后即可使用，无需再次发布。")}
     if c.state=="pending_admission" || c.state=="pending" {return A.t(A.sub_person(q.approverMxid)+" is reviewing it. Once approved, set the per-request limit on the pool page and publish.",A.sub_join(A.sub_person(q.approverMxid),"正在审核。批准后，回到资源池设置每次申请上限并发布。"))}
     if c.state=="rejected" {return A.t("You can request approval again below.","可以在下方重新申请批准。")}
     if c.state=="revoked" {return A.t("Agents can’t request this pool on the server any more.","服务器上的 Agent 不能再申请这个资源池。")}
@@ -5040,6 +5064,7 @@ A.pool_published=fn(conn,grant){
 // the authorization period in the publication form.
 A.pool_status=fn(conn,grant,low,known){
     if !known {return {key:"" text:"" tone:""}}
+    if A.publication_draft(conn) {return {key:"draft" text:A.t("Draft","草稿") tone:"waiting"}}
     if conn!=nil && conn.state=="pending_admission" {return {key:"pending" text:A.t("Waiting for approval","等管理员批准") tone:"waiting"}}
     if A.pool_published(conn,grant) {
         if low {return {key:"low" text:A.t("Low capacity","额度快用完") tone:"attention"}}
@@ -5684,8 +5709,9 @@ A.pool_view=fn(detail){
     v.quotaReason=""
     if v.connState=="loading" || (v.connState=="ready" && c.state=="admitted" && v.grantState=="loading") {v.quotaReason=A.t("Checking publication…","正在读取发布状态…")}
     else if v.connState=="error" {v.quotaReason=A.t("Couldn’t read the server connection.","暂时无法读取服务器连接。")}
-    else if c==nil {v.quotaReason=A.t("Connect to a server first; the limit is set when you publish.","先连接服务器，获准后在发布时设置。")}
-    else if c.state=="pending_admission" {v.quotaReason=A.t("You can set it once the administrator approves.","管理员批准后即可设置。")}
+    else if c==nil {v.quotaReason=if A.publication_first(){A.t("Choose the limit when publishing this pool.","发布资源池时选择额度。")}else{A.t("Connect to a server first; the limit is set when you publish.","先连接服务器，获准后在发布时设置。")}}
+    else if A.publication_draft(c) {v.quotaReason=A.t("Confirm the quota and period to submit this draft.","确认额度和周期后提交此草稿。")}
+    else if c.state=="pending_admission" {v.quotaReason=if A.recipient_optional(c,"publicationFirst")==true {A.t("Submitted with your publication. Administrator approval makes it available.","已随发布提交，管理员批准后直接生效。")} else {A.t("You can set it once the administrator approves.","管理员批准后即可设置。")}}
     else if c.state!="admitted" {v.quotaReason=A.t("The server connection is closed. Ask to join again first.","服务器连接已关闭，请先重新连接服务器。")}
     else if v.grantState=="unsupported" {v.quotaReason=A.t("This server can’t set it from here yet.","此服务器暂不支持在这里设置。")}
     else if v.grantState!="ready" {v.quotaReason=A.t("Couldn’t confirm what is published. Try again.","暂时无法确认已发布的额度，请重试。")}
@@ -6388,12 +6414,14 @@ A.pool_server_text=fn(v){
     if v.published {return A.t("Published","已发布")}
     return A.t("Not published","未发布")
 }
-// Publication steps for a pool that is not live yet: connect, approval, publish.
+// The next action before a pool becomes available, including legacy connections.
 A.pool_banner=fn(v){
     let none={kind:"" title:"" text:"" step:0 action:""}
     if v.connState=="loading" {return none}
+    if A.publication_draft(v.conn) {return {kind:"draft" title:A.t("Finish publishing","完成发布") text:A.t("Confirm the quota, period and people once. Administrator approval makes the pool available.","一次确认额度、周期和可申请成员，管理员批准后即可使用。") step:1 action:A.t("Continue Publishing…","继续发布…")}}
+    if v.conn!=nil && v.conn.state=="pending_admission" && A.recipient_optional(v.conn,"publicationFirst")==true {return {kind:"pending" title:A.t("Waiting for the administrator","等服务器管理员批准") text:A.t("Your capacity is submitted. No further publication is needed after approval.","额度已随申请提交，批准后直接可用，无需再次发布。") step:2 action:A.t("View Request","查看申请")}}
     if v.connState=="error" {return {kind:"error" title:A.t("Couldn’t read the server connection","暂时无法读取服务器连接") text:A.t("Status and limits may be out of date.","状态和额度可能不是最新的。") step:0 action:A.t("Try Again","重试")}}
-    if v.conn==nil {return {kind:"connect" title:A.t("Not connected to a server yet","还没有连接服务器") text:A.t("Connect it, wait for the administrator to approve, then publish. Agents can request it after that.","连接服务器、等管理员批准后发布，Agent 就能申请了。") step:1 action:A.t("Connect to Server","连接服务器")}}
+    if v.conn==nil {return {kind:"connect" title:if A.publication_first(){A.t("Not published","未发布")}else{A.t("Not connected to a server yet","还没有连接服务器")} text:if A.publication_first(){A.t("Publish the quota, period and people once. Administrator approval makes it available.","一次发布额度、周期和可申请成员，管理员批准后即可使用。")}else{A.t("Connect it, wait for the administrator to approve, then publish. Agents can request it after that.","连接服务器、等管理员批准后发布，Agent 就能申请了。")} step:1 action:if A.publication_first(){A.t("Publish Pool…","发布资源池…")}else{A.t("Connect to Server","连接服务器")}}}
     if v.conn.state=="pending_admission" {return {kind:"pending" title:A.t("Waiting for the administrator","等服务器管理员批准") text:A.t("Once approved, check the per-request limit below and publish.","批准后，确认下方的每次申请上限并发布。") step:2 action:A.t("View Connection","查看连接")}}
     if v.conn.state!="admitted" {return {kind:"closed" title:A.t("Server connection closed","服务器连接已关闭") text:A.t("Request admission again before publishing.","重新连接服务器后才能发布。") step:1 action:A.t("Server and Publishing","服务器与发布")}}
     if v.grantState=="loading" || v.published {return none}
@@ -6403,6 +6431,7 @@ A.pool_banner=fn(v){
 }
 A.pool_banner_action=fn(kind){
     if H.busy || H.resource_detail==nil {return}
+    if kind=="draft" && H.pool_info!=nil {A.publish_offer(H.pool_info.conn) return}
     if kind=="error" {A.pool_info_retry() return}
     if kind=="device" {A.dev_fix("pool",if H.pool_info==nil {nil} else {H.pool_info.board}) return}
     A.resource_connection(H.resource_detail.resource)
@@ -6817,6 +6846,8 @@ A.pool_quota_when=fn(v){
     if v.quotaMode=="scheduled" {return A.t(A.pool_next_month_name(v.now)+" is published ahead, so this month’s per-request limit and list can’t change. "+A.pool_change_again(),A.pool_next_month_name(v.now)+"已提前发布，本月的每次申请上限和名单都不能再改。"+A.pool_change_again())}
     if v.published {return A.t("Applies when you next publish, from "+A.pool_next_month(v.now),"下次发布时生效，"+A.pool_next_month(v.now)+"起")}
     if v.quotaEditable {return A.t("Applies when you tap ","点「")+A.pool_publish_label(v.now)+A.t("","」时生效")}
+    if v.conn!=nil && v.conn.state=="pending_admission" && A.recipient_optional(v.conn,"publicationFirst")==true {return A.t("Submitted · takes effect after administrator approval","已提交 · 管理员批准后生效")}
+    if v.connState=="none" && A.publication_first() {return A.t("Confirm when publishing; approval makes it available","发布时确认，批准后生效")}
     if v.connState=="none" || (v.conn!=nil && v.conn.state=="pending_admission") {return A.t("Applies when you publish after approval","获准后发布时生效")}
     if v.connState=="loading" {return ""}
     if v.boardState=="ready" && !v.deviceReady && v.lapsed {return A.t("Applies when you publish, once this computer is set up","这台电脑设置好后，发布时生效")}
@@ -7884,6 +7915,7 @@ A.retry_command = fn(){
             if command.service == "hagency.personal_agents.policy.save" || command.service == "hagency.personal_agents.observe" {A.open_personal_agent(r.data.agentId)}
             if A.cleanup_enabled() && (command.service == "hagency.agents.cancel" || command.service == "hagency.agents.revoke") {A.open_removal(r.data.agentRequest.id)}
             if command.service == "hagency.allocations.decide" || command.service == "hagency.allocations.release" {A.open_allocation(r.data.allocation.id)}
+            if command.service=="hagency.connections.create" && A.publication_draft(r.data.admission.contribution) {A.publish_offer(r.data.admission.contribution) return}
             if command.service=="hagency.connections.reoffer" || command.service == "hagency.connections.create" || command.service == "hagency.inbox.decide" || command.service == "hagency.connections.revoke" || command.service == "hagency.connections.verify" || command.service == "hagency.connections.resume" { A.open_connection(r.data.admission.contribution.id) }
             if command.service == "hagency.projects.request" || command.service == "hagency.projects.decide" || command.service == "hagency.projects.revoke" {A.open_project(r.data.project.id)}
         } else {
@@ -8014,7 +8046,9 @@ A.enroll = fn(){
 A.contribute = fn(){
     H.wizard.label = H.wizard.label.trim()
     if H.wizard.label == "" { H.notice = A.t("Enter the name to show on the server.", "请填写在服务器上显示的名称。") A.redraw() return }
-    A.submit("hagency.connections.create", {resourceId: H.wizard.resource.resourceId expectedRevision: H.wizard.resource.revision label: H.wizard.label coordinatorMxid: H.session.account})
+    let args={resourceId:H.wizard.resource.resourceId expectedRevision:H.wizard.resource.revision label:H.wizard.label coordinatorMxid:H.session.account}
+    if A.publication_first() {args.publicationFirst=true}
+    A.submit("hagency.connections.create",args)
 }
 A.resource_connection=fn(row){
     if H.busy || H.command!=nil{return}
@@ -9630,13 +9664,13 @@ A.render_page = fn(){
         if H.ux.resourceJourney && A.has_page(["provider_accounts","provider_account","account_prepare","account_enrollment","wizard","action"]) && !(H.page=="action" && H.entry_role=="owner") && !(H.page=="wizard" && H.wizard.step>=3) {mod.widgets.HagencySection{
     mod.widgets.HagencyEyebrow{text:A.t("PUBLISH A RESOURCE POOL","发布资源池")}
     View{width:Fill height:Fit flow:Flow.Right{wrap:true} spacing:8
-        for step in [{n:0 title:A.t("Coding tool","编码工具")},{n:1 title:A.t("Pool","资源池")},{n:2 title:A.t("Admission","加入服务器")},{n:3 title:A.t("Publish","发布")}] {
+        for step in (if A.publication_first(){[{n:0 title:A.t("Coding tool","编码工具")},{n:1 title:A.t("Pool","资源池")},{n:2 title:A.t("Publish","发布")},{n:3 title:A.t("Approval","审批")}]}else{[{n:0 title:A.t("Coding tool","编码工具")},{n:1 title:A.t("Pool","资源池")},{n:2 title:A.t("Admission","加入服务器")},{n:3 title:A.t("Publish","发布")}]}) {
             RoundedView{width:Fit height:Fit padding:Inset{left:10 right:10 top:6 bottom:6} draw_bg +: {color:if A.resource_stage()==step.n{mod.widgets.RINX_SELECTED}else{mod.widgets.RINX_PAGE} border_radius:theme.corner_radius}
                 mod.widgets.HagencyHint{width:Fit text:""+(step.n+1)+"  "+step.title draw_text.color:if A.resource_stage()==step.n{mod.widgets.RINX_ACCENT}else{mod.widgets.RINX_MUTED}}
             }
         }
     }
-    mod.widgets.HagencyHint{text:if A.resource_stage()==0{A.t("Choose a provider account, then sign in on the provider’s page.","选择模型服务账号，然后在服务商页面登录。")}else if A.resource_stage()==1{A.t("Choose what this device can contribute: model, capabilities and budget.","选择这台电脑提供的模型、能力和额度。")}else if A.resource_stage()==2{A.t("The server administrator reviews admission; you approve allocation of your capacity.","服务器管理员审核加入申请，由你批准自己的容量分配。")}else{A.t("Set the budget and expiry, then publish once. Published pools are ready for Agent requests.","设置额度与到期时间后，一次发布。已发布的资源池可直接审批 Agent 申请。")}}
+    mod.widgets.HagencyHint{text:if A.publication_first(){A.t("Publish the quota, period and people once. Administrator approval makes the pool available.","一次发布额度、周期和可申请成员，管理员批准后即可使用。")}else if A.resource_stage()==0{A.t("Choose a provider account, then sign in on the provider’s page.","选择模型服务账号，然后在服务商页面登录。")}else if A.resource_stage()==1{A.t("Choose what this device can contribute: model, capabilities and budget.","选择这台电脑提供的模型、能力和额度。")}else if A.resource_stage()==2{A.t("The server administrator reviews admission; you approve allocation of your capacity.","服务器管理员审核加入申请，由你批准自己的容量分配。")}else{A.t("Set the budget and expiry, then publish once. Published pools are ready for Agent requests.","设置额度与到期时间后，一次发布。已发布的资源池可直接审批 Agent 申请。")}}
 }}
         if H.command == nil && H.saved_commands.len() > 0 && A.sub_page() {View{width:Fill height:Fit align:Align{x:0.5} padding:Inset{top:10} mod.widgets.HagencyColumn{
             mod.widgets.HagencyListLabel{text:A.t("UNFINISHED REQUESTS","未完成的请求")}
@@ -13468,9 +13502,9 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                                     mod.widgets.HagencyListSubtitle{text:banner.text}
                                     if banner.step>0 {View{width:Fill height:Fit flow:Down spacing:5 padding:Inset{top:2}
                                         View{width:Fill height:4 flow:Right spacing:4
-                                            for step in [1,2,3] {RoundedView{width:Fill height:4 show_bg:true draw_bg +: {color:if step<banner.step {mod.widgets.RINX_SUCCESS_FG} else if step==banner.step {mod.widgets.RINX_ACCENT} else {mod.widgets.RINX_BORDER} border_radius:2.0}}}
+                                            for step in (if A.publication_first(){[1,2]}else{[1,2,3]}) {RoundedView{width:Fill height:4 show_bg:true draw_bg +: {color:if step<banner.step {mod.widgets.RINX_SUCCESS_FG} else if step==banner.step {mod.widgets.RINX_ACCENT} else {mod.widgets.RINX_BORDER} border_radius:2.0}}}
                                         }
-                                        mod.widgets.HagencyListSubtitle{text:A.t("Step ","第 ")+banner.step+A.t(" of 3 · Connect › Approval › Publish"," 步，共 3 步 · 连接服务器 › 管理员批准 › 发布额度")}
+                                        mod.widgets.HagencyListSubtitle{text:A.publish_steps_text(banner.step)}
                                     }}
                                 }
                             }
@@ -13519,7 +13553,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                             resource_period_value := mod.widgets.HagencyListValue{text:if v.calendar==nil {A.t("Not set","未设置")} else {A.pool_cadence(v.calendar)}}
                         }
                         mod.widgets.HagencyWrapSubtitle{text:if v.calendar==nil {A.t("Choose day, week or month and a time zone when publishing. Agents inherit this period.","发布时选择日／周／月和时区；Agent 沿用此周期。")} else {v.calendar.timeZone+A.t(" · Agents use this same period and time zone."," · Agent 沿用此周期和时区。")}}
-                        if v.calendar==nil && v.quotaEditable {resource_period_choose := mod.widgets.HagencyBarText{text:A.t("Set Period & Publish…","设置周期并发布…") enabled:save.enabled && !save.maxDirty && !locked on_click:||A.pool_publish_quota()}}
+                        if v.calendar==nil && v.quotaEditable && !A.publication_first() {resource_period_choose := mod.widgets.HagencyBarText{text:A.t("Set Period & Publish…","设置周期并发布…") enabled:save.enabled && !save.maxDirty && !locked on_click:||A.pool_publish_quota()}}
                     }}
 
                     View{width:Fill height:Fit flow:Right align:Align{y:1.0}
@@ -16198,8 +16232,8 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
             }}
             // Connect a pool to the server: one name, who approves, and what happens next.
             if H.wizard.step == 3 {View{width:Fill height:Fit align:Align{x:0.5} padding:Inset{top:18 bottom:28} mod.widgets.HagencyColumn{View{width:Fill height:Fit flow:Down spacing:6
-                mod.widgets.HagencyLargeTitle{text:A.t("Connect to a Server","连接服务器")}
-                mod.widgets.HagencyListNote{padding:Inset{left:2 right:7 top:0 bottom:6} text:A.t("Step 1 of 3 · Connect › Approval › Publish","第 1 步，共 3 步 · 连接服务器 › 管理员批准 › 发布额度")}
+                mod.widgets.HagencyLargeTitle{text:if A.publication_first() {A.t("Publish Resource Pool","发布资源池")} else {A.t("Connect to a Server","连接服务器")}}
+                mod.widgets.HagencyListNote{padding:Inset{left:2 right:7 top:0 bottom:6} text:A.publish_steps_text(1)}
                 if H.notice!="" && !H.busy {View{width:Fill height:Fit padding:Inset{bottom:4} mod.widgets.HagencyStatus{draw_bg.color:mod.widgets.RINX_WARNING_BG
                     mod.widgets.HagencyCopy{text:A.notice_text() draw_text.color:mod.widgets.RINX_WARNING_FG}
                 }}}
@@ -16214,17 +16248,17 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                     mod.widgets.HagencyListTitle{text:A.t("Server administrator","服务器管理员")}
                     mod.widgets.HagencyListValue{text:A.sub_person(H.session.administrator)}
                 }}
-                mod.widgets.HagencyListNote{text:A.t("Once approved, publish this month on the pool’s page. You still approve each Agent’s request.","批准后，在资源池页面发布本月额度；每个 Agent 的申请仍要你批准。")}
+                mod.widgets.HagencyListNote{text:if A.publication_first() {A.t("Choose the quota, period and people in the next window. Submit once; administrator approval makes the pool available.","在下一页选择额度、周期和可申请成员，一次提交，管理员批准后即可使用。")} else {A.t("Once approved, publish this month on the pool’s page. You still approve each Agent’s request.","批准后，在资源池页面发布本月额度；每个 Agent 的申请仍要你批准。")}}
                 View{width:Fill height:Fit flow:Right spacing:12 padding:Inset{top:8}
                     wizard_cancel := mod.widgets.HagencyWideTinted{text:A.t("Cancel","取消") enabled:!H.busy && H.command==nil on_click: || A.wizard_leave()}
-                    submit := mod.widgets.HagencyWideButton{text:A.t("Connect","连接服务器") enabled:!H.busy && H.command==nil on_click: || A.contribute()}
+                    submit := mod.widgets.HagencyWideButton{text:if A.publication_first() {A.t("Continue…","继续…")} else {A.t("Connect","连接服务器")} enabled:!H.busy && H.command==nil on_click: || A.contribute()}
                 }
             }}}}
             if H.wizard.step == 4 && H.wizard.admission != nil && H.wizard.admission.contribution.state == "pending_admission" {View{width:Fill height:Fit align:Align{x:0.5} padding:Inset{top:18 bottom:28} mod.widgets.HagencyColumn{View{width:Fill height:Fit flow:Down spacing:6
                 View{width:Fill height:Fit flow:Down spacing:10 align:Align{x:0.5} padding:Inset{top:6 bottom:8}
                     mod.widgets.HagencyAvatar{draw_bg.color:mod.widgets.RINX_WARNING_BG mod.widgets.HagencyAvatarGlyph{draw_icon.svg:mod.rinx_icons.connection draw_icon.color:mod.widgets.RINX_WARNING_FG}}
-                    wizard_sent := mod.widgets.HagencyHeroName{text:A.t("Connection Requested","已申请连接服务器")}
-                    mod.widgets.HagencyHint{width:Fill align:Align{x:0.5} flow:Flow.Right{wrap:true} text:A.t("Step 2 of 3 · waiting for approval","第 2 步，共 3 步 · 等管理员批准")}
+                    wizard_sent := mod.widgets.HagencyHeroName{text:if A.recipient_optional(H.wizard.admission.contribution,"publicationFirst")==true {A.t("Submitted for Approval","已发布，等待批准")} else {A.t("Connection Requested","已申请连接服务器")}}
+                    mod.widgets.HagencyHint{width:Fill align:Align{x:0.5} flow:Flow.Right{wrap:true} text:A.publish_steps_text(2)}
                 }
                 mod.widgets.HagencyList{
                     mod.widgets.HagencySwitchRow{
@@ -16239,12 +16273,18 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                         mod.widgets.HagencyListValue{text:A.sub_person(H.wizard.admission.request.approverMxid)}
                     }
                 }
-                mod.widgets.HagencyListNote{text:A.t("You can leave this page. Once it’s approved, the pool’s page asks you to publish.","可以先离开这一页；批准后，资源池页面会提示你发布。")}
+                mod.widgets.HagencyListNote{text:if A.recipient_optional(H.wizard.admission.contribution,"publicationFirst")==true {A.t("You can leave this page. The pool becomes available after approval without another confirmation.","可以离开此页，批准后资源池自动可用，无需再次确认。")} else {A.t("You can leave this page. Once it’s approved, the pool’s page asks you to publish.","可以先离开这一页；批准后，资源池页面会提示你发布。")}}
                 View{width:Fill height:Fit padding:Inset{top:8}
                     wizard_done := mod.widgets.HagencyWideButton{text:A.t("Back to the Pool","回到资源池") enabled:!H.busy on_click: || {if H.wizard.resource!=nil {A.open_resource(H.wizard.resource.resourceId)} else {A.return_list("resources")}}}
                 }
             }}}}
-            if H.wizard.step == 4 && H.wizard.admission != nil && H.wizard.admission.contribution.state != "pending_admission" {mod.widgets.HagencyCard{
+            if H.wizard.step==4 && H.wizard.admission!=nil && A.publication_draft(H.wizard.admission.contribution) {mod.widgets.HagencyCard{
+                mod.widgets.HagencyTitle{text:A.t("Publication Draft","发布草稿")}
+                mod.widgets.HagencyCopy{text:A.t("The administrator has not received this draft. Confirm the quota, period and people to submit it.","此草稿尚未送审。确认额度、周期和可申请成员后，一次提交。")}
+                wizard_publish := mod.widgets.HagencyWideButton{text:A.t("Continue Publishing…","继续发布…") enabled:!H.busy && H.command==nil on_click:||A.publish_offer(H.wizard.admission.contribution)}
+                wizard_leave := mod.widgets.HagencyButton{text:A.t("Back to the Pool","回到资源池") enabled:!H.busy on_click:||A.wizard_leave()}
+            }}
+            if H.wizard.step == 4 && H.wizard.admission != nil && H.wizard.admission.contribution.state != "pending_admission" && !A.publication_draft(H.wizard.admission.contribution) {mod.widgets.HagencyCard{
                 mod.widgets.HagencyTitle{text:A.connection_status(H.wizard.admission.contribution)}
                 mod.widgets.HagencyCopy{text:H.wizard.admission.contribution.label}
                 mod.widgets.HagencyHint{text:A.t("Approver", "审批人") + " · " + H.wizard.admission.request.approverMxid}
@@ -16381,12 +16421,15 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                 }
                 View{width:Fill height:Fit padding:Inset{bottom:4} mod.widgets.HagencyList{View{width:Fill height:Fit flow:Down spacing:8 padding:Inset{left:14 right:14 top:12 bottom:12}
                     View{width:Fill height:4 flow:Right spacing:4
-                        for step in [1,2,3] {RoundedView{width:Fill height:4 show_bg:true draw_bg +: {color:if step<st.step {mod.widgets.RINX_SUCCESS_FG} else if step==st.step {current} else {mod.widgets.RINX_BORDER} border_radius:2.0}}}
+                        for step in (if A.publication_first(){[1,2]}else{[1,2,3]}) {RoundedView{width:Fill height:4 show_bg:true draw_bg +: {color:if step<st.step {mod.widgets.RINX_SUCCESS_FG} else if step==st.step {current} else {mod.widgets.RINX_BORDER} border_radius:2.0}}}
                     }
                     mod.widgets.HagencyListSubtitle{text:A.publish_steps_text(st.step)}
                     mod.widgets.HagencyWrapTitle{text:A.server_next(c)}
                 }}}
 
+                if A.publication_draft(c) {
+                    server_publish_draft := mod.widgets.HagencyWideButton{text:A.t("Continue Publishing…","继续发布…") enabled:can on_click:||A.publish_offer(c)}
+                }
                 mod.widgets.HagencyListLabel{text:A.t("CONNECTION","连接")}
                 mod.widgets.HagencyList{
                     mod.widgets.HagencySwitchRow{

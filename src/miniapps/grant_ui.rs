@@ -1502,6 +1502,10 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
                     if !started {
                         v.status = tr("This month’s pool total allowance and list can’t change any more.").into();
                     }
+                    if s.form.is_some_and(|form| form.awaiting_admission) {
+                        v.title = tr("Submitted for Approval").into();
+                        v.lead = tr("Your quota, period and access list are submitted. Administrator approval makes this pool available without another confirmation.").into();
+                    }
                     v.facts_label = tr("This pool").into();
                     let until = p.summary.delegation_expires_at_ms.min(p.summary.period_end_ms);
                     v.facts = vec![Fact::new(tr("Shared until"), ends_at(until))];
@@ -3291,6 +3295,7 @@ impl GrantPreview {
             }
         });
         let form = kind.is_none().then(|| OwnerGrantForm {
+            awaiting_admission: f["awaitingAdmission"].as_bool().unwrap_or(false),
             calendar: serde_json::from_value(f["boundCalendar"].clone()).ok(),
             contribution_id: pool.clone(),
             resource_id: resource.clone(),
@@ -3559,7 +3564,7 @@ mod tests {
     }
     #[test]
     fn publication_form_requires_known_capacity_and_expiry_in_current_period() {
-        let mut form=OwnerGrantForm {calendar:None,contribution_id:"c".into(),resource_id:"r".into(),label:"Pool".into(),
+        let mut form=OwnerGrantForm {awaiting_admission:false,calendar:None,contribution_id:"c".into(),resource_id:"r".into(),label:"Pool".into(),
             context: ::hagency::native_owner::OwnerGrantReviewContext {
                 server_origin:"https://matrix.test".into(),profile_id:"profile".into(),resource_revision:"revision".into(),
                 framework:"codex".into(),model:"model".into(),remaining_tokens:Some(1_000_001),
@@ -3581,7 +3586,7 @@ mod tests {
         draft.managers.clear();assert!(!form_choices_valid(&form,&draft));
     }
     fn pool_form(remaining: u64) -> OwnerGrantForm {
-        OwnerGrantForm {calendar:None,contribution_id:"pool_1".into(),resource_id:"r".into(),label:"Pool".into(),
+        OwnerGrantForm {awaiting_admission:false,calendar:None,contribution_id:"pool_1".into(),resource_id:"r".into(),label:"Pool".into(),
             context: ::hagency::native_owner::OwnerGrantReviewContext {
                 server_origin:"https://matrix.test".into(),profile_id:"profile".into(),resource_revision:"revision".into(),
                 framework:"codex".into(),model:"model".into(),remaining_tokens:Some(remaining),
