@@ -37,6 +37,34 @@ let open=fn(row){
 let floor_reply={contributionId:"con_main" heldTokens:9000000 heldAgents:1 perRequestTokens:9000000 mostTokens:9000000 periodEndMs:1793491200000}
 '''
 CASES={
+'published_parent_is_not_counted_again_when_approving_an_agent': '''
+main.budget.pool.ceiling=500000000 main.budget.pool.committed=500000000 main.budget.remainingTokens=0
+open(main)
+let g={id:"con_main" ownerMxid:"@owner:test" publishedTokens:500000000 perRequestTokens:125000000 grantRevision:1 currentPeriodEndMs:1793491200000}
+H.pool_info.grant=g H.pool_info.floor={held:0 agents:0 most:500000000 perRequest:125000000}
+H.pool_meta={conns:[conn] grants:[g] requests:[] counts:[] now:now}
+let q={poolId:"con_main" requestedTokens:30000000}
+assert(A.reqs_blocked(q)=="")
+assert(A.reqs_after(q).search("470 M")>=0)
+H.pool_raise={rid:"resource_main" drawn:0 tokens:nil name:"Cucumber" asked:30000000}
+A.pool_raise_apply()
+assert(H.pool_raise==nil)
+assert(H.pool_edit.max==H.pool_edit.maxBase)
+// The real child ledger still blocks an insufficient pool, and the Agent
+// maximum is separate from the pool's total.
+H.pool_info.floor.held=490000000
+assert(A.reqs_blocked(q).search("10 M")>=0)
+q.requestedTokens=126000000
+assert(A.reqs_blocked(q).search("125 M")>=0)
+// No native reading must stay unknown. The server/native reservation checks
+// capacity after consent; 0 parent headroom cannot disable owner approval.
+q.requestedTokens=30000000 H.pool_info=nil
+assert(A.reqs_blocked(q)=="" && A.reqs_after(q)=="")
+g.nativeAvailableTokens=20000000
+assert(A.reqs_blocked(q).search("20 M")>=0)
+g.nativeAvailableTokens=500000000
+assert(A.reqs_blocked(q)=="")
+''',
 'recurring_terminal_and_renewal_statuses_are_truthful': '''
 let row={state:"rejected" reservationState:"pending" blockingReason:nil runtimeState:"idle" currentPeriod:{state:"revoked"}}
 assert(A.pool_tone(row)=="attention")

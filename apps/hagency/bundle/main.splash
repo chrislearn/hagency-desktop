@@ -1918,17 +1918,31 @@ A.reqs_filter=fn(filter){
 A.reqs_all_pools=fn(){if H.busy {return} H.owner.poolId="" H.owner.poolLabel="" A.reqs_load(nil)}
 // "Requests 0.1 M · from applicant", read as names rather than Matrix IDs.
 A.reqs_line=fn(q){return A.t("Requests ","申请 ")+A.tokens(q.requestedTokens)+A.t(" · from "," · 来自 ")+A.sub_person(q.managerMxid)}
-// What the pool has left after approving, when this page knows the pool's capacity.
+// A published grant is a parent reservation, not Agent consumption. Only its
+// child ledger can describe capacity available to an Agent request.
+A.reqs_capacity=fn(poolId){
+    let out={available:nil limit:nil}
+    let selected={grant:nil}
+    if H.pool_meta!=nil && H.pool_meta.grants!=nil {for g in H.pool_meta.grants {if g.id==poolId {selected.grant=g}}}
+    let p=H.pool_info
+    if p!=nil && p.conn!=nil && p.conn.id==poolId && p.grantState=="ready" {selected.grant=p.grant}
+    let g=selected.grant
+    if g==nil {return out}
+    out.limit=A.pool_published_tokens(g)
+    out.available=A.recipient_optional(g,"nativeAvailableTokens")
+    if p!=nil && p.conn!=nil && p.conn.id==poolId && p.grantState=="ready" && p.grant!=nil && A.recipient_optional(p,"floor")!=nil {
+        let total=A.recipient_optional(p.grant,"publishedTokens")
+        if total!=nil {out.available=max(0,total-p.floor.held)}
+    }
+    return out
+}
+// What the pool has left after approving, when its child ledger is known.
 A.reqs_after=fn(q){
     let {poolId=nil,requestedTokens=nil}=q
     if poolId==nil || requestedTokens==nil {return ""}
-    let found={rid:""}
-    if H.pool_meta!=nil && H.pool_meta.conns!=nil {for c in H.pool_meta.conns {if c.id==poolId {found.rid=c.resourceId}}}
-    if found.rid=="" && H.pool_info!=nil && H.pool_info.conn!=nil && H.pool_info.conn.id==poolId {found.rid=H.pool_info.rid}
-    if found.rid=="" {return ""}
-    let b=A.alert_live_left(found.rid)
-    if b==nil || b.remaining==nil || b.ceiling==nil {return ""}
-    return A.t(" Afterwards the pool has "+A.tokens(max(0,b.remaining-requestedTokens))+" left this month."," 批准后，这个资源池本月还剩 "+A.tokens(max(0,b.remaining-requestedTokens))+"。")
+    let capacity=A.reqs_capacity(poolId)
+    if capacity.available==nil {return ""}
+    return A.t(" Afterwards the pool has "+A.tokens(max(0,capacity.available-requestedTokens))+" left this period."," 批准后，这个资源池本期还剩 "+A.tokens(max(0,capacity.available-requestedTokens))+"。")
 }
 A.reqs_decidable=fn(q){let {canDecide=false,resourceOwnerMxid=nil}=q return canDecide==true && H.entry_role=="owner" && H.session!=nil && resourceOwnerMxid==H.session.account}
 A.reqs_ask=fn(q,kind){
@@ -1946,18 +1960,17 @@ A.reqs_pool_over=fn(){
     let rid=A.recipient_optional(H.reqs,"rid")
     if rid==nil || rid=="" {return false}
     let b=A.alert_live_left(rid)
-    return b!=nil && b.ceiling!=nil && b.remaining!=nil && b.remaining<=0
+    return b!=nil && b.ceiling!=nil && b.remaining!=nil && b.committed>b.ceiling
 }
 // Approving can't work while the pool has less left than the request: say so instead of offering it.
 A.reqs_blocked=fn(q){
     let {poolId=nil,requestedTokens=nil}=q
     if poolId==nil || requestedTokens==nil {return ""}
-    let rid=A.reqs_pool_rid(poolId)
-    if rid=="" {return ""}
-    let b=A.alert_live_left(rid)
-    if b==nil || b.remaining==nil || b.ceiling==nil {return ""}
-    if b.remaining<=0 {return A.t("Can’t approve for now: the pool is over its monthly maximum. Raise the maximum or stop some Agents first.","暂时不能批准：资源池超出了每月上限。先调高每月上限，或停止部分 Agent。")}
-    if b.remaining<requestedTokens {return A.t("Can’t approve for now: the pool has "+A.tokens(b.remaining)+" left this month, less than the "+A.tokens(requestedTokens)+" asked for.","暂时不能批准：资源池本月只剩 "+A.tokens(b.remaining)+"，不够它申请的 "+A.tokens(requestedTokens)+"。")}
+    let capacity=A.reqs_capacity(poolId)
+    if capacity.limit!=nil && requestedTokens>capacity.limit {return A.t("This request exceeds the pool’s per-Agent maximum of "+A.tokens(capacity.limit)+".","此申请超过资源池设置的单个 Agent 上限 "+A.tokens(capacity.limit)+"。")}
+    // Unknown capacity is checked atomically by the native executor after the
+    // owner's decision; never substitute the parent's unallocated remainder.
+    if capacity.available!=nil && capacity.available<requestedTokens {return A.t("The published pool has "+A.tokens(capacity.available)+" available this period, less than the "+A.tokens(requestedTokens)+" requested.","已发布资源池本期可用 "+A.tokens(capacity.available)+"，不足申请的 "+A.tokens(requestedTokens)+"。")}
     return ""
 }
 // From a blocked request: the pool's maximum with a value that makes room for it preselected.
@@ -5937,7 +5950,9 @@ A.pool_raise_apply=fn(){
     if v.maxMode=="locked" {H.pool_raise=nil return}
     // What this month needs now: used and given out, plus the request it should make room for.
     let asked=A.recipient_optional(r,"asked")
-    let drawn=v.b.committed+(if asked==nil {0} else {asked})
+    let available=if v.published {A.pool_available(v)} else {v.b.remaining}
+    if asked!=nil && available==nil {H.pool_raise=nil return}
+    let drawn=v.b.committed+(if asked==nil {0} else {max(0,asked-available)})
     if v.b.ceiling==nil || drawn<=v.b.ceiling {H.pool_raise=nil return}
     let want=A.pool_raise_suggest(drawn,v.b.ceiling,v.maxMax)
     if want<=v.b.ceiling {H.pool_raise=nil return}
