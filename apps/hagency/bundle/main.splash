@@ -3700,11 +3700,14 @@ A.web_refresh_now=fn(){let r=H.webRefresh
     if !H.ready || H.needs_signin || !r.visible || H.busy || r.inFlight{return}
     let plan=A.web_refresh_plan() if plan==nil{return}
     let signature={page:H.page service:plan.service args:plan.args}.to_json()
-    r.epoch=r.epoch+1 let epoch=r.epoch r.inFlight=true H.busy=true
+    // Observations must not lock a confirmation opened while the read is in flight.
+    // A later foreground request owns its own busy state and supersedes this result.
+    let read_epoch=H.read_epoch
+    r.epoch=r.epoch+1 let epoch=r.epoch r.inFlight=true
     host.request(plan.service,plan.args,fn(reply){
-        r.inFlight=false H.busy=false
+        r.inFlight=false
         let current=A.web_refresh_plan()
-        if r.epoch!=epoch || !r.visible || current==nil || signature!={page:H.page service:current.service args:current.args}.to_json(){return}
+        if r.epoch!=epoch || !r.visible || H.busy || H.read_epoch!=read_epoch || current==nil || signature!={page:H.page service:current.service args:current.args}.to_json(){return}
         if reply.is_ok{H.ux.errorCode="" plan.done(reply.data)}else{
             H.ux.errorCode=reply.error
             if H.page=="overview"{H.ux.dashboardError=true}
