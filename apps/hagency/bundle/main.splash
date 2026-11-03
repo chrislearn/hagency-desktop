@@ -8641,9 +8641,10 @@ A.pool_cadence=fn(c){
 A.pool_renewal=fn(r){if A.recipient_optional(r,"renewalMode")!="automatic" && A.recipient_optional(r,"renewalMode")!="owner" {return A.t("Renewal not selected","续期方式尚未选择")} return if A.recipient_optional(r,"renewalMode")=="automatic" {A.t("Automatic renewal","自动续期")} else {A.t("Resource owner renews","资源 owner 手动续期")}}
 A.pool_period=fn(r){return A.recipient_optional(r,"currentPeriod")}
 A.pool_period_state=fn(r){
-    if r.state=="rejected" {return A.t("Request declined","申请已拒绝")}
-    if r.state=="expired" {return A.t("Request expired","申请已过期")}
-    if r.state=="cancelled" {return A.t("Request cancelled","申请已取消")}
+    let request_state=A.recipient_optional(r,"state")
+    if request_state=="rejected" {return A.t("Request declined","申请已拒绝")}
+    if request_state=="expired" {return A.t("Request expired","申请已过期")}
+    if request_state=="cancelled" {return A.t("Request cancelled","申请已取消")}
     let p=A.pool_period(r) if p==nil{return ""}
     if p.state=="request_limit_exceeded"{return A.t("Paused · per-Agent maximum is too low","已暂停 · 单个 Agent 上限不足")}
     if p.state=="renewal_refused"{return A.t("Renewal refused · owner can review and retry","续期被拒绝 · owner 可检查后重试")}
