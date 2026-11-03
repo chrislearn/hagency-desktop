@@ -97,6 +97,20 @@ H.busy=false H.policy_mode="result" draw()
 assert(find("policy_save_status").height==initial.height && find("policy_web_search").enabled)
 assert(find("policy_result_done")==nil && find("policy_standard").enabled)
 '''
+ resource=source[source.index('        if H.page=="default_policy" {'):source.index('        if H.page=="',source.index('        if H.page=="default_policy" {')+20)]
+ CASES['resource_default_web_switch_renders_and_preserves_permissions']='''
+H.page="default_policy" H.dpol.resource="resource" H.dpol.detail={resource:{id:"resource" framework:"codex"}}
+H.dpol.mode="catalog" H.dpol.state="ready" H.dpol.yolo=true H.dpol.web=false H.dpol.catalog={resourceId:"resource" revision:"before" agents:[]}
+A.web_can_edit=fn(){return true}
+host.request=fn(service,args,done){calls.push({service:service args:args}) callbacks.push(done)}
+let draw=fn(){widgets=[] let tree=View{'''+resource+'''} visit(tree)}
+draw() let toggle=find("default_policy_web_search")
+assert(toggle!=nil && toggle.enabled && toggle.draw_bg.selected==0)
+toggle.on_click()
+assert(calls.len()==1 && calls[0].service=="hagency.web_catalog.prepare")
+assert(calls[0].args.change.yolo && calls[0].args.change.webSearch)
+draw() assert(!find("default_policy_web_search").enabled && find("default_policy_web_search").draw_bg.selected==0)
+'''
  pending=source[source.index('        if H.command != nil && !H.busy && A.sub_page()'):source.index('        if false && H.page=="overview"')]
  CASES['pending_save_keeps_layout_and_uncertain_result_keeps_retry']='''let pending_view=fn(){return View{width:Fill height:Fit
 '''+pending+'''}}

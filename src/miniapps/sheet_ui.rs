@@ -109,6 +109,7 @@ pub(super) struct SheetView {
     /// What the slider sets: the per-request limit or the monthly maximum.
     pub quota_label: String,
     pub calendar: Option<hagency_core::recurring_quota::Calendar>,
+    pub renewal_mode: Option<hagency_core::recurring_quota::RenewalMode>,
     pub quota_hint: String,
     /// The technical details disclosure.
     pub more_label: String,

@@ -38,25 +38,24 @@ A.pool_succeed=fn(kind,tokens,people){H.calls.push({kind:kind tokens:tokens})}
 A.pool_renew()
 assert(H.calls.len()==1 && H.calls[0].kind=="renewal" && H.calls[0].tokens==1000)
 ''',
-    "reauthorization_requires_owner_and_explicit_new_terms": '''
+    "reauthorization_inherits_pool_policy_and_requires_owner": '''
 H.pool_detail={id:"old-request" revision:3 resourceOwnerMxid:"@owner:test" canReallocate:true currentGrantRevision:8}
 H.pool_confirm="reallocate" H.entry_role="owner" H.session.account="@owner:test"
 H.pool_reallocate_mode="" A.pool_reallocate() assert(H.calls.len()==0)
-H.pool_reallocate_mode="automatic" A.pool_reallocate()
+H.pool_detail.renewalMode="automatic" A.pool_reallocate()
 assert(H.calls.len()==1 && H.calls[0].service=="hagency.pools.agents.reallocate")
 assert(H.calls[0].args.requestId=="old-request" && H.calls[0].args.expectedRevision==3 && H.calls[0].args.expectedGrantRevision==8 && H.calls[0].args.renewalMode=="automatic")
 H.entry_role="manager" A.pool_reallocate() assert(H.calls.len()==1)
-assert(A.pool_renewal({})==A.t("Renewal not selected","续期方式尚未选择"))
+assert(A.pool_renewal({})==A.t("Owner renewal · legacy pool","资源 owner 手动续期 · 历史资源池"))
 ''',
 
-    "recurring_request_requires_explicit_mode_and_keeps_owner_calendar": '''
-pool.calendar={cadence:"weekly" timeZone:"America/Los_Angeles"}
-pool.periodResetLabel="2026-11-09 00:00 PST · America/Los_Angeles"
-H.pool_draft.tokens="1000" render()
-assert(!button("pool_review").enabled && button("pool_renew_automatic")!=nil && button("pool_renew_owner")!=nil)
-button("pool_renew_automatic").on_click() render()
-assert(H.pool_draft.renewalMode=="automatic" && button("pool_review").enabled)
-H.pool_draft.roomCommand="existing" H.pool_draft.roomId="!existing:test"
+    "recurring_request_inherits_pool_mode_without_applicant_selector": '''
+pool.calendar={cadence:"weekly" timeZone:"America/Los_Angeles"} pool.renewalMode="automatic"
+pool.periodResetLabel="Monday" H.pool_draft.tokens="1000"
+H.pool_draft.renewalMode="owner"
+render()
+assert(button("pool_review").enabled && button("pool_renew_automatic")==nil && button("pool_renew_owner")==nil)
+H.pool_draft.roomCommand="original-room" H.pool_draft.roomId="!room:test"
 A.pool_review() A.pool_send_verified()
 assert(H.calls[0].service=="hagency.pools.agents.request" && H.calls[0].args.request.renewalMode=="automatic")
 assert(A.recipient_optional(H.calls[0].args.request,"calendar")==nil)

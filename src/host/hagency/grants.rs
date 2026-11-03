@@ -138,6 +138,7 @@ pub(crate) struct GrantChoices {
     pub expires_utc: String,
     pub self_approval: bool,
     pub calendar: Option<hagency_core::recurring_quota::Calendar>,
+    pub renewal_mode: Option<hagency_core::recurring_quota::RenewalMode>,
 }
 impl GrantChoices {
     pub fn parse(self) -> Result<OwnerGrantChoices, String> {
@@ -185,7 +186,7 @@ impl GrantChoices {
         {
             return Err("invalid_grant_manager".into());
         }
-        Ok(OwnerGrantChoices { per_request_tokens,
+        Ok(OwnerGrantChoices { renewal_mode: self.calendar.as_ref().map(|_| self.renewal_mode.unwrap_or(hagency_core::recurring_quota::RenewalMode::Automatic)), per_request_tokens: self.calendar.as_ref().map(|_| per_request_tokens.unwrap_or(amount)).or(per_request_tokens),
             coordinator_mxid: coordinator,
             delegation_expires_at_ms: until.timestamp_millis() as u64,
             allow_self_approval: self.self_approval,
@@ -367,6 +368,13 @@ fn existing_progress(
 // Publishing again after a legacy month ended should show today's capacity
 // and its actual blocker, not ask the owner to change an already-saved ceiling.
 // Uncertain originals and recurring grants keep their own recovery paths.
+fn open_recurring_renewal_form(progress: &OwnerGrantProgress, now: u64) -> bool {
+    matches!(progress.state, OwnerGrantState::Recorded)
+        && progress.closure.is_none()
+        && progress.summary.calendar.is_some()
+        && month_ended(&progress.summary, now)
+        && !matches!(progress.succession_state, Some(OwnerGrantSuccessionState::Rejected | OwnerGrantSuccessionState::Cancelled))
+}
 fn open_current_period_form(progress: &OwnerGrantProgress, now: u64) -> bool {
     matches!(progress.state, OwnerGrantState::Recorded)
         && progress.closure.is_none()
@@ -442,6 +450,9 @@ impl GrantFlow {
                 return self.successor_form(kind).await;
             }
             if let Some(progress) = current {
+                if open_recurring_renewal_form(&progress, now_ms()) {
+                    return self.successor_form(Succession::Renewal).await;
+                }
                 if open_current_period_form(&progress, now_ms()) {
                     return self.new_limits().await;
                 }
@@ -837,7 +848,7 @@ mod tests {
             state,
             closure: None,
             succession_state: None,
-            summary: ::hagency::native_owner::OwnerGrantSummary { per_request_tokens: None,
+            summary: ::hagency::native_owner::OwnerGrantSummary { renewal_mode: None, per_request_tokens: None,
                 intent_id: id.into(), grant_id: format!("grant_{id}"), owner_mxid: "@owner:test".into(),
                 contribution_id: "contribution".into(), resource_id: "resource".into(),
                 coordinator_mxid: "@coordinator:test".into(), allocated_tokens: 700,
@@ -870,6 +881,23 @@ mod tests {
     /// Inside the fixtures' 2026-10 month, and that month's end (2026-11-01).
     const OCTOBER: u64 = 1_792_000_000_000;
     const NOVEMBER: u64 = 1_793_491_200_000;
+    #[test]
+    fn ended_recurring_pool_opens_one_owner_renewal_form() {
+        let mut old = progress("original", OwnerGrantState::Recorded);
+        old.summary.calendar = Some(hagency_core::recurring_quota::Calendar {
+            cadence: hagency_core::recurring_quota::Cadence::Monthly,
+            time_zone: "America/Los_Angeles".into(),
+        });
+        old.summary.renewal_mode = Some(hagency_core::recurring_quota::RenewalMode::Owner);
+        let end = old.summary.period_end_ms;
+        assert!(!open_recurring_renewal_form(&old, end - 1));
+        assert!(open_recurring_renewal_form(&old, end));
+        old.succession_state = Some(OwnerGrantSuccessionState::Cancelled);
+        assert!(!open_recurring_renewal_form(&old, end));
+        old.succession_state = None;
+        old.state = OwnerGrantState::OutcomeUnknown;
+        assert!(!open_recurring_renewal_form(&old, end));
+    }
     #[test]
     fn expired_legacy_publish_opens_current_capacity_without_replacing_uncertain_requests() {
         let mut old = progress("old", OwnerGrantState::Recorded);
@@ -1339,7 +1367,7 @@ mod tests {
     }
     #[test]
     fn native_choices_require_explicit_utc_and_bounded_budget() {
-        let input = |expiry: &str, tokens: &str| GrantChoices { per_request: String::new(),
+        let input = |expiry: &str, tokens: &str| GrantChoices { renewal_mode: None, per_request: String::new(),
             coordinator: "@coordinator:test".into(),
             managers: "@b:test\n@a:test\n@b:test".into(),
             tokens: tokens.into(),

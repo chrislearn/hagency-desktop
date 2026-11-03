@@ -19,7 +19,7 @@ A.web_can_edit=fn(){return true}
 A.dpol_choose(true)
 assert(H.dpol.ask==true && A.pool_default_yolo(H.resource_detail)==false)
 A.dpol_commit()
-H.callbacks[0]({is_ok:true data:{commandId:"policy-original" change:{operation:"default_policy" yolo:true}}})
+H.callbacks[0]({is_ok:true data:{commandId:"policy-original" resourceId:"pool" expectedRevision:"before" change:{operation:"default_policy" yolo:true webSearch:false}}})
 assert(H.calls[1]=="hagency.web_catalog.command.apply")
 H.callbacks[1]({is_ok:true data:{commandId:"policy-original"}})
 H.callbacks[2]({is_ok:true data:{}})
@@ -28,6 +28,42 @@ H.callbacks[3]({resourceId:"pool" revision:"after" defaultYolo:true})
 assert(!H.busy && H.dpol.yolo && !H.dpol.waiting)
 assert(A.pool_default_yolo(H.resource_detail)==true)
 assert(!H.resource_detail.executionPolicy.yolo)
+''',
+"resource_web_search_preserves_permission_and_waits_for_matching_readback": r'''
+H.entry_role="owner" H.page="default_policy"
+H.dpol.resource="pool" H.dpol.detail={resource:{id:"pool" framework:"codex"}}
+H.dpol.mode="catalog" H.dpol.state="ready" H.dpol.yolo=true H.dpol.web=false H.dpol.catalog={resourceId:"pool" revision:"before"}
+A.web_can_edit=fn(){return true}
+let prepared=nil
+host.request=fn(service,args,done){H.calls.push(service) H.callbacks.push(done) if service=="hagency.web_catalog.prepare"{prepared=args}}
+A.dpol_web()
+assert(prepared.change.yolo && prepared.change.webSearch && H.busy && !H.dpol.web)
+H.callbacks[0]({is_ok:true data:{commandId:"web-original" resourceId:"pool" expectedRevision:"before" change:prepared.change}})
+H.callbacks[1]({is_ok:true data:{commandId:"web-original"}})
+H.callbacks[2]({is_ok:true data:{}})
+H.callbacks[3]({resourceId:"pool" revision:"before" defaultYolo:true defaultWebSearch:false})
+assert(H.dpol.waiting && H.dpol.web && H.dpol.yolo)
+A.dpol_catalog(H.dpol.epoch)
+H.callbacks[4]({resourceId:"pool" revision:"after" defaultYolo:true defaultWebSearch:true})
+assert(!H.busy && !H.dpol.waiting && H.dpol.web && H.dpol.yolo)
+''',
+"resource_web_search_rejects_cross_resource_preparation": r'''
+H.entry_role="owner" H.dpol.resource="pool" H.dpol.detail={resource:{id:"pool" framework:"codex"}}
+H.dpol.mode="catalog" H.dpol.state="ready" H.dpol.yolo=false H.dpol.web=false H.dpol.catalog={resourceId:"pool" revision:"before"}
+A.web_can_edit=fn(){return true}
+A.dpol_web()
+H.callbacks[0]({is_ok:true data:{commandId:"foreign" resourceId:"another-pool" expectedRevision:"before" change:{operation:"default_policy" yolo:false webSearch:true}}})
+assert(H.calls.len()==1 && !H.busy && H.dpol.error=="management_outcome_unknown" && !H.dpol.web)
+''',
+"resource_web_search_unknown_apply_retains_original_command": r'''
+H.entry_role="owner" H.dpol.resource="pool" H.dpol.detail={resource:{id:"pool" framework:"codex"}}
+H.dpol.mode="catalog" H.dpol.state="ready" H.dpol.yolo=false H.dpol.web=false H.dpol.catalog={resourceId:"pool" revision:"before"}
+A.web_can_edit=fn(){return true}
+let retained=nil A.web_prepared=fn(p){retained=p}
+A.dpol_web()
+H.callbacks[0]({is_ok:true data:{commandId:"web-original" resourceId:"pool" expectedRevision:"before" change:{operation:"default_policy" yolo:false webSearch:true}}})
+H.callbacks[1]({is_ok:false error:"management_outcome_unknown"})
+assert(H.calls.len()==2 && retained.commandId=="web-original" && retained.change.webSearch && !H.dpol.web && !H.busy)
 ''',
 "pool_refresh_keeps_content_and_scroll": r'''
 H.resource_id="pool" H.resource_detail={resource:{id:"pool"}} H.pool_saved=nil

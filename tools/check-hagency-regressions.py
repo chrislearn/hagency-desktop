@@ -144,6 +144,8 @@ def main():
         for name, package, pattern in [
             ("native-agent-permissions", "hagency-store", "execution_policy"),
             ("native-agent-web-search", "hagency-store", "web_policy"),
+            ("native-pool-policy-inheritance", "hagency-store", "pool_agent_inherits_owner_permissions_and_network"),
+            ("native-pool-owner-renewal", "hagency", "pool_owner_renewal_policy"),
             ("native-permission-recovery", "hagency", "execution_policy"),
         ]:
             run(name, ["cargo", "test", "--locked", "-p", package, "--features", "shared-budget-execution,resource-adoption", "--lib", pattern, "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
@@ -161,6 +163,7 @@ def main():
         env["HAGENCY_TEST_RUNTIME_PROBE"] = probes[0]
         run("native-thread-context", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution", "--lib", "shared_context_", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-thread-context-http", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution", "--lib", "native_shared_context_", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
+        run("native-first-turn-permissions", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_owner_policy_applies_before_the_first_model_call", "--", "--ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-encrypted-execution", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution", "--lib", "native_shared_encrypted_", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-demand-promotion-recovery", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution", "--lib", "native_demand_recovered_promotion", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         for name, pattern in [("native-budget", "agent_budget"), ("native-http-replay", "budget_http")]:

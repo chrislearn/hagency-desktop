@@ -242,6 +242,16 @@ script_mod! {
                     note := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
                 }
             }
+            pool_renewal := View {visible: false width: Fill{max: 640} height: Fit flow: Down spacing: 6
+                title := SheetCaption {}
+                SheetGroup {padding: 12 spacing: 10
+                    choices := View {width: Fill height: Fit flow: Right spacing: 6
+                        automatic := RinxKeyButton {width: Fill height: 44 margin: 0 text: "Automatic"}
+                        manual := RinxKeyButton {width: Fill height: 44 margin: 0 text: "Manual"}
+                    }
+                    note := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
+                }
+            }
             people := View {visible: false width: Fill{max: 640} height: Fit flow: Down spacing: 6
                 people_label := SheetCaption {}
                 list := SheetGroup {
@@ -1902,6 +1912,7 @@ impl Widget for MiniAppsPanel {
                 else if self.view.button(cx,ids!(grant_confirmation.scroll.actions.recover)).clicked(actions) {self.grant_recover(cx);}
                 else if self.view.button(cx,ids!(grant_confirmation.scroll.actions.cancel_intent)).clicked(actions) {self.grant_cancel_intent(cx);}
                 else if self.grant_calendar_actions(cx, actions) {}
+                else if self.grant_renewal_actions(cx, actions) {}
                 else if let Some(days) = self.grant_preset_clicked(cx,actions) {self.grant_expiry_preset(cx,days);}
                 else if self.view.button(cx,ids!(grant_confirmation.scroll.sharing.sharing_row.sharing_toggle)).clicked(actions) {self.grant_sharing_toggle(cx);}
                 else if self.view.button(cx,ids!(grant_confirmation.scroll.people.list.open_add.open_add_button)).clicked(actions) {self.grant_add_people(cx);}

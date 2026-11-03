@@ -1,7 +1,7 @@
 //! Trusted native owner grant screen. The package cannot render or acknowledge
 //! this confirmation; its reply contains only public progress and original IDs.
 use super::*;
-use hagency_core::recurring_quota::{Calendar, Cadence};
+use hagency_core::recurring_quota::{Calendar, Cadence, RenewalMode};
 use super::sheet_ui::{Fact, Figure, Person, SheetGlyph, SheetTone, SheetView};
 use crate::host::hagency::grants::{
     GrantChoices, GrantFlow, GrantResult, Succession, month_ended, now_ms,
@@ -309,6 +309,7 @@ fn initial_draft(proposal: Option<u64>, applicants: &[String]) -> GrantChoices {
 /// amendment or the end of the new month for a renewal.
 fn fill_successor_defaults(draft: &mut GrantChoices, form: &OwnerGrantSuccessionForm, now: u64) {
     draft.calendar = form.predecessor.calendar.clone();
+    draft.renewal_mode = form.predecessor.renewal_mode.or_else(|| draft.calendar.as_ref().map(|_| RenewalMode::Automatic));
     if draft.tokens.is_empty() {
         draft.tokens = form.predecessor.allocated_tokens.to_string();
     }
@@ -372,6 +373,7 @@ fn sharing_moved(form: &OwnerGrantSuccessionForm, draft: &GrantChoices) -> bool 
 /// and stays unconfirmable instead of silently lowering it.
 fn fill_form_defaults(draft: &mut GrantChoices, form: &OwnerGrantForm) {
     if form.calendar.is_some() {draft.calendar = form.calendar.clone();}
+    if draft.calendar.is_some() && draft.renewal_mode.is_none() { draft.renewal_mode = Some(RenewalMode::Automatic); }
     if draft.tokens.is_empty() {
         draft.tokens = form.context.resource_total_tokens.unwrap_or(0).to_string();
     }
@@ -1691,6 +1693,9 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
     }
     let calendar = if choosing {s.draft.calendar.as_ref()} else {summary.as_ref().and_then(|summary| summary.calendar.as_ref())};
     if let Some(calendar) = calendar {
+        let mode = if choosing {s.draft.renewal_mode} else {summary.as_ref().and_then(|s|s.renewal_mode)}.unwrap_or(RenewalMode::Automatic);
+        v.renewal_mode = choosing.then_some(mode);
+        if !choosing { v.facts.push(Fact::new(tr("Pool renewal"), tr(if mode == RenewalMode::Automatic {"Automatic"} else {"Manual"}))); }
         v.calendar = (choosing && s.successor.is_none() && s.form.is_none_or(|form| form.calendar.is_none())).then(|| calendar.clone());
         v.quota_label = tr("Tokens per period").into();
         v.sharing_visible = false;
@@ -1699,7 +1704,7 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
         if !choosing && v.tone == SheetTone::Done {
             v.title = tr("Recurring Capacity Published").into();
             v.caption = tr("Tokens per period").into();
-            v.lead = tr("This allowance renews every period until you withdraw it. Each Agent follows the renewal mode you approved.").into();
+            v.lead = tr(if mode == RenewalMode::Automatic {"The pool renews automatically. Approved Agents receive their allowance each new period."} else {"Publish the next period when ready. Approved Agents then receive their allowance together."}).into();
         }
         if !choosing || s.successor.is_some() || s.form.is_some_and(|form| form.calendar.is_some()) {
             v.facts.push(calendar_fact(calendar,summary.as_ref().map(|summary|summary.period_end_ms),now));
@@ -1712,7 +1717,7 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
             // use period wording; translated text must never control visibility.
             if v.tone != SheetTone::Failed {
                 v.title = tr("Publish Recurring Capacity").into();
-                v.lead = tr("Authorize this allowance every period until you withdraw it. Each Agent separately requires your approval for automatic or manual renewal.").into();
+                v.lead = tr("Set renewal once for this pool. All approved Agents follow your choice.").into();
                 v.status.clear();
             }
             if calendar.period_at(now).is_err() {v.primary_enabled = false;}
@@ -2303,6 +2308,15 @@ impl MiniAppsPanel {
         self.view.label(cx, ids!(grant_confirmation.scroll.request_quota.label)).set_text(cx, crate::i18n::tr("Maximum per Agent per period"));
         self.view.label(cx, ids!(grant_confirmation.scroll.request_quota.hint)).set_text(cx, crate::i18n::tr("Each Agent can request up to this amount. All Agents share the pool total above."));
         self.apply_sheet_disclosure(cx, id!(grant_confirmation), view.more_open);
+        self.view.view(cx, ids!(grant_confirmation.scroll.pool_renewal)).set_visible(cx, view.renewal_mode.is_some());
+        if let Some(mode) = view.renewal_mode {
+            self.view.label(cx, ids!(grant_confirmation.scroll.pool_renewal.title)).set_text(cx, crate::i18n::tr("Pool renewal"));
+            for (path, value, label) in [
+                (ids!(grant_confirmation.scroll.pool_renewal.choices.automatic), RenewalMode::Automatic, "Automatic"),
+                (ids!(grant_confirmation.scroll.pool_renewal.choices.manual), RenewalMode::Owner, "Manual"),
+            ] {self.view.widget(cx,path).set_text(cx,&format!("{}{}",crate::i18n::tr(label),if value==mode {" ✓"} else {""}));}
+            self.view.label(cx, ids!(grant_confirmation.scroll.pool_renewal.note)).set_text(cx,crate::i18n::tr(if mode==RenewalMode::Automatic {"At each new period, the pool renews and approved Agents receive their allowance. Unused tokens do not carry over."} else {"The pool pauses at period end. Publish the next period to renew all approved Agents together."}));
+        }
         self.view.view(cx, ids!(grant_confirmation.scroll.calendar)).set_visible(cx, view.calendar.is_some());
         if let Some(calendar) = &view.calendar {
             let tr = crate::i18n::tr;
@@ -2371,6 +2385,18 @@ impl MiniAppsPanel {
             if let Some(zone) = index.checked_sub(1).and_then(|i| CALENDAR_ZONES.get(i)) {calendar.time_zone = (*zone).into();}
         }
         (calendar != *original).then_some(calendar)
+    }
+    pub(super) fn grant_renewal_actions(&mut self, cx: &mut Cx, actions: &Actions) -> bool {
+        if !self.grant_confirmation.as_ref().is_some_and(|p|matches!(p.phase,Phase::Choose) && p.draft.calendar.is_some()) {return false;}
+        for (path, mode) in [(ids!(grant_confirmation.scroll.pool_renewal.choices.automatic),RenewalMode::Automatic),(ids!(grant_confirmation.scroll.pool_renewal.choices.manual),RenewalMode::Owner)] {
+            if crate::miniapps::design::key_button_clicked(&self.view.widget(cx,path),actions) {
+                self.capture_grant_choices(cx);
+                if let Some(p)=self.grant_confirmation.as_mut(){p.draft.renewal_mode=Some(mode);}
+                self.present_grant_confirmation(cx);
+                return true;
+            }
+        }
+        false
     }
     pub(super) fn grant_calendar_actions(&mut self, cx: &mut Cx, actions: &Actions) -> bool {
         let Some(calendar) = self.grant_confirmation.as_ref().filter(|p| matches!(p.phase, Phase::Choose) && p.successor.is_none() && p.form.as_ref().is_none_or(|form| form.calendar.is_none())).and_then(|p| p.draft.calendar.as_ref()) else {return false};
@@ -2757,6 +2783,7 @@ impl MiniAppsPanel {
             expires_utc: prompt.draft.expires_utc.clone(),
             self_approval: false,
             calendar: prompt.draft.calendar.clone(),
+            renewal_mode: prompt.draft.renewal_mode,
         };
         let changed = draft.tokens != prompt.draft.tokens || draft.per_request != prompt.draft.per_request;
         prompt.draft = draft;
@@ -3009,6 +3036,10 @@ impl MiniAppsPanel {
                     if prompt.people_search.selected.is_some() { targets.push(add_selected); }
                 }
             }
+            if view.renewal_mode.is_some() {
+                targets.push(self.view.widget(cx,ids!(grant_confirmation.scroll.pool_renewal.choices.automatic)).area());
+                targets.push(self.view.widget(cx,ids!(grant_confirmation.scroll.pool_renewal.choices.manual)).area());
+            }
             if view.calendar.is_some() {
                 for path in [ids!(grant_confirmation.scroll.calendar.cadence.daily), ids!(grant_confirmation.scroll.calendar.cadence.weekly), ids!(grant_confirmation.scroll.calendar.cadence.monthly)] {
                     targets.push(self.view.widget(cx, path).area());
@@ -3073,6 +3104,16 @@ impl MiniAppsPanel {
             if view.people_add_visible && cx.has_key_focus(open_add) {
                 self.grant_add_people(cx);
                 return true;
+            }
+            if view.renewal_mode.is_some() {
+                for (path, mode) in [(ids!(grant_confirmation.scroll.pool_renewal.choices.automatic),RenewalMode::Automatic),(ids!(grant_confirmation.scroll.pool_renewal.choices.manual),RenewalMode::Owner)] {
+                    if cx.has_key_focus(self.view.widget(cx,path).area()) {
+                        self.capture_grant_choices(cx);
+                        if let Some(p)=self.grant_confirmation.as_mut(){p.draft.renewal_mode=Some(mode);}
+                        self.present_grant_confirmation(cx);
+                        return true;
+                    }
+                }
             }
             if view.calendar.is_some() {
                 for (path, cadence) in [
@@ -3256,7 +3297,7 @@ impl GrantPreview {
             capacity_blocker: f["blockedReason"].as_str().map(str::to_owned),
             observed_at_ms: now,
         };
-        let summary = |tokens: u64, people: Vec<String>, period: (String, u64, u64), succession: Option<::hagency::native_owner::OwnerGrantSuccessionSummary>| OwnerGrantSummary { per_request_tokens: f["perRequest"].as_u64(),
+        let summary = |tokens: u64, people: Vec<String>, period: (String, u64, u64), succession: Option<::hagency::native_owner::OwnerGrantSuccessionSummary>| OwnerGrantSummary { renewal_mode: serde_json::from_value(f["renewalMode"].clone()).ok(), per_request_tokens: f["perRequest"].as_u64(),
             intent_id: "intent_preview".into(),
             grant_id: if succession.is_some() { "grant_preview_2".into() } else { "grant_preview_1".into() },
             owner_mxid: account.clone(),
@@ -3319,7 +3360,10 @@ impl GrantPreview {
             (None, Some(form)) => fill_form_defaults(&mut draft, form),
             _ => {}
         }
-        if let Ok(calendar) = serde_json::from_value::<Calendar>(f["calendar"].clone()) {draft.calendar = Some(calendar);}
+        if let Ok(calendar) = serde_json::from_value::<Calendar>(f["calendar"].clone()) {
+            draft.calendar = Some(calendar);
+            draft.renewal_mode = Some(serde_json::from_value(f["renewalMode"].clone()).unwrap_or(RenewalMode::Automatic));
+        }
         draft.coordinator = account.clone();
         let requested = kind.map(succession_arg);
         let published_tokens = f["proposed"].as_u64().unwrap_or(current);
@@ -3428,6 +3472,11 @@ impl MiniAppsPanel {
         let now = GRANT_PREVIEW.with(|cell| cell.borrow().as_ref().map(|p| p.now)).unwrap_or_else(now_ms);
         let calendar = GRANT_PREVIEW.with(|cell| cell.borrow().as_ref().and_then(|p| p.draft.calendar.as_ref().and_then(|c| self.calendar_input(cx, actions, c))));
         let calendar_typing=self.view.text_input(cx, ids!(grant_confirmation.scroll.calendar.zone)).changed(actions).is_some();
+        let renewal = if self.view.button(cx, ids!(grant_confirmation.scroll.pool_renewal.choices.automatic)).clicked(actions) {
+            Some(RenewalMode::Automatic)
+        } else if self.view.button(cx, ids!(grant_confirmation.scroll.pool_renewal.choices.manual)).clicked(actions) {
+            Some(RenewalMode::Owner)
+        } else { None };
         let (changed, refill) = GRANT_PREVIEW.with(|cell| {
             let mut cell = cell.borrow_mut();
             let Some(preview) = cell.as_mut().filter(|p| matches!(p.phase, Phase::Choose)) else {
@@ -3435,6 +3484,7 @@ impl MiniAppsPanel {
             };
             let mut changed = false;
             if let Some(calendar) = calendar {preview.draft.calendar = Some(calendar); changed = true;}
+            if let Some(mode) = renewal {preview.draft.renewal_mode = Some(mode); changed = true;}
             if let Some(days) = preset {
                 let value = match &preview.successor {
                     Some(form) => successor_preset(form, days, now),
@@ -3483,11 +3533,16 @@ mod tests {
         let preview=GrantPreview::from_fixture(&fixture,now_ms()).unwrap();
         let view=grant_view(&preview.state(),now_ms());
         assert_eq!(view.title,"Publish Recurring Capacity");
-        assert!(view.lead.contains("until you withdraw"));
+        assert!(view.lead.contains("All approved Agents follow your choice"));
+        assert_eq!(view.renewal_mode, Some(RenewalMode::Automatic));
         assert!(view.facts.iter().any(|fact| fact.label == "Period maximum" && fact.value == "2 M"));
         assert!(view.facts.iter().any(|fact| fact.label == "Left this period" && fact.value == "2 M"));
         assert!(!view.sharing_visible && view.calendar.is_some());
         assert!(calendar_note(view.calendar.as_ref().unwrap(),now_ms()).contains("America/Los_Angeles"));
+        let mut manual = fixture.clone();
+        manual["renewalMode"] = json!("owner");
+        let preview = GrantPreview::from_fixture(&manual, now_ms()).unwrap();
+        assert_eq!(grant_view(&preview.state(), preview.now).renewal_mode, Some(RenewalMode::Owner));
         let mut bound=fixture.clone();
         bound["boundCalendar"]=bound["calendar"].clone();
         let preview=GrantPreview::from_fixture(&bound,now_ms()).unwrap();
@@ -3570,7 +3625,7 @@ mod tests {
                 framework:"codex".into(),model:"model".into(),remaining_tokens:Some(1_000_001),
                 resource_total_tokens:Some(2_000_000),shared_account_total_tokens:Some(9_000_000),capacity_blocker:None,observed_at_ms:1,
             }};
-        let mut draft=GrantChoices { per_request: String::new(),coordinator:"@owner:test".into(),managers:"@manager:test".into(),tokens:"1000001".into(),expires_utc:publication_expiry(None),self_approval:false,calendar:None};
+        let mut draft=GrantChoices { renewal_mode: None, per_request: String::new(),coordinator:"@owner:test".into(),managers:"@manager:test".into(),tokens:"1000001".into(),expires_utc:publication_expiry(None),self_approval:false,calendar:None};
         assert!(form_choices_valid(&form,&draft));
         draft.tokens="1000002".into();assert!(!form_choices_valid(&form,&draft));
         draft.tokens="1000001".into();
@@ -3594,7 +3649,7 @@ mod tests {
             }}
     }
     fn summary(tokens: u64) -> OwnerGrantSummary {
-        OwnerGrantSummary { per_request_tokens: None,
+        OwnerGrantSummary { renewal_mode: None, per_request_tokens: None,
             intent_id: "original".into(), grant_id: "grant_original".into(), owner_mxid: "@owner:test".into(),
             contribution_id: "pool_1".into(), resource_id: "resource".into(),
             coordinator_mxid: "@owner:test".into(), allocated_tokens: tokens,

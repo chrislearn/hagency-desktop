@@ -19,7 +19,7 @@ name = "owner_dashboard"
 # when Rinx and the standalone controller both link this crate.
 makepad-widgets = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "ec0283bfd78cb1634788e86a6b26e708980499dd" }
 # Shared DTO contract from the same published Client revision as Desktop.
-hagency-metering = { git = "https://github.com/hagency-org/hagency-client.git", rev = "fc198648a5b5ddc659ca62d3ceeb24da1746435e" }
+hagency-metering = { git = "https://github.com/hagency-org/hagency-client.git", rev = "7012dac8fd90bb008bf6a0abefa077edb3381405" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
