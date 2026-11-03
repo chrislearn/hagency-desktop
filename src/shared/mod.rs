@@ -31,6 +31,7 @@ pub mod unread_badge;
 pub mod verification_badge;
 pub mod restore_status_view;
 pub mod design_tokens;
+pub mod pane_splitter;
 pub mod image_viewer;
 pub mod mobile_details;
 pub mod web_browser;
@@ -44,6 +45,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     cached_widget::script_mod(vm);
     styles::script_mod(vm);
     design_tokens::script_mod(vm);
+    pane_splitter::script_mod(vm);
     helpers::script_mod(vm);
     navigation_bar_button::script_mod(vm);
     icon_button::script_mod(vm);

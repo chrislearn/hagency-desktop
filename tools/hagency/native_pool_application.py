@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class App:
-    def __init__(self, output, binary, language, narrow):
+    def __init__(self, output, binary, language, narrow, calendar=None):
         self.out = output
         self.profile = output / "profile"
         (self.profile / "sandbox").mkdir(parents=True)
@@ -29,6 +29,8 @@ class App:
                          revision=7, grantRevision=1, publishedTokens=1000000,
                          nativeAvailableTokens=None, canRequest=True, blockingReason=None,
                          capabilities=["architect", "coding", "documentation", "integration", "review", "testing"])
+        if calendar:
+            self.pool.update(calendar=calendar, periodResetLabel="2026-11-09 00:00 PST · America/Los_Angeles")
         self.state_path = self.profile / "sandbox/onboarding-v1.json"
         self.state_path.write_text(json.dumps(dict(version=1, account="@applicant:example.test", workspace="manager",
             wizard=dict(step=0, runtime="", model=None, reasoning=None, tokens="1000000", label="", coordinator="", resource=None, admission=None),
@@ -52,7 +54,7 @@ class App:
         self.log = (output / "native.log").open("w")
         self.process = subprocess.Popen([str(binary), f"--remote={port}"] + (["--narrow"] if narrow else []),
             cwd=ROOT, stdout=self.log, stderr=subprocess.STDOUT,
-            env=dict(os.environ, RINX_DATA_DIR=str(self.profile), HAGENCY_UX_FIXTURES=str(self.fixture_path),
+            env=dict(os.environ, RINX_DATA_DIR=str(self.profile), HAGENCY_UX_FIXTURES=str(self.fixture_path), HAGENCY_UX_SOURCE=str(ROOT / "apps/hagency/bundle/main.splash"),
                      MAKEPAD_HIDE_WINDOWS="1", MAKEPAD_NO_FOCUS="1"))
         self.wait(lambda: self.req("/s")["pid"] == self.process.pid)
         self.wait(lambda: any("Continue saved" in r.get("t", "") or "继续已保存" in r.get("t", "") for r in self.snap()))

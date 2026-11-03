@@ -11,6 +11,24 @@ A.sub_read=fn(service,args,done,fail){H.calls.push(service) H.callbacks.push(don
 host.request=fn(service,args,done){H.calls.push(service) H.callbacks.push(done)}
 '''
 CASES = {
+"confirmed_default_permissions_update_pool_summary": r'''
+H.pool_info={rid:"pool" defaultYolo:false}
+H.resource_detail={resource:{id:"pool" framework:"codex"} editing:{allowed:false} executionPolicy:{yolo:false}}
+H.dpol.resource="pool" H.dpol.detail=H.resource_detail H.dpol.mode="catalog" H.dpol.state="ready" H.dpol.yolo=false H.dpol.catalog={resourceId:"pool" revision:"before"}
+A.web_can_edit=fn(){return true}
+A.dpol_choose(true)
+assert(H.dpol.ask==true && A.pool_default_yolo(H.resource_detail)==false)
+A.dpol_commit()
+H.callbacks[0]({is_ok:true data:{commandId:"policy-original" change:{operation:"default_policy" yolo:true}}})
+assert(H.calls[1]=="hagency.web_catalog.command.apply")
+H.callbacks[1]({is_ok:true data:{commandId:"policy-original"}})
+H.callbacks[2]({is_ok:true data:{}})
+assert(H.calls[3]=="hagency.web_catalog.get")
+H.callbacks[3]({resourceId:"pool" revision:"after" defaultYolo:true})
+assert(!H.busy && H.dpol.yolo && !H.dpol.waiting)
+assert(A.pool_default_yolo(H.resource_detail)==true)
+assert(!H.resource_detail.executionPolicy.yolo)
+''',
 "pool_refresh_keeps_content_and_scroll": r'''
 H.resource_id="pool" H.resource_detail={resource:{id:"pool"}} H.pool_saved=nil
 A.open_resource("pool")

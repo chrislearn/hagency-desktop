@@ -13,7 +13,7 @@ let connection={id:"pool_original" label:"Pool A" ownerMxid:"@owner:test" execut
 '''
 CASES={
 'whitelist_preserves_verified_picks_in_native_confirmation': '''
-H.resource_detail={} H.page="pool_who" H.resource_id="resource_a"
+H.resource_detail={resource:{budget:{pool:{ceiling:2000000 committed:0 period:"monthly"} remainingTokens:2000000 seat:{quota:nil}} usage:{spent:0}}} H.page="pool_who" H.resource_id="resource_a"
 H.who={rid:"resource_a" name:"" picks:["@chris:test"]}
 A.pool_view=fn(r){return {quotaEditable:false quotaMode:"amend" publishedTokens:1000000 b:{ceiling:2000000} now:1793400000000}}
 H.pool_info={rid:"resource_a" conn:connection grantState:"ready" grant:nil now:1793400000000}

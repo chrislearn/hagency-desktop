@@ -13,6 +13,10 @@ impl Service {
     pub(super) fn revoke_resumption(&self) -> Result<(), String> {
         self.0.logout_requested.store(true, Ordering::Release);
         self.retire();
+        if let Some(home)=self.daemon_assignment()? {
+            return ::hagency::daemon::revocation::request(&home,&self.0.origin,&self.0.owner).map_err(str::to_owned);
+        }
+        if self.0.remote.lock().unwrap_or_else(|p|p.into_inner()).is_some() {return Ok(());}
         let registered = self
             .0
             .native_retirement
@@ -38,8 +42,11 @@ impl Service {
             let owner = client.user_id().ok_or("matrix_sign_in_required")?;
             let origin = client.homeserver().to_string();
             let state = Self::state_for(&origin, owner.as_str())?;
-            NativeOwner::revoke_saved_matrix_resumption(&state, &origin, owner.as_str())
-                .map_err(|e| e.code)?;
+            if let Some(home)=Self::assignment_for(&origin,owner.as_str(),&state)? {
+                ::hagency::daemon::revocation::request(&home,&origin,owner.as_str()).map_err(str::to_owned)?;
+            } else {
+                NativeOwner::revoke_saved_matrix_resumption(&state, &origin, owner.as_str()).map_err(|e| e.code)?;
+            }
         }
         Ok(())
     }
@@ -59,6 +66,13 @@ impl Service {
 
     async fn finish_close(&self) -> Result<(), String> {
         self.retire();
+        if self.0.logout_requested.load(Ordering::Acquire) {
+            if let Some(home)=self.daemon_assignment()? {
+                let remote=::hagency::daemon::bridge::ControllerClient::new(home,self.0.owner.clone(),self.0.origin.clone(),self.0.epoch+1);
+                remote.sign_out().await.map_err(|e|e.code)?;
+                remote.retire();
+            }
+        }
         #[cfg(feature = "shared-execution")]
         self.0.shared.drain().await;
         #[cfg(feature = "resource-adoption")]
@@ -122,6 +136,15 @@ impl Service {
             }
         } else if logout {
             Self::revoke_current()?;
+            if let Some(client)=crate::sliding_sync::get_client() {
+                let owner=client.user_id().ok_or("matrix_sign_in_required")?.to_string();
+                let origin=client.homeserver().to_string();
+                let state=Self::state_for(&origin,&owner)?;
+                if let Some(home)=Self::assignment_for(&origin,&owner,&state)? {
+                    let remote=::hagency::daemon::bridge::ControllerClient::new(home,owner,origin,crate::account_session::epoch()+1);
+                    remote.sign_out().await.map_err(|e|e.code)?;remote.retire();
+                }
+            }
         }
         Ok(())
     }

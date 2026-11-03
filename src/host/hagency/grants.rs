@@ -2,12 +2,10 @@
 //! provider identity, private receipt, or caller-selected original command IDs.
 use super::{Host, Lease, parse};
 use ::hagency::native_owner::{
-    OwnerGrantAccess, OwnerGrantChoices, OwnerGrantProgress, OwnerGrantReview,
-    OwnerGrantReviewResult, OwnerGrantPublicationReview, OwnerGrantPublicationResult,
-    OwnerGrantPublicationProgress, OwnerGrantCancellationReview, OwnerGrantCancellationResult,
-    OwnerGrantState, OwnerGrantForm, OwnerGrantSummary, OwnerGrantSuccessionForm,
+    OwnerGrantChoices, OwnerGrantProgress, OwnerGrantPublicationProgress, OwnerGrantState, OwnerGrantForm, OwnerGrantSummary, OwnerGrantSuccessionForm,
     OwnerGrantSuccessionKind, OwnerGrantSuccessionState,
 };
+use ::hagency::daemon::bridge::{OwnerGrantAccess, OwnerGrantReview, OwnerGrantReviewResult, OwnerGrantPublicationReview, OwnerGrantPublicationResult, OwnerGrantCancellationReview, OwnerGrantCancellationResult};
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::{
@@ -51,6 +49,7 @@ struct Selector {
     /// A script may only propose an amount for a new grant on this pool. It
     /// fills the native tokens field once; prepare never reads it.
     proposed_tokens: Option<u64>,
+    proposed_per_request_tokens: Option<u64>,
     /// Open the native form for an amendment or a renewal of the pool's
     /// published grant instead of a new grant.
     succession: Option<Succession>,
@@ -92,6 +91,7 @@ impl Selector {
             || value.proposed_tokens.is_some_and(|tokens| {
                 value.contribution_id.is_none() || tokens == 0 || tokens > MAX_GRANT_TOKENS
             })
+            || value.proposed_per_request_tokens.is_some_and(|n| value.contribution_id.is_none() || n == 0 || n > MAX_GRANT_TOKENS)
             || (value.succession.is_some() && value.contribution_id.is_none())
             || (value.choose_people && value.contribution_id.is_none())
         {
@@ -134,8 +134,10 @@ pub(crate) struct GrantChoices {
     pub coordinator: String,
     pub managers: String,
     pub tokens: String,
+    pub per_request: String,
     pub expires_utc: String,
     pub self_approval: bool,
+    pub calendar: Option<hagency_core::recurring_quota::Calendar>,
 }
 impl GrantChoices {
     pub fn parse(self) -> Result<OwnerGrantChoices, String> {
@@ -144,7 +146,16 @@ impl GrantChoices {
             .trim()
             .parse::<u64>()
             .map_err(|_| "invalid_grant_budget")?;
-        let until = chrono::DateTime::parse_from_rfc3339(self.expires_utc.trim())
+        let per_request_tokens = if self.per_request.trim().is_empty() { None } else {
+            let n = self.per_request.trim().parse::<u64>().map_err(|_| "invalid_grant_request_limit")?;
+            if n == 0 || n > amount { return Err("invalid_grant_request_limit".into()); }
+            Some(n)
+        };
+        let expiry = match &self.calendar {
+            Some(calendar) => calendar.period_at(now_ms()).map(|period| chrono::DateTime::from_timestamp_millis(period.end_ms as i64).unwrap().to_rfc3339()).map_err(|_| "invalid_grant_calendar")?,
+            None => self.expires_utc.clone(),
+        };
+        let until = chrono::DateTime::parse_from_rfc3339(expiry.trim())
             .map_err(|_| "invalid_grant_expiry")?;
         let now = chrono::Utc::now().timestamp_millis();
         if until.offset().local_minus_utc() != 0
@@ -174,12 +185,13 @@ impl GrantChoices {
         {
             return Err("invalid_grant_manager".into());
         }
-        Ok(OwnerGrantChoices {
+        Ok(OwnerGrantChoices { per_request_tokens,
             coordinator_mxid: coordinator,
             delegation_expires_at_ms: until.timestamp_millis() as u64,
             allow_self_approval: self.self_approval,
             eligible_managers: managers,
             allocated_tokens: amount,
+            calendar: self.calendar,
         })
     }
 }
@@ -297,7 +309,7 @@ fn floor_reply(contribution: &str, form: &OwnerGrantSuccessionForm) -> Value {
         "contributionId": contribution,
         "heldTokens": form.floor.retained_tokens,
         "heldAgents": form.floor.children,
-        "perRequestTokens": form.predecessor.allocated_tokens,
+        "perRequestTokens": form.predecessor.per_request_tokens.unwrap_or(form.predecessor.allocated_tokens),
         "mostTokens": form.context.remaining_tokens,
         "periodEndMs": form.period_end_ms,
     })
@@ -350,6 +362,16 @@ fn existing_progress(
         }
     }
     Ok(pending.or(declined))
+}
+
+// Publishing again after a legacy month ended should show today's capacity
+// and its actual blocker, not ask the owner to change an already-saved ceiling.
+// Uncertain originals and recurring grants keep their own recovery paths.
+fn open_current_period_form(progress: &OwnerGrantProgress, now: u64) -> bool {
+    matches!(progress.state, OwnerGrantState::Recorded)
+        && progress.closure.is_none()
+        && progress.summary.calendar.is_none()
+        && month_ended(&progress.summary, now)
 }
 /// Only the native panel owns this. The exact host, package lease and native
 /// manager stay bound throughout selection, review and asynchronous confirmation.
@@ -420,6 +442,9 @@ impl GrantFlow {
                 return self.successor_form(kind).await;
             }
             if let Some(progress) = current {
+                if open_current_period_form(&progress, now_ms()) {
+                    return self.new_limits().await;
+                }
                 return self.observe_progress(progress).await;
             }
             self.form().await
@@ -443,6 +468,7 @@ impl GrantFlow {
             contribution_id: Some(contribution),
             intent_id: None,
             proposed_tokens: None,
+            proposed_per_request_tokens: None,
             succession: Some(Succession::Amendment),
             applicants: None,
             choose_people: true,
@@ -451,6 +477,7 @@ impl GrantFlow {
         Ok(flow)
     }
     /// The script's proposed amount for the native tokens field, if any.
+    pub fn proposed_per_request_tokens(&self) -> Option<u64> { self.selector.proposed_per_request_tokens }
     pub fn proposed_tokens(&self) -> Option<u64> {
         self.selector.proposed_tokens
     }
@@ -810,14 +837,14 @@ mod tests {
             state,
             closure: None,
             succession_state: None,
-            summary: ::hagency::native_owner::OwnerGrantSummary {
+            summary: ::hagency::native_owner::OwnerGrantSummary { per_request_tokens: None,
                 intent_id: id.into(), grant_id: format!("grant_{id}"), owner_mxid: "@owner:test".into(),
                 contribution_id: "contribution".into(), resource_id: "resource".into(),
                 coordinator_mxid: "@coordinator:test".into(), allocated_tokens: 700,
                 eligible_managers: vec!["@manager:test".into()], allow_self_approval: false,
                 delegation_expires_at_ms: 1793491200000, period_key: "2026-10".into(),
                 period_start_ms: 1790812800000, period_end_ms: 1793491200000,
-                succession: None,
+                calendar: None, succession: None,
             },
         }
     }
@@ -843,6 +870,17 @@ mod tests {
     /// Inside the fixtures' 2026-10 month, and that month's end (2026-11-01).
     const OCTOBER: u64 = 1_792_000_000_000;
     const NOVEMBER: u64 = 1_793_491_200_000;
+    #[test]
+    fn expired_legacy_publish_opens_current_capacity_without_replacing_uncertain_requests() {
+        let mut old = progress("old", OwnerGrantState::Recorded);
+        assert!(!open_current_period_form(&old, NOVEMBER - 1));
+        assert!(open_current_period_form(&old, NOVEMBER));
+        old.summary.calendar = Some(serde_json::from_value(json!({"cadence":"monthly","timeZone":"America/Los_Angeles"})).unwrap());
+        assert!(!open_current_period_form(&old, NOVEMBER));
+        for state in [OwnerGrantState::ReviewRequired, OwnerGrantState::Declined] {
+            assert!(!open_current_period_form(&progress("original", state), NOVEMBER));
+        }
+    }
     fn in_month(mut p: OwnerGrantProgress, key: &str, start: u64, end: u64) -> OwnerGrantProgress {
         p.summary.period_key = key.into();
         p.summary.period_start_ms = start;
@@ -931,7 +969,7 @@ mod tests {
         assert_eq!(
             floor_reply("pool_codex", &form),
             json!({"contributionId": "pool_codex", "heldTokens": 9_000_000, "heldAgents": 1,
-                   "perRequestTokens": form.predecessor.allocated_tokens, "mostTokens": 9_000_000, "periodEndMs": NOVEMBER})
+                   "perRequestTokens": form.predecessor.per_request_tokens.unwrap_or(form.predecessor.allocated_tokens), "mostTokens": 9_000_000, "periodEndMs": NOVEMBER})
         );
         assert!(octosense_app_contract::hagency::SERVICES.contains(&FLOOR));
         assert!(octosense_app_contract::KNOWN_CAPABILITIES.contains(&FLOOR));
@@ -1289,13 +1327,25 @@ mod tests {
         }
     }
     #[test]
+    fn native_recurring_calendar_binds_owner_zone_and_period_end() {
+        use hagency_core::recurring_quota::{Calendar,Cadence};
+        let calendar=Calendar{cadence:Cadence::Weekly,time_zone:"America/Los_Angeles".into()};
+        let choices=GrantChoices{ per_request: String::new(),coordinator:"@owner:test".into(),managers:"@chris:test".into(),tokens:"2000".into(),calendar:Some(calendar.clone()),..Default::default()};
+        let parsed=choices.clone().parse().unwrap();
+        assert_eq!(parsed.calendar,Some(calendar.clone()));
+        assert_eq!(parsed.delegation_expires_at_ms,calendar.period_at(now_ms()).unwrap().end_ms);
+        let mut bad=choices;bad.calendar.as_mut().unwrap().time_zone="PST".into();
+        assert!(bad.parse().is_err());
+    }
+    #[test]
     fn native_choices_require_explicit_utc_and_bounded_budget() {
-        let input = |expiry: &str, tokens: &str| GrantChoices {
+        let input = |expiry: &str, tokens: &str| GrantChoices { per_request: String::new(),
             coordinator: "@coordinator:test".into(),
             managers: "@b:test\n@a:test\n@b:test".into(),
             tokens: tokens.into(),
             expires_utc: expiry.into(),
             self_approval: false,
+            calendar: None,
         };
         let future = (chrono::Utc::now() + chrono::Duration::days(1))
             .format("%Y-%m-%dT%H:%M:%SZ")

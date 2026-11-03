@@ -1,0 +1,376 @@
+diff --git a/platform/Cargo.toml b/platform/Cargo.toml
+index 8f4a84ffd..bbc31f8aa 100644
+--- a/platform/Cargo.toml
++++ b/platform/Cargo.toml
+@@ -29,6 +29,7 @@ name = "metal_alloc_probe"
+ harness = false
+ 
+ [dependencies]
++accesskit = { version = "=0.25.1", features = ["serde"] }
+ # Pure-Rust QR decode for the composer's LLM-provisioning scanner (android JNI).
+ rqrr = "0.10"
+ makepad-studio-protocol = { path = "./studio", version = "0.1.0" }
+@@ -48,9 +49,11 @@ bitflags = { version = "2.10", path = "../libs/bitflags" }
+ makepad-wasm-bridge = { path = "../libs/wasm_bridge", version = "1.0.0" }
+ 
+ [target.aarch64-apple-darwin.dependencies]
++accesskit_macos = "=0.27.1"
+ makepad-objc-sys = { path = "../libs/objc-sys", version = "1.0.0" }
+ 
+ [target.x86_64-apple-darwin.dependencies]
++accesskit_macos = "=0.27.1"
+ makepad-objc-sys = { path = "../libs/objc-sys", version = "1.0.0" }
+ 
+ [target.x86_64-apple-ios.dependencies]
+diff --git a/platform/src/accessibility.rs b/platform/src/accessibility.rs
+new file mode 100644
+index 000000000..1434a2dcc
+--- /dev/null
++++ b/platform/src/accessibility.rs
+@@ -0,0 +1,30 @@
++//! Window-scoped accessibility transport. The UI submits complete snapshots;
++//! platform callbacks enqueue actions and never call widgets re-entrantly.
++pub use accesskit;
++use crate::window::WindowId;
++
++#[derive(Clone, Debug)]
++pub struct WindowTreeUpdate {
++    pub window_id: WindowId,
++    /// Invalidates pending native actions when an owner/security scope changes.
++    pub generation: u64,
++    pub tree: accesskit::TreeUpdate,
++}
++
++#[derive(Clone, Debug)]
++pub struct AccessibilityAction {
++    pub window_id: WindowId,
++    pub generation: u64,
++    pub request: accesskit::ActionRequest,
++}
++
++impl crate::cx::Cx {
++    pub fn update_window_accessibility(&mut self, update: WindowTreeUpdate) {
++        self.update_accessibility_tree(Box::new(update));
++        // Trees are normally published after drawing; platform operations are
++        // drained before drawing. Wake the native loop so a resting window's
++        // AX snapshot is committed without waiting for the next user input.
++        #[cfg(target_os = "macos")]
++        crate::os::apple::macos::macos_app::wake_event_loop();
++    }
++}
+diff --git a/platform/src/lib.rs b/platform/src/lib.rs
+index a310cd1f6..c54061257 100644
+--- a/platform/src/lib.rs
++++ b/platform/src/lib.rs
+@@ -72,6 +72,7 @@
+ mod app_icon;
+ mod area;
+ pub mod component;
++pub mod accessibility;
+ mod component_list;
+ mod component_map;
+ mod cursor;
+diff --git a/platform/src/os/apple/macos/macos.rs b/platform/src/os/apple/macos/macos.rs
+index df40d386d..6eeb82a7b 100644
+--- a/platform/src/os/apple/macos/macos.rs
++++ b/platform/src/os/apple/macos/macos.rs
+@@ -1250,6 +1250,11 @@ fn cocoa_event_callback(
+                 }
+             }
+             MacosEvent::WindowGotFocus(window_id) => {
++                if let Some(bridge) = metal_windows.iter().find(|w| w.window_id == window_id)
++                    .and_then(|w| w.cocoa_window.accessibility.as_ref()) {
++                    let events = bridge.borrow_mut().focus(true);
++                    if let Some(events) = events { events.raise(); }
++                }
+                 // repaint all window passes. Metal sometimes doesnt flip buffers when hidden/no focus
+                 for window in metal_windows.iter_mut() {
+                     if let Some(main_pass_id) = self.windows[window.window_id].main_pass_id {
+@@ -1259,6 +1264,11 @@ fn cocoa_event_callback(
+                 self.call_event_handler(&Event::WindowGotFocus(window_id));
+             }
+             MacosEvent::WindowLostFocus(window_id) => {
++                if let Some(bridge) = metal_windows.iter().find(|w| w.window_id == window_id)
++                    .and_then(|w| w.cocoa_window.accessibility.as_ref()) {
++                    let events = bridge.borrow_mut().focus(false);
++                    if let Some(events) = events { events.raise(); }
++                }
+                 // The pointer lock cannot outlive the window's focus.
+                 with_macos_app(|app| app.release_pointer_lock_on_focus_loss());
+                 self.call_event_handler(&Event::WindowLostFocus(window_id));
+@@ -1967,7 +1977,16 @@ fn handle_platform_ops(
+                 CxOsOp::ShowSelectionHandles { .. } => {}
+                 CxOsOp::UpdateSelectionHandles { .. } => {}
+                 CxOsOp::HideSelectionHandles => {}
+-                CxOsOp::AccessibilityUpdate(_) => {}
++                CxOsOp::AccessibilityUpdate(payload) => {
++                    if let Ok(update) = payload.0.downcast::<crate::accessibility::WindowTreeUpdate>() {
++                        if let Some(bridge) = metal_windows.iter().find(|w| w.window_id == update.window_id)
++                            .and_then(|w| w.cocoa_window.accessibility.as_ref()) {
++                            let events = bridge.borrow_mut().update(*update);
++                            // Drop RefCell guards before any native notifications.
++                            if let Some(events) = events { events.raise(); }
++                        }
++                    }
++                }
+                 CxOsOp::AttachCameraNativePreview { video_id, area } => {
+                     let Some(draw_list_id) = area.draw_list_id() else {
+                         continue;
+diff --git a/platform/src/os/apple/macos/macos_accessibility.rs b/platform/src/os/apple/macos/macos_accessibility.rs
+new file mode 100644
+index 000000000..ab0e90b48
+--- /dev/null
++++ b/platform/src/os/apple/macos/macos_accessibility.rs
+@@ -0,0 +1,67 @@
++//! One AccessKit adapter for each Makepad NSView, installed before first focus.
++use crate::{accessibility::{AccessibilityAction, WindowTreeUpdate}, cx::Cx, window::WindowId};
++use accesskit::{ActionHandler, ActionRequest, ActivationHandler, TreeUpdate};
++use accesskit_macos::{QueuedEvents, SubclassingAdapter};
++use std::{cell::{Cell, RefCell}, ffi::c_void, rc::Rc};
++
++struct InitialTree(Rc<RefCell<Option<TreeUpdate>>>);
++impl ActivationHandler for InitialTree {
++    fn request_initial_tree(&mut self) -> Option<TreeUpdate> {
++        // All accesses are on the AppKit/UI thread. No cross-thread lock.
++        self.0.borrow().clone()
++    }
++}
++
++struct Actions {
++    window_id: WindowId,
++    generation: Rc<Cell<u64>>,
++    live: Rc<Cell<bool>>,
++}
++impl ActionHandler for Actions {
++    fn do_action(&mut self, request: ActionRequest) {
++        if self.live.get() {
++            Cx::post_action(AccessibilityAction {
++                window_id: self.window_id,
++                generation: self.generation.get(),
++                request,
++            });
++        }
++    }
++}
++
++pub(crate) struct Bridge {
++    adapter: Option<SubclassingAdapter>,
++    latest: Rc<RefCell<Option<TreeUpdate>>>,
++    generation: Rc<Cell<u64>>,
++    live: Rc<Cell<bool>>,
++}
++
++impl Bridge {
++    /// `view` is the initialized content NSView, before makeFirstResponder.
++    pub(crate) unsafe fn new(view: *mut c_void, window_id: WindowId) -> Self {
++        let latest = Rc::new(RefCell::new(None));
++        let generation = Rc::new(Cell::new(0));
++        let live = Rc::new(Cell::new(true));
++        let adapter = unsafe { SubclassingAdapter::new(view, InitialTree(latest.clone()),
++            Actions { window_id, generation: generation.clone(), live: live.clone() }) };
++        Self { adapter: Some(adapter), latest, generation, live }
++    }
++
++    pub(crate) fn update(&mut self, update: WindowTreeUpdate) -> Option<QueuedEvents> {
++        if !self.live.get() { return None; }
++        self.generation.set(update.generation);
++        *self.latest.borrow_mut() = Some(update.tree.clone());
++        self.adapter.as_mut()?.update_if_active(|| update.tree)
++    }
++
++    pub(crate) fn focus(&mut self, focused: bool) -> Option<QueuedEvents> {
++        self.adapter.as_mut()?.update_view_focus_state(focused)
++    }
++
++    pub(crate) fn retire(&mut self) {
++        self.live.set(false);
++        self.latest.borrow_mut().take();
++        // Restores the original NSView class while the view is still valid.
++        self.adapter.take();
++    }
++}
+diff --git a/platform/src/os/apple/macos/macos_window.rs b/platform/src/os/apple/macos/macos_window.rs
+index 1fc97ec10..395af4526 100644
+--- a/platform/src/os/apple/macos/macos_window.rs
++++ b/platform/src/os/apple/macos/macos_window.rs
+@@ -30,6 +30,7 @@
+ 
+ #[derive(Clone)]
+ pub struct MacosWindow {
++    pub(crate) accessibility: Option<Rc<std::cell::RefCell<super::macos_accessibility::Bridge>>>,
+     pub(crate) window_id: WindowId,
+     pub(crate) view: ObjcId,
+     pub(crate) window: ObjcId,
+@@ -83,6 +84,7 @@ fn alloc_window(window_class: *const Class, window_id: WindowId) -> MacosWindow
+                 app.cocoa_window_ids.push((window_id, window));
+             });
+             MacosWindow {
++                accessibility: None,
+                 is_fullscreen: false,
+                 is_popup: false,
+                 macos_config: MacosWindowConfig::default(),
+@@ -335,6 +337,8 @@ pub fn init(
+             let () = msg_send![self.view, setLayerContentsRedrawPolicy: 2];
+ 
+             let () = msg_send![self.window, setContentView: self.view];
++            self.accessibility = Some(Rc::new(std::cell::RefCell::new(
++                super::macos_accessibility::Bridge::new(self.view.cast(), self.window_id))));
+             let () = msg_send![self.window, makeFirstResponder: self.view];
+             // MAKEPAD_HIDE_WINDOWS=1: never order the window onto the
+             // screen — GPU eval/test runs render their offscreen passes on
+@@ -453,6 +457,8 @@ pub fn init_popup(&mut self, size: Vec2d, position: Vec2d, parent_window: ObjcId
+             let () = msg_send![self.view, setLayerContentsRedrawPolicy: 2]; //duringViewResize
+ 
+             let () = msg_send![self.window, setContentView: self.view];
++            self.accessibility = Some(Rc::new(std::cell::RefCell::new(
++                super::macos_accessibility::Bridge::new(self.view.cast(), self.window_id))));
+             let () = msg_send![self.window, makeFirstResponder: self.view];
+ 
+             // orderFront instead of makeKeyAndOrderFront to avoid stealing key focus initially
+@@ -777,6 +783,7 @@ pub fn do_callback(&mut self, event: MacosEvent) {
+ 
+     pub(crate) fn retire(&mut self) {
+         self.retired = true;
++        if let Some(bridge) = self.accessibility.take() { bridge.borrow_mut().retire(); }
+         unsafe {
+             if self.live_resize_timer != nil {
+                 let () = msg_send![self.live_resize_timer, invalidate];
+diff --git a/platform/src/os/apple/macos/mod.rs b/platform/src/os/apple/macos/mod.rs
+index 6281fee86..dde406b56 100644
+--- a/platform/src/os/apple/macos/mod.rs
++++ b/platform/src/os/apple/macos/mod.rs
+@@ -4,6 +4,7 @@
+ pub mod macos_delegates;
+ pub mod macos_event;
+ mod macos_ime;
++pub(crate) mod macos_accessibility;
+ pub mod macos_stdin;
+ pub mod macos_window;
+ pub use self::macos::*;
+diff --git a/widgets/src/drop_down.rs b/widgets/src/drop_down.rs
+index 5f4d3540b..8a7bf5c87 100644
+--- a/widgets/src/drop_down.rs
++++ b/widgets/src/drop_down.rs
+@@ -603,6 +603,28 @@ fn popup_menu_key(&self) -> PopupMenuKey {
+         }
+     }
+ 
++    /// Semantic popup entries use the actual drawn item widgets for bounds.
++    pub fn accessibility_items(&self) -> Vec<(usize, String, WidgetRef)> {
++        if !self.is_active { return Vec::new(); }
++        let Ok(map) = self.popup_global.map.try_borrow() else { return Vec::new() };
++        let Some(menu) = map.get(&self.popup_menu_key()) else { return Vec::new() };
++        let mut entries: Vec<_> = menu.item_refs().filter_map(|(id, item)| {
++            let index = id.0 as usize;
++            self.labels.get(index).map(|label| (index, label.clone(), item))
++        }).collect();
++        entries.sort_by_key(|(index, _, _)| *index);
++        entries
++    }
++
++    pub fn accessibility_is_expanded(&self) -> bool { self.is_active }
++
++    pub fn accessibility_select(&mut self, cx: &mut Cx, index: usize) {
++        if !self.is_active || index >= self.labels.len() { return; }
++        self.selected_item = index;
++        cx.widget_action_with_data(&self.action_data, self.uid, DropDownAction::Select(index));
++        self.set_closed(cx);
++    }
++
+     pub fn selected_item_index(&self) -> usize {
+         self.selected_item
+     }
+diff --git a/widgets/src/popup_menu.rs b/widgets/src/popup_menu.rs
+index 1b1c0ebcd..80c38b652 100644
+--- a/widgets/src/popup_menu.rs
++++ b/widgets/src/popup_menu.rs
+@@ -525,6 +525,8 @@ pub fn handle_event_with(
+ }
+ 
+ impl Widget for PopupMenuItem {
++    fn text(&self) -> String { self.label.clone() }
++
+     fn handle_event(&mut self, _cx: &mut Cx, _event: &Event, _scope: &mut Scope) {
+         // Driven by `PopupMenu::handle_event_with`, which needs the menu's
+         // sweep area and action sink; nothing to do on the plain seam.
+diff --git a/widgets/src/text_input.rs b/widgets/src/text_input.rs
+index a3c1be2b4..3184cf5d3 100644
+--- a/widgets/src/text_input.rs
++++ b/widgets/src/text_input.rs
+@@ -528,6 +528,21 @@
+ /// What a refused secret field shows instead of its placeholder.
+ const SECRET_REFUSED: &str = "Apps can't ask for passwords";
+ 
++/// Typography participates in the retained text-layout cache. Theme/text-scale
++/// reapplication must invalidate glyph metrics without resetting editing state.
++#[derive(Clone, Copy, PartialEq)]
++struct TextLayoutStyle {
++    family: makepad_draw::text::font_family::FontFamilyId,
++    size: f32,
++    letter_spacing: f32,
++    line_spacing: f32,
++    top_drop: f32,
++    scale: f32,
++    align: (f64, f64),
++    password: bool,
++    wrap: bool,
++}
++
+ #[derive(Script, Widget, Animator)]
+ pub struct TextInput {
+     #[uid]
+@@ -619,6 +634,8 @@ pub struct TextInput {
+     #[rust]
+     laidout_max_lines: usize,
+     #[rust]
++    laidout_style: Option<TextLayoutStyle>,
++    #[rust]
+     text_area: Area,
+     #[rust]
+     selection: Selection,
+@@ -1065,7 +1082,20 @@ fn layout_text(&mut self, cx: &mut Cx2d) {
+         } else {
+             None
+         };
++        let wrap = self.is_multiline && cx.turtle().layout().flow == Flow::right_wrap();
++        let style = TextLayoutStyle {
++            family: self.draw_text.text_style.font_family_id(),
++            size: self.draw_text.text_style.font_size,
++            letter_spacing: self.draw_text.text_style.letter_spacing,
++            line_spacing: self.draw_text.text_style.line_spacing,
++            top_drop: self.draw_text.text_style.top_drop,
++            scale: self.draw_text.font_scale,
++            align: (self.label_align.x, self.label_align.y),
++            password: self.is_password,
++            wrap,
++        };
+         if self.laidout_text.is_some()
++            && self.laidout_style == Some(style)
+             && self.laidout_width == max_width_in_lpxs
+             && self.laidout_max_lines == self.draw_text.max_lines
+         {
+@@ -1082,7 +1112,7 @@ fn layout_text(&mut self, cx: &mut Cx2d) {
+             &self.text
+         };
+ 
+-        let wrap = self.is_multiline && cx.turtle().layout().flow == Flow::right_wrap();
++        self.laidout_style = Some(style);
+         self.laidout_width = max_width_in_lpxs;
+         self.laidout_max_lines = self.draw_text.max_lines;
+         self.laidout_text = Some(self.draw_text.layout(
+diff --git a/widgets/src/view.rs b/widgets/src/view.rs
+index ad333ec3e..626bac967 100644
+--- a/widgets/src/view.rs
++++ b/widgets/src/view.rs
+@@ -1382,6 +1382,11 @@ pub fn child_at_index(&mut self, index: usize) -> Option<&WidgetRef> {
+         }
+     }
+ 
++    /// Current content offset, including wheel, scrollbar and navigation scrolling.
++    pub fn get_scroll_pos(&self) -> Vec2d {
++        self.scroll_bars_obj.as_ref().map(|bars| bars.get_scroll_pos()).unwrap_or(self.layout.scroll)
++    }
++
+     pub fn set_scroll_pos(&mut self, cx: &mut Cx, v: Vec2d) {
+         if let Some(scroll_bars) = &mut self.scroll_bars_obj {
+             scroll_bars.set_scroll_pos(cx, v);

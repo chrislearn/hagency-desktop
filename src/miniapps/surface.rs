@@ -14,6 +14,7 @@
 use makepad_widgets::*;
 use super::ui::{MiniAppsAction, MiniAppsPanelRef, MiniAppsPanelWidgetExt};
 use crate::hagency::ui::{HagencyAction, HagencyPanelWidgetExt};
+use crate::hagency::owner_dashboard::{EmbeddedAction, OwnerDashboardHostWidgetExt};
 use crate::shared::web_browser::{WebBrowserAction, WebBrowserRef, WebBrowserWidgetRefExt};
 use crate::article_app::{ArticleAction, ArticlePanelWidgetRefExt};
 use crate::shared::navigation_bar_button::NavigationBarButtonWidgetExt;
@@ -38,6 +39,14 @@ script_mod! {
             apps := ManagementTab {icon.draw_icon.svg: ICON_ARROW_BACK label.text: #(crate::i18n::tr("Back to Hagency")) label.i18n_text: "Back to Hagency"}
             context := RinxHint {width: Fill text: ""}
         }
+        owner_navigation := View {
+            visible: false width: Fill height: Fit flow: Right spacing: 8
+            padding: Inset{left: 12 right: 12 top: 0 bottom: 0}
+            show_bg: true draw_bg.color: mod.widgets.RINX_PAGE
+            manage := ManagementTab {label.text: #(crate::i18n::tr("Manage")) label.i18n_text: "Manage"}
+            hosting := ManagementTab {label.text: #(crate::i18n::tr("Hosting")) label.i18n_text: "Hosting"}
+        }
+        owner_host := OwnerDashboardHost {visible: false}
         mini_apps_panel := MiniAppsPanel {
             // A window's caption bar sits above the panel.
             padding: Inset{top: 12 right: 20 bottom: 20 left: 20}
@@ -71,7 +80,7 @@ impl SurfaceKey {
     pub fn for_action(action: &MiniAppsAction) -> Option<Self> {
         match action {
             MiniAppsAction::Open => Some(Self::Catalog),
-            MiniAppsAction::OpenAgent | MiniAppsAction::OpenPalpo(_) => Some(Self::App(super::palpo::APP_ID.to_owned())),
+            MiniAppsAction::OpenAgent | MiniAppsAction::OpenPalpo(_) | MiniAppsAction::ReviewOwnerApprovals { .. } => Some(Self::App(super::palpo::APP_ID.to_owned())),
             _ => None,
         }
     }
@@ -92,6 +101,15 @@ pub struct MiniAppsSurface {
     notified: Option<bool>,
     #[rust]
     native: Option<(SurfaceKey, WidgetRef)>,
+    #[rust]
+    owner_page: bool,
+    /// The hosting entry stays usable while the management app is loading or
+    /// cannot acquire a local engine because execution lives in the daemon.
+    #[rust]
+    agent_surface: bool,
+    /// A tab host supplies the hosting switch in its existing header.
+    #[rust]
+    header_navigation: bool,
 }
 
 impl ScriptHook for MiniAppsSurface {
@@ -115,6 +133,20 @@ impl ScriptHook for MiniAppsSurface {
 
 impl Widget for MiniAppsSurface {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        if let Event::Actions(actions) = event {
+            if self.host_visible && self.is_agent(cx) && actions.iter().any(|action| matches!(action.downcast_ref::<EmbeddedAction>(), Some(EmbeddedAction::Restore { .. }))) {
+                self.owner_page = true;
+                self.management_page = None;
+                self.update_page(cx);
+            }
+            if self.view.navigation_bar_button(cx, ids!(owner_navigation.hosting)).clicked(actions) {
+                self.owner_page = true;
+                self.update_page(cx);
+            } else if self.view.navigation_bar_button(cx, ids!(owner_navigation.manage)).clicked(actions) {
+                self.owner_page = false;
+                self.update_page(cx);
+            }
+        }
         let emitted = cx.capture_actions(|cx| self.view.handle_event(cx, event, scope));
         for action in emitted {
             let close = match self.native.as_ref().map(|(kind, _)| kind) {
@@ -137,12 +169,21 @@ impl Widget for MiniAppsSurface {
 }
 
 impl MiniAppsSurface {
+    fn is_agent(&self, cx: &mut Cx) -> bool {
+        self.agent_surface || self.panel(cx).current_app().is_some_and(|(id, _)| id == super::palpo::APP_ID)
+    }
     fn panel(&self, cx: &mut Cx) -> MiniAppsPanelRef {
         self.view.mini_apps_panel(cx, ids!(mini_apps_panel))
     }
 
     fn update_page(&mut self, cx: &mut Cx) {
-        self.view.widget(cx, ids!(mini_apps_panel)).set_visible(cx, self.management_page.is_none() && self.native.is_none());
+        let owner_available = self.is_agent(cx) && self.management_page.is_none() && self.native.is_none();
+        let owner_visible = owner_available && self.owner_page;
+        self.view.navigation_bar_button(cx, ids!(owner_navigation.manage)).set_selected(cx, !owner_visible);
+        self.view.navigation_bar_button(cx, ids!(owner_navigation.hosting)).set_selected(cx, owner_visible);
+        self.view.widget(cx, ids!(owner_navigation)).set_visible(cx, owner_available && !self.header_navigation);
+        self.view.widget(cx, ids!(owner_host)).set_visible(cx, owner_visible);
+        self.view.widget(cx, ids!(mini_apps_panel)).set_visible(cx, self.management_page.is_none() && self.native.is_none() && !owner_visible);
         self.view.widget(cx, ids!(management_panel)).set_visible(cx, self.management_page.is_some());
         self.view.view(cx, ids!(management_navigation)).set_visible(cx, self.management_page.is_some());
         self.view.label(cx, ids!(management_navigation.context)).set_text(cx, crate::i18n::tr(
@@ -162,7 +203,10 @@ impl MiniAppsSurface {
 
     /// Only the Hagency app listens, and only while its apps page is in front.
     fn sync_script_visibility(&mut self, cx: &mut Cx) {
-        let visible = self.host_visible && self.management_page.is_none() && self.native.is_none();
+        let available = self.host_visible && self.management_page.is_none() && self.native.is_none();
+        let owner_visible = available && self.owner_page && self.is_agent(cx);
+        self.view.owner_dashboard_host(cx, ids!(owner_host)).set_host_visible(cx, owner_visible);
+        let visible = available && !owner_visible;
         if let Some((SurfaceKey::Reader, reader)) = &self.native {
             reader.as_web_browser().set_host_visible(cx, self.host_visible);
         }
@@ -177,6 +221,7 @@ impl MiniAppsSurface {
         if self.management_page.is_some() {
             return SurfaceKey::Management;
         }
+        if self.agent_surface { return SurfaceKey::App(super::palpo::APP_ID.to_owned()); }
         match self.panel(cx).current_app() {
             Some((id, _)) => SurfaceKey::App(id),
             None => SurfaceKey::Catalog,
@@ -187,6 +232,7 @@ impl MiniAppsSurface {
         if let Some((key, _)) = &self.native {
             return crate::i18n::tr(if *key == SurfaceKey::Reader {"Web pages"} else {"Article editor"}).to_owned();
         }
+        if self.agent_surface && self.management_page.is_none() { return crate::i18n::tr("Agent").into(); }
         match self.management_page {
             Some(true) => crate::i18n::tr("Local agents").to_owned(),
             Some(false) => crate::i18n::tr("Agent spaces").to_owned(),
@@ -204,13 +250,20 @@ impl MiniAppsSurface {
         // Re-selecting Agent preserves both its script page and any native
         // management page opened over it, including unsaved form values.
         if matches!(action, MiniAppsAction::OpenAgent)
-            && self.panel(cx).current_app().is_some_and(|(id, _)| id == super::palpo::APP_ID)
+            && self.is_agent(cx)
         {
             self.panel(cx).action(cx, ModalRef::default(), action);
             return;
         }
+        match action {
+            MiniAppsAction::ReviewOwnerApprovals { .. } => { self.agent_surface = true; self.owner_page = false; },
+            MiniAppsAction::OpenAgent | MiniAppsAction::OpenPalpo(_) => self.agent_surface = true,
+            MiniAppsAction::Open | MiniAppsAction::OpenReviewed => { self.agent_surface = false; self.owner_page = false; },
+            _ => {},
+        }
         self.show_apps(cx);
         self.panel(cx).action(cx, ModalRef::default(), action);
+        self.update_page(cx);
         self.view.redraw(cx);
     }
 
@@ -269,6 +322,7 @@ impl MiniAppsSurface {
 
     /// Stops the app (revoking its lease) and closes management.
     fn close(&mut self, cx: &mut Cx) {
+        self.view.owner_dashboard_host(cx, ids!(owner_host)).set_host_visible(cx, false);
         if let Some((kind, panel)) = self.native.take() {
             if kind == SurfaceKey::Reader {
                 panel.as_web_browser().action(cx, ModalRef::default(), &WebBrowserAction::Close);
@@ -283,6 +337,48 @@ impl MiniAppsSurface {
 }
 
 impl MiniAppsSurfaceRef {
+    pub fn hosting_state(&self, cx: &mut Cx) -> Option<bool> {
+        let inner = self.borrow()?;
+        (inner.is_agent(cx) && inner.management_page.is_none() && inner.native.is_none()).then_some(inner.owner_page)
+    }
+    pub fn toggle_hosting(&self, cx: &mut Cx) {
+        if let Some(mut inner) = self.borrow_mut() {
+            if inner.is_agent(cx) && inner.management_page.is_none() && inner.native.is_none() {
+                inner.owner_page = !inner.owner_page;
+                inner.update_page(cx);
+            }
+        }
+    }
+    #[cfg(feature = "onboarding-test-support")]
+    pub fn owner_fixture(&self, cx: &mut Cx, state: owner_dashboard::DashboardState) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.view.owner_dashboard_host(cx, ids!(owner_host)).load_fixture(cx, state);
+            inner.owner_page = true;
+            inner.agent_surface = true;
+            inner.management_page = None;
+            inner.update_page(cx);
+        }
+    }
+    #[cfg(feature = "onboarding-test-support")]
+    pub fn update_owner_fixture(&self, cx: &mut Cx, snapshot: owner_dashboard::dto::DashboardSnapshot) {
+        if let Some(inner) = self.borrow() { inner.view.owner_dashboard_host(cx, ids!(owner_host)).update_fixture(cx, snapshot); }
+    }
+    #[cfg(feature = "onboarding-test-support")]
+    pub fn owner_fixture_scope(&self, cx: &mut Cx, owner: Option<&str>) {
+        if let Some(inner) = self.borrow() { inner.view.owner_dashboard_host(cx, ids!(owner_host)).fixture_scope(cx, owner); }
+    }
+    #[cfg(feature = "onboarding-test-support")]
+    pub fn owner_fixture_locale(&self, cx: &mut Cx, locale: owner_dashboard::Locale) {
+        if let Some(inner) = self.borrow() { inner.view.owner_dashboard_host(cx, ids!(owner_host)).fixture_locale(cx, locale); }
+    }
+    #[cfg(feature = "onboarding-test-support")]
+    pub fn owner_fixture_handover(&self, cx: &mut Cx, enabled: bool) {
+        if let Some(inner) = self.borrow() { inner.view.owner_dashboard_host(cx, ids!(owner_host)).fixture_handover(enabled); }
+    }
+    #[cfg(feature = "onboarding-test-support")]
+    pub fn owner_fixture_view(&self, cx: &mut Cx) -> Option<owner_dashboard::ViewState> {
+        self.borrow().and_then(|inner| inner.view.owner_dashboard_host(cx, ids!(owner_host)).fixture_view(cx))
+    }
     pub fn web_action(&self, cx: &mut Cx, action: &WebBrowserAction) {
         if let Some(mut inner) = self.borrow_mut() { inner.web_action(cx, action); }
     }
@@ -490,6 +586,10 @@ impl MiniAppsSurfaceDeck {
 
     /// Adds an existing surface (one moving in from another host) in front.
     fn insert(&mut self, cx: &mut Cx, id: LiveId, surface: WidgetRef) {
+        if let Some(mut inner) = surface.borrow_mut::<MiniAppsSurface>() {
+            inner.header_navigation = true;
+            inner.update_page(cx);
+        }
         self.surfaces.retain(|(old, _)| *old != id);
         cx.widget_tree_insert_child_deep(self.uid, id, surface.clone());
         self.surfaces.push((id, surface));

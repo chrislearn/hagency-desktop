@@ -72,7 +72,7 @@ def fixtures(encrypted=True, running=True, here=True, online=True, status_error=
     }
 
 class Host:
-    def __init__(self, binary, output, language, narrow, workspace="manager", **variant):
+    def __init__(self, binary, output, language, narrow, workspace="manager", fixture_overrides=None, source=None, **variant):
         self.out = output
         profile = output / "profile"
         (profile / "sandbox").mkdir(parents=True, exist_ok=True)
@@ -82,7 +82,7 @@ class Host:
             wizard=dict(step=0, runtime="", model=None, reasoning=None, tokens="1000000", label="",
                         coordinator="", resource=None, admission=None))))
         self.fixture_path = output / "fixtures.json"
-        self.fixture_path.write_text(json.dumps(fixtures(**variant)))
+        self.fixture_path.write_text(json.dumps(dict(fixtures(**variant), **(fixture_overrides or {}))))
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -91,9 +91,12 @@ class Host:
         self.process = subprocess.Popen([str(binary), f"--remote={port}"] + (["--narrow"] if narrow else []),
             cwd=ROOT, stdout=self.log, stderr=subprocess.STDOUT,
             env=dict(os.environ, RINX_DATA_DIR=str(profile), HAGENCY_UX_FIXTURES=str(self.fixture_path),
-                     HAGENCY_UX_SOURCE=str(ROOT / "apps/hagency/bundle/main.splash"),
+                     HAGENCY_UX_SOURCE=str(source or ROOT / "apps/hagency/bundle/main.splash"),
                      MAKEPAD_HIDE_WINDOWS="1", MAKEPAD_NO_FOCUS="1"))
-        self.wait(lambda: self.req("/s")["pid"] == self.process.pid, "host start")
+        def ready():
+            status = self.req("/s")
+            return status["pid"] == self.process.pid and bool(status.get("w"))
+        self.wait(ready, "host start")
 
     def req(self, path, **query):
         url = self.base + path + ("?" + urllib.parse.urlencode(query) if query else "")
@@ -127,12 +130,14 @@ class Host:
             snap = self.snap()
             # The scroll area starts under the header; its top moves with the header's height.
             top = next((w["r"][1] + 4 for w in snap if w.get("i") == "content" and w["r"][3] > 0), 210)
+            footer = [w["r"][1] for w in snap if w.get("i") == "primary" and w["r"][2] > 0]
+            bottom = min([height - 20] + [y - 24 for y in footer])
             rows = [w for w in snap if w.get("i") == name and w["r"][2] > 0]
             if rows:
                 x, y, w, h = rows[0]["r"]
-                if y >= top and y + h <= height - 20:
+                if y >= top and y + h <= bottom:
                     return
-                self.scroll(200 if y + h > height - 20 else -200)
+                self.scroll(200 if y + h > bottom else -200)
             else:
                 self.scroll(200)
         raise AssertionError("Not reachable on screen: " + name)

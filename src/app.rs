@@ -36,6 +36,7 @@ use crate::octoscript_apps::{MiniAppsAction, MiniAppsPanelWidgetRefExt};
 use crate::miniapps::window::MiniAppsWindowHostWidgetRefExt;
 use crate::miniapps::side::MiniAppsSideRegionWidgetRefExt;
 use crate::hagency::ui::{HagencyAction, HagencyPanelWidgetRefExt};
+use crate::hagency::owner_dashboard::Coordinator as OwnerDashboardCoordinator;
 use crate::settings::theme_studio::{ThemeStudioAction, ThemeStudioWidgetRefExt};
 use crate::article_app::{ArticleAction, ArticlePanelWidgetRefExt};
 use crate::mini_app::{MiniAppAction, MiniAppPanelWidgetRefExt};
@@ -250,6 +251,7 @@ pub struct App {
     /// The top-level app state, shared across various parts of the app.
     #[rust] app_state: AppState,
     #[rust] lifecycle: AppLifecycle,
+    #[rust] owner_dashboard: OwnerDashboardCoordinator,
     /// The details of a room we're waiting on to be loaded so that we can navigate to it.
     /// This can be either a room we're waiting to join, or one we're waiting to be invited to.
     /// Also includes an optional room ID to be closed once the awaited room has been loaded.
@@ -279,6 +281,7 @@ impl MatchEvent for App {
     fn handle_startup(&mut self, cx: &mut Cx) {
         if self.started { return; }
         self.started = true;
+        crate::hagency::owner_dashboard::register_host_accessibility(cx);
         // only init logging/tracing once.
         //
         // We silence a few overly noisy SDK logs:
@@ -388,8 +391,8 @@ impl MatchEvent for App {
                     self.close_hosted_window(cx, HostedWindow::WebBrowser, true);
                 } else if self.docks_mini_apps() {
                     let window = self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host));
-                    if window.surface_key(cx) == Some(crate::miniapps::surface::SurfaceKey::Reader) {
-                        window.surface(cx).web_action(cx, action);
+                    if window.is_open() {
+                        window.web_action(cx, action);
                     } else {
                         self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).web_action(cx, action);
                     }
@@ -554,13 +557,14 @@ impl MatchEvent for App {
                 let window_host = self.article_window_host(cx);
                 if matches!(action, ArticleAction::Close) {
                     self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).article_action(cx, action);
+                    self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host)).article_action(cx, action);
                     self.ui.article_panel(cx, ids!(article_app_modal.content)).action(cx, modal, action);
                     window_host.close(cx);
                     self.close_hosted_window(cx, HostedWindow::Article, true);
                 } else if self.docks_mini_apps() {
                     let window = self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host));
-                    if window.surface_key(cx) == Some(crate::miniapps::surface::SurfaceKey::Articles) {
-                        window.surface(cx).article_action(cx, action);
+                    if window.is_open() {
+                        window.article_action(cx, action);
                     } else {
                         self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).article_action(cx, action);
                     }
@@ -1094,7 +1098,7 @@ impl MatchEvent for App {
 impl App {
     fn preserve_reader_session(&self, cx: &mut Cx) {
         self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).reader(cx).prepare_shutdown();
-        self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host)).surface(cx).reader().prepare_shutdown();
+        self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host)).reader(cx).prepare_shutdown();
         self.ui.web_browser_window_host(cx, ids!(web_browser_window_host)).browser(cx).prepare_shutdown();
         self.ui.web_browser(cx, ids!(web_browser_modal.content)).prepare_shutdown();
         if let Some((_, panel)) = self.hosted_windows.iter().find(|(kind, _)| *kind == HostedWindow::WebBrowser) {
@@ -1105,22 +1109,17 @@ impl App {
     fn close_web_browser(&self, cx: &mut Cx) {
         self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).web_action(cx, &WebBrowserAction::Close);
         let mini_window = self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host));
-        if mini_window.surface_key(cx) == Some(crate::miniapps::surface::SurfaceKey::Reader) { mini_window.close(cx); }
+        mini_window.web_action(cx, &WebBrowserAction::Close);
         self.ui.web_browser_window_host(cx, ids!(web_browser_window_host)).close(cx);
         let modal = self.ui.modal(cx, ids!(web_browser_modal));
         self.ui.web_browser(cx, ids!(web_browser_modal.content)).action(cx, modal, &WebBrowserAction::Close);
     }
 
-    /// Leaves the mini apps for a chat: full-screen panels close as before,
-    /// and so does the popped-out window when its own app went to the chat.
-    /// Docked tabs stay beside the chat; an overlay steps aside.
+    /// Leaves full-screen panels for a chat. Both docked and floating workspace
+    /// tabs retain their running apps and drafts; a desktop overlay steps aside.
     fn leave_mini_apps(&mut self, cx: &mut Cx) {
         self.ui.hagency_panel(cx, ids!(hagency_management_modal.content.management)).action(cx, &HagencyAction::Close);
         self.ui.modal(cx, ids!(hagency_management_modal)).close(cx);
-        let window = self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host));
-        if window.take_navigated() {
-            window.close(cx);
-        }
         let modal = self.ui.modal(cx, ids!(octoscript_apps_modal));
         self.ui.mini_apps_panel(cx, ids!(octoscript_apps_modal.content)).action(cx, modal, &MiniAppsAction::Close);
         self.close_hosted_window(cx, HostedWindow::MiniApps, true);
@@ -1135,58 +1134,45 @@ impl App {
         self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).close_all(cx);
     }
 
-    /// Desktop windows dock mini apps beside the chat (and can pop one out);
+    /// Desktop windows dock mini apps beside the chat (and can pop them all out);
     /// phones and hosted panes keep their full-screen or host-window panels.
     fn docks_mini_apps(&self) -> bool {
         !self.embedded && cfg!(any(target_os = "macos", target_os = "windows", all(target_os = "linux", not(target_env = "ohos"))))
     }
 
-    /// Opens a mini-apps item: in the popped-out window if that is what it
-    /// shows, otherwise in its docked tab.
+    /// Every new item follows the workspace's current host, including items
+    /// opened from a main-window chat while the workspace is floating.
     fn dock_mini_apps_action(&mut self, cx: &mut Cx, action: &MiniAppsAction) {
-        use crate::miniapps::surface::SurfaceKey;
         let window = self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host));
         let side = self.ui.mini_apps_side_region(cx, ids!(mini_apps_side));
-        let in_window = match SurfaceKey::for_action(action) {
-            Some(wanted) => window.surface_key(cx) == Some(wanted)
-                || matches!(action, MiniAppsAction::OpenAgent) && window.surface_key(cx) == Some(SurfaceKey::Management),
-            // The assistant's reviewed app: docked if a tab shows an app, else the window's.
-            None => matches!(action, MiniAppsAction::OpenReviewed)
-                && matches!(window.surface_key(cx), Some(SurfaceKey::App(_)))
-                && !side.has_app(cx),
-        };
-        if in_window {
+        if window.is_open() {
             window.action(cx, action);
         } else {
             side.open(cx, action);
         }
     }
 
-    /// Hagency management: in the popped-out window if it shows management,
-    /// otherwise docked.
+    /// Management follows the same workspace host as apps and readers.
     fn dock_hagency_action(&mut self, cx: &mut Cx, action: &HagencyAction) {
         let window = self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host));
-        if window.surface_key(cx) == Some(crate::miniapps::surface::SurfaceKey::Management) {
+        if window.is_open() {
             window.hagency_action(cx, action);
         } else {
             self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).hagency_action(cx, action);
         }
     }
 
-    /// Moves the docked front tab, still running, into the mini-apps window.
-    /// A tab already there comes back to the docked region.
+    /// Moves every tab, still running, into the workspace window.
     fn pop_out_mini_app(&mut self, cx: &mut Cx) {
         let side = self.ui.mini_apps_side_region(cx, ids!(mini_apps_side));
-        let Some(surface) = side.take_front(cx) else { return };
-        if let Some(previous) = self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host)).adopt(cx, surface) {
-            side.dock_surface(cx, previous);
-        }
+        let Some(workspace) = side.take_workspace(cx) else { return };
+        self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host)).adopt_workspace(cx, workspace);
     }
 
     fn dock_back_mini_app(&mut self, cx: &mut Cx, window: WindowId) {
         let host = self.ui.mini_apps_window_host(cx, ids!(mini_apps_window_host));
-        let Some(surface) = host.take_for_dock(cx, window) else { return };
-        self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).dock_surface(cx, surface);
+        let Some(workspace) = host.take_for_dock(cx, window) else { return };
+        self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).restore_workspace(cx, workspace);
         self.ui.redraw(cx);
         #[cfg(target_os = "macos")]
         if let Some(main) = self.ui.window(cx, ids!(main_window)).window_id() {
@@ -1336,6 +1322,7 @@ pub fn register_widgets(vm: &mut ScriptVm) {
     crate::verification_modal::script_mod(vm);
     crate::profile::script_mod(vm);
     crate::hagency::ui::script_mod(vm);
+    crate::hagency::owner_dashboard::register(vm);
     // A mini-apps host body, the docked region holding them, and the pop-out window.
     crate::miniapps::surface::script_mod(vm);
     crate::miniapps::side::script_mod(vm);
@@ -1365,6 +1352,19 @@ impl AppMain for App {
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
         crate::theme::system::handle_event(cx, event);
+        if let Some(restore) = self.owner_dashboard.handle_event(cx, event) {
+            if let crate::hagency::owner_dashboard::EmbeddedAction::Restore { id, ref view } = restore
+                && view.intent == Some(owner_dashboard::NavigationIntent::ReviewApprovals)
+                && let Some(owner) = view.owner_id.clone()
+            {
+                // The MiniApp acknowledges only after its same-owner landing
+                // is installed. Restoring Hosting alone is not acceptance.
+                self.dock_mini_apps_action(cx, &MiniAppsAction::ReviewOwnerApprovals { owner, handover_id: Some(id) });
+            } else {
+                self.dock_mini_apps_action(cx, &MiniAppsAction::OpenAgent);
+                cx.action(restore);
+            }
+        }
         // Peek at Back instead of `back_pressed()`, which marks it handled: Back
         // is taken only when it closes one of these modals. Otherwise it goes on
         // to Rinx's views and, at the root of Rinx's navigation, to the host
@@ -1449,10 +1449,12 @@ impl AppMain for App {
         }
 
         // Forward events to the MatchEvent trait implementation.
+        if owner_dashboard::keyboard::embedded(&self.ui, cx, event) { return; }
         self.match_event(cx, event);
         crate::agent_access::publish(current_user_id(), &self.app_state.agent_access);
         let scope = &mut Scope::with_data(&mut self.app_state);
         self.ui.handle_event(cx, event, scope);
+        owner_dashboard::accessibility::after_event(&self.ui, cx, event);
         // The backend may restore the next account only after every child has
         // consumed ClearAppState, including hidden settings/room widgets.
         if let Event::Actions(actions) = event {

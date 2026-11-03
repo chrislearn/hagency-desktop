@@ -1,6 +1,6 @@
 //! Native coordinator handoff into the existing Resources and grant UI.
 use super::*;
-use ::hagency::native_owner::AdoptedManagementSelection;
+use ::hagency::daemon::bridge::AdoptedSelection as AdoptedManagementSelection;
 
 impl Host {
     /// Native-only: a mini-app cannot manufacture this sealed selection. Caller
@@ -24,12 +24,12 @@ impl Host {
             self.attach_adopted_grant_access(lease, &service).await
         } else {
             let manager = service
-                .management(ManagementPackage {
+                .management_until(ManagementPackage {
                     digest: self.0.digest.clone(),
                     instance: self.0.identity.generation,
                     account_epoch: self.0.epoch + 1,
                     permissions: vec![ManagementPermission::ReadResources],
-                })
+                }, lease.expires())
                 .await?;
             let result = manager
                 .resources(Default::default())
@@ -93,13 +93,13 @@ impl Host {
             account_epoch: self.0.epoch + 1,
             permissions: permissions(lease),
         };
-        let manager = service.management(package()).await?;
+        let manager = service.management_until(package(), lease.expires()).await?;
         // Canonical inventory must actually be readable before enabling consent.
         if let Err(error) = manager.resources(Default::default()).await {
             manager.retire();
             return Err(error.code);
         }
-        let access = match service.adopted_grant_access(package()).await {
+        let access = match service.adopted_grant_access_until(package(), lease.expires()).await {
             Ok(access) => access,
             Err(error) => {
                 manager.retire();
@@ -141,10 +141,12 @@ impl Host {
     }
 }
 
+pub(crate) use ::hagency::daemon::bridge::DeviceSetupReview as AdoptionReview;
+
 pub(crate) const STATUS: &str = "hagency.onboarding.status";
 pub(crate) const REVIEW: &str = "hagency.onboarding.review";
 pub(crate) use ::hagency::native_owner::{
-    ResourceActivationContext as AdoptionContext, DeviceSetupReview as AdoptionReview, DeviceSetupKind,
+    ResourceActivationContext as AdoptionContext, DeviceSetupKind,
 };
 
 #[derive(serde::Serialize)]
@@ -212,17 +214,17 @@ impl AdoptionFlow {
                 reason: None,
             }));
         }
-        let context = service.activation_context(self.package()).await?;
+        let context = service.activation_context(self.package(), self.lease.expires()).await?;
         self.check()?;
         if context.kind == DeviceSetupKind::EmptyDevice {
-            let review = service.activation_review(self.package(), None).await?;
+            let review = service.activation_review(self.package(), None, self.lease.expires()).await?;
             self.check()?;
             Ok(AdoptionResult::Review(Box::new(review)))
         } else if context.original_migration.is_some() {
             let tokens = context
                 .original_monthly_tokens
                 .ok_or("source_adoption_original_ceiling_required")?;
-            let review = service.activation_review(self.package(), Some(tokens)).await?;
+            let review = service.activation_review(self.package(), Some(tokens), self.lease.expires()).await?;
             self.check()?;
             Ok(AdoptionResult::Review(Box::new(review)))
         } else {
@@ -239,7 +241,7 @@ impl AdoptionFlow {
             .filter(|n| *n > 0 && *n <= 9_007_199_254_740_991)
             .ok_or("invalid_adoption_ceiling")?;
         let service = crate::hagency::backend::Service::for_current()?;
-        let review = service.activation_review(self.package(), Some(tokens)).await?;
+        let review = service.activation_review(self.package(), Some(tokens), self.lease.expires()).await?;
         self.check()?;
         Ok(AdoptionResult::Review(Box::new(review)))
     }
@@ -310,7 +312,7 @@ impl Host {
                     ManagementPermission::PrepareSourceQuiescence,
                 ],
             };
-            match service.activation_context(package).await {
+            match service.activation_context(package, lease.expires()).await {
                 Ok(context) => setup_kind = Some(context.kind),
                 Err(error) => {
                 if matches!(

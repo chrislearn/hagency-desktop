@@ -108,6 +108,7 @@ pub(super) struct SheetView {
     pub quota_visible: bool,
     /// What the slider sets: the per-request limit or the monthly maximum.
     pub quota_label: String,
+    pub calendar: Option<hagency_core::recurring_quota::Calendar>,
     pub quota_hint: String,
     /// The technical details disclosure.
     pub more_label: String,
@@ -342,6 +343,7 @@ impl MiniAppsPanel {
         self.view.widget(cx, &at(&[id!(buttons), id!(cancel)])).set_visible(cx, !v.cancel.is_empty());
         self.view.button(cx, &at(&[id!(buttons), id!(primary)])).set_text(cx, &v.primary);
         self.view.widget(cx, &at(&[id!(buttons), id!(primary)])).set_visible(cx, v.primary_visible);
+        self.view.button(cx, &at(&[id!(buttons), id!(primary)])).set_enabled(cx, v.primary_enabled);
         self.view.button(cx, &at(&[id!(buttons), id!(primary)])).set_disabled(cx, !v.primary_enabled);
     }
     /// The chevron and label of the single disclosure row.

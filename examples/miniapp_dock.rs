@@ -46,7 +46,41 @@ script_mod! {
     }
 }
 #[derive(Script, ScriptHook)]
-struct App { #[live] ui: WidgetRef }
+struct App {
+    #[live] ui: WidgetRef,
+    #[rust] owner_handover: Option<rinx::hagency::owner_dashboard::Coordinator>,
+    #[rust] handover_hold: bool,
+}
+impl App {
+    fn prepare_dock(&self, cx: &mut Cx) {
+        let width = self.ui.window(cx, ids!(main_window)).get_inner_size(cx).x;
+        let navigation = self.ui.widget(cx, ids!(navigation)).area().rect(cx).size.x;
+        let page = (width - navigation - 32.0).max(1.0);
+        self.ui.mini_apps_side_region(cx, ids!(dock)).prepare(cx, page, 0.0, true,
+            Some(std::env::var("HAGENCY_OWNER_REVIEW_WIDTH").ok().and_then(|v| v.parse().ok()).unwrap_or(760.0)));
+    }
+    #[cfg(feature = "onboarding-test-support")]
+    fn resize_fixture(&self, cx: &mut Cx, size: &str) {
+        if let Some((w,h)) = size.split_once('x').and_then(|(w,h)| Some((w.parse::<f64>().ok()?,h.parse::<f64>().ok()?))) {
+            if w.is_finite() && h.is_finite() && (300.0..=2400.0).contains(&w) && (400.0..=1800.0).contains(&h) {
+                self.ui.window(cx, ids!(main_window)).resize(cx, dvec2(w,h));
+                self.ui.redraw(cx);
+            }
+        }
+    }
+    #[cfg(feature = "onboarding-test-support")]
+    fn owner_fixture(&self, cx: &mut Cx, scenario: &str) {
+        let dock = self.ui.mini_apps_side_region(cx, ids!(dock));
+        dock.open(cx, &MiniAppsAction::OpenAgent);
+        if let Some(state) = owner_dashboard::fixtures::scenario(scenario) {
+            if let Some(id) = dock.selected() {
+                let surface = dock.surface(cx, id);
+                surface.owner_fixture(cx, state);
+                surface.owner_fixture_handover(cx, self.owner_handover.is_some());
+            }
+        }
+    }
+}
 impl MatchEvent for App {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         let dock = self.ui.mini_apps_side_region(cx, ids!(dock));
@@ -57,35 +91,40 @@ impl MatchEvent for App {
             self.ui.sidebar_action_menu(cx, ids!(menu)).show(cx, SidebarMenuKind::Add, position,
                 Rect {pos: dvec2(0.0, 0.0), size: dvec2(1200.0, 850.0)});
         }
-        if self.ui.button(cx, ids!(apps)).clicked(actions) {dock.open(cx, &MiniAppsAction::Open);}
+        if self.ui.button(cx, ids!(apps)).clicked(actions) {
+            if host.is_open() {host.action(cx, &MiniAppsAction::Open);} else {dock.open(cx, &MiniAppsAction::Open);}
+        }
         if self.ui.button(cx, ids!(web)).clicked(actions) {
             let url = std::env::var("HAGENCY_DOCK_URL").unwrap_or_else(|_| "https://example.com/".into());
-            dock.web_action(cx, &WebBrowserAction::Open(url.parse().unwrap()));
+            let action = WebBrowserAction::Open(url.parse().unwrap());
+            if host.is_open() {host.web_action(cx, &action);} else {dock.web_action(cx, &action);}
         }
         if self.ui.button(cx, ids!(read)).clicked(actions) {
-            dock.web_action(cx, &WebBrowserAction::OpenMarkdown {title: "Docked article".into(), source: "# Docked article\n\nReading keeps the conversation and editor draft open.\n\n## Native Markdown\n\n- Switch tabs\n- Pop out\n- Dock back\n".into(), account: None, attachment: None});
+            let action = WebBrowserAction::OpenMarkdown {title: "Docked article".into(), source: "# Docked article\n\nReading keeps the conversation and editor draft open.\n\n## Native Markdown\n\n- Switch tabs\n- Pop out\n- Dock back\n".into(), account: None, attachment: None};
+            if host.is_open() {host.web_action(cx, &action);} else {dock.web_action(cx, &action);}
         }
-        if self.ui.button(cx, ids!(edit)).clicked(actions) {dock.article_action(cx, &ArticleAction::Open);}
+        if self.ui.button(cx, ids!(edit)).clicked(actions) {
+            if host.is_open() {host.article_action(cx, &ArticleAction::Open);} else {dock.article_action(cx, &ArticleAction::Open);}
+        }
         for action in actions {
             if let Some(action) = action.downcast_ref::<MiniAppsAction>() {
-                let wanted = rinx::miniapps::surface::SurfaceKey::for_action(action);
-                if wanted.is_some() && host.surface_key(cx) == wanted {
+                if host.is_open() {
                     host.action(cx, action);
                 } else {
                     dock.open(cx, action);
                 }
             }
-            if let Some(action) = action.downcast_ref::<ArticleAction>() {dock.article_action(cx, action);}
+            if let Some(action) = action.downcast_ref::<ArticleAction>() {
+                if host.is_open() {host.article_action(cx, action);} else {dock.article_action(cx, action);}
+            }
             if matches!(action.downcast_ref(), Some(MiniAppsSideAction::PopOut)) {
-                if let Some(surface) = dock.take_front(cx) {
-                    if let Some(previous) = host.adopt(cx, surface) {dock.dock_surface(cx, previous);}
-                }
+                if let Some(workspace) = dock.take_workspace(cx) {host.adopt_workspace(cx, workspace);}
             }
             if let Some(MiniAppsWindowAction::DockBack(id)) = action.downcast_ref() {
-                if let Some(surface) = host.take_for_dock(cx, *id) {dock.dock_surface(cx, surface);}
+                if let Some(workspace) = host.take_for_dock(cx, *id) {dock.restore_workspace(cx, workspace);}
             }
         }
-        dock.prepare(cx, 1168.0, 0.0, true, Some(760.0));
+        self.prepare_dock(cx);
         self.ui.redraw(cx);
     }
 }
@@ -99,19 +138,132 @@ impl AppMain for App {
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         article_makepad::apple_fonts::install(vm);
         makepad_widgets::widgets_mod(vm); desktop_style::apply_widgets(vm);
+        #[cfg(feature = "onboarding-test-support")]
+        if let Ok(scale) = std::env::var("HAGENCY_OWNER_REVIEW_HOST_SCALE").unwrap_or_default().parse::<f64>() {
+            let scale = scale.clamp(0.75, 3.0);
+            script_eval!(vm, { mod.theme.octo_typography_scale = #(scale) });
+        }
+        #[cfg(feature = "onboarding-test-support")]
+        if let Ok(scale) = std::env::var("HAGENCY_OWNER_REVIEW_SCALE").unwrap_or_default().parse::<f64>() {
+            vm.cx_mut().global::<owner_dashboard::theme::DashboardTextScale>().0 = scale;
+        }
         rinx::app::register_widgets(vm);
         let _ = vm.cx_mut().global::<rinx::home::rooms_list::RoomsListRef>();
         self::script_mod(vm)
     }
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        if matches!(event, Event::Startup) {
+            rinx::hagency::owner_dashboard::register_host_accessibility(cx);
+            #[cfg(feature = "onboarding-test-support")]
+            {
+                if let Some(home) = std::env::var_os("HAGENCY_OWNER_HANDOVER_FIXTURE_HOME") {
+                    match rinx::hagency::owner_dashboard::Coordinator::fixture(home.into()) {
+                        Ok(coordinator) => { self.owner_handover = Some(coordinator); self.owner_fixture(cx, "running"); },
+                        Err(error) => log!("od-fixture embedded handover unavailable: {error}"),
+                    }
+                }
+                if let Ok(size) = std::env::var("HAGENCY_DOCK_REVIEW_SIZE") { self.resize_fixture(cx, &size); }
+            }
+        }
+        #[cfg(feature = "onboarding-test-support")]
+        if !self.handover_hold {
+            if let Some(restore) = self.owner_handover.as_mut().and_then(|coordinator| coordinator.handle_event(cx, event)) {
+                // Same ordering as the production App: expose the actual
+                // embedded host, then let it restore and acknowledge the view.
+                let dock = self.ui.mini_apps_side_region(cx, ids!(dock));
+                dock.open(cx, &MiniAppsAction::OpenAgent);
+                if let Some(id) = dock.selected() {
+                    if dock.surface(cx, id).owner_fixture_view(cx).is_none() { self.owner_fixture(cx, "running"); }
+                }
+                cx.action(restore);
+            }
+        }
+        if owner_dashboard::keyboard::embedded(&self.ui, cx, event) { return; }
         if let Event::Custom(command) = event {
+            #[cfg(feature = "onboarding-test-support")]
+            if let Some(url) = command.strip_prefix("dock:review-web:") {
+                let url = url::Url::parse(url).unwrap();
+                assert_eq!(url.host_str(), Some("127.0.0.1"));
+                let host = self.ui.mini_apps_window_host(cx, ids!(popped));
+                let action = WebBrowserAction::Open(url);
+                if host.is_open() {host.web_action(cx, &action);}
+                else {self.ui.mini_apps_side_region(cx, ids!(dock)).web_action(cx, &action);}
+            }
+            #[cfg(feature = "onboarding-test-support")]
+            if command == "dock:inspect" {
+                let dock = self.ui.mini_apps_side_region(cx, ids!(dock));
+                let host = self.ui.mini_apps_window_host(cx, ids!(popped));
+                let floating = host.workspace(cx);
+                let mut snapshot = |region: &rinx::miniapps::side::MiniAppsSideRegionRef| {
+                    let tabs: Vec<_> = region.tabs().into_iter().map(|id| serde_json::json!({
+                        "id": format!("{id:?}"), "surface": format!("{:?}", region.surface(cx, id).widget_uid()),
+                        "title": region.surface(cx, id).title(cx),
+                    })).collect();
+                    serde_json::json!({"tabs":tabs,"selected":region.selected().map(|id|format!("{id:?}")),
+                        "reader":region.reader(cx).session(), "browser":format!("{:?}",region.reader(cx).browser_id())})
+                };
+                let data = serde_json::json!({"docked":snapshot(&dock),"floating":snapshot(&floating),
+                    "window":host.window_id().map(|id|id.id()),"open":host.is_open()});
+                std::fs::write(rinx::app_data_dir().join("dock-inspection.json"), data.to_string()).unwrap();
+            }
+            #[cfg(feature = "onboarding-test-support")]
+            if let Some(size) = command.strip_prefix("dock:window-size:") { self.resize_fixture(cx, size); }
+            #[cfg(feature = "onboarding-test-support")]
+            if let Some(hold) = command.strip_prefix("dock:handover-hold:") {
+                self.handover_hold = hold == "true";
+                SignalToUI::set_ui_signal();
+            }
+            #[cfg(feature = "onboarding-test-support")]
+            if command == "dock:owner-dump" {
+                let dock = self.ui.mini_apps_side_region(cx, ids!(dock));
+                let view = dock.selected().and_then(|id| dock.surface(cx,id).owner_fixture_view(cx));
+                log!("od-embedded-view {}", serde_json::json!({"view":view}));
+            }
+            #[cfg(feature = "onboarding-test-support")]
+            if command == "dock:owner-ax" {
+                log!("od-ax {}", owner_dashboard::accessibility::diagnostics(cx));
+            }
+            #[cfg(all(feature = "owner-accessibility", feature = "onboarding-test-support", target_os = "macos"))]
+            if let Some(arg) = command.strip_prefix("dock:owner-ax-native:") {
+                log!("od-ax-native {}", owner_dashboard::accessibility::native_fixture_probe(cx, arg));
+            }
+            #[cfg(feature = "onboarding-test-support")]
+            if let Some(zoom) = command.strip_prefix("dock:owner-zoom:").and_then(|value| value.parse::<f64>().ok()) {
+                if let Some(window) = self.ui.window(cx, ids!(main_window)).window_id() {
+                    let dpi = cx.windows[window].native_dpi_factor() * zoom.clamp(0.75, 2.0);
+                    cx.set_window_dpi_override(window, Some(dpi));
+                    self.ui.redraw(cx);
+                }
+            }
+            #[cfg(feature = "onboarding-test-support")]
+            if let Some(owner) = command.strip_prefix("dock:owner-scope:") {
+                let dock = self.ui.mini_apps_side_region(cx, ids!(dock));
+                if let Some(id) = dock.selected() { dock.surface(cx, id).owner_fixture_scope(cx, (!owner.is_empty()).then_some(owner)); }
+            }
+            #[cfg(feature = "onboarding-test-support")]
+            if let Some(scenario) = command.strip_prefix("dock:owner:") {
+                self.owner_fixture(cx, scenario);
+            }
+            #[cfg(feature = "onboarding-test-support")]
+            if let Some(step) = command.strip_prefix("dock:owner-refresh:").and_then(|n| n.parse::<u64>().ok()) {
+                let dock = self.ui.mini_apps_side_region(cx, ids!(dock));
+                if let Some(id) = dock.selected() {
+                    dock.surface(cx, id).update_owner_fixture(cx, owner_dashboard::fixtures::refresh_step(step));
+                }
+            }
+            #[cfg(feature = "onboarding-test-support")]
+            if let Some(locale) = command.strip_prefix("dock:owner-locale:") {
+                let dock = self.ui.mini_apps_side_region(cx, ids!(dock));
+                if let Some(id) = dock.selected() { dock.surface(cx, id).owner_fixture_locale(cx, owner_dashboard::Locale::from_tag(locale)); }
+            }
             for (name, appearance) in [("dock:dark", Appearance::Dark), ("dock:light", Appearance::Light)] {
                 if command == name {theme::select(cx, Selection {appearance, accent: Accent::Teal}).unwrap();}
             }
         }
         self.match_event(cx, event);
         // Production HomeScreen prepares the region on each frame, including restyles.
-        self.ui.mini_apps_side_region(cx, ids!(dock)).prepare(cx, 1168.0, 0.0, true, Some(760.0));
+        self.prepare_dock(cx);
         self.ui.handle_event(cx, event, &mut Scope::empty());
+        owner_dashboard::accessibility::after_event(&self.ui, cx, event);
     }
 }

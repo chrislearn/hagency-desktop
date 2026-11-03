@@ -143,7 +143,7 @@ mod tests {
             let (title,_,warning,confirm)=resource_edit_ui::AMENDMENT_WORDS;
             panel.view.label(&cx,ids!(provider_confirmation.scroll.heading.title)).set_text(&mut cx,crate::i18n::text_for(language,title));
             panel.view.label(&cx,ids!(provider_confirmation.scroll.identity.account)).set_text(&mut cx,"@original-owner:matrix.example");
-            panel.view.label(&cx,ids!(provider_confirmation.scroll.identity.runtime)).set_text(&mut cx,&crate::host::hagency::resource_edit::amendment_details(language,&::hagency::native_owner::CeilingAmendmentReview{resource_id:"resource_0123456789abcdef01234567".into(),name:Some("A long owner-chosen pool name that wraps across lines".repeat(3)),revision:"a".repeat(64),sequence:7,previous_tokens:123_456_789,tokens:987_654_321,per_request_tokens:Some(12_345_678)}).repeat(3));
+            panel.view.label(&cx,ids!(provider_confirmation.scroll.identity.runtime)).set_text(&mut cx,&crate::host::hagency::resource_edit::amendment_details(language,&::hagency::native_owner::CeilingAmendmentReview{resource_id:"resource_0123456789abcdef01234567".into(),name:Some("A long owner-chosen pool name that wraps across lines".repeat(3)),revision:"a".repeat(64),sequence:7,previous_tokens:123_456_789,tokens:987_654_321,per_request_tokens:Some(12_345_678),calendar:None}).repeat(3));
             panel.view.label(&cx,ids!(provider_confirmation.scroll.warning)).set_text(&mut cx,crate::i18n::text_for(language,warning));
             panel.view.button(&cx,ids!(provider_confirmation.buttons.connect)).set_text(&mut cx,crate::i18n::text_for(language,confirm));
             panel.view.button(&cx,ids!(provider_confirmation.buttons.cancel)).set_text(&mut cx,crate::i18n::text_for(language,"Cancel"));

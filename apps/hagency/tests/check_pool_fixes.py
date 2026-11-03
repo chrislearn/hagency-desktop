@@ -37,7 +37,92 @@ let open=fn(row){
 let floor_reply={contributionId:"con_main" heldTokens:9000000 heldAgents:1 perRequestTokens:9000000 mostTokens:9000000 periodEndMs:1793491200000}
 '''
 CASES={
-'the_floor_is_the_windows_figure_not_an_estimate': '''
+'completed_resource_retry_replaces_submitting_notice': '''
+open(main)
+H.resource_id="resource_main"
+let args={commandId:"same-request" resourceId:"resource_main" expectedRevision:"old" expectedCeilingSequence:1 ceiling:{kind:"monthly" tokens:500000000}}
+for code in ["management_ceiling_below_commitments","management_outcome_unknown","resource_edit_cancelled","provider_confirmation_expired","native_confirmation_expired"] {
+    H.calls=[] H.callbacks=[] H.command={service:"hagency.resources.edit" args:args} H.pool_result=nil
+    A.retry_command()
+    assert(H.busy && H.calls[0].args.commandId=="same-request")
+    H.callbacks[0]({is_ok:false error:code})
+    assert(!H.busy && H.notice=="" && A.settings_feedback().kind=="pool")
+    assert(A.settings_feedback().text.search(A.t("Submitting","正在提交"))<0)
+    if code=="management_outcome_unknown" || code=="native_confirmation_expired" {assert(H.command.args.commandId=="same-request")}
+    else {assert(H.command==nil)}
+    A.settings_feedback_done("pool")
+    assert(A.settings_feedback()==nil)
+}
+''',
+
+'pool_summary_reads_published_defaults_instead_of_original_configuration': '''
+open(main)
+H.resource_detail.executionPolicy={yolo:false}
+H.pool_info=nil
+A.pool_info_load("resource_main")
+let guard={n:0}
+while find("hagency.web_catalog.get")<0 && guard.n<20 {
+    let at=H.calls.len()-1
+    let service=H.calls[at].service
+    reply(at,{items:if service=="hagency.connections.list" {[conn]} else if service=="hagency.pools.list" {[grant]} else {[]} nextAfter:nil observedAtMs:now})
+    guard.n=guard.n+1
+}
+let at=find("hagency.web_catalog.get")
+assert(at>=0 && H.calls[at].args.resourceId=="resource_main")
+assert(A.pool_default_yolo(H.resource_detail)==nil)
+reply(at,{resourceId:"resource_main" revision:"published-2" defaultYolo:true})
+assert(A.pool_default_yolo(H.resource_detail)==true)
+assert(!A.resource_default_yolo(H.resource_detail))
+// A confirmed switch back also updates the summary. Never borrow another pool's policy.
+A.pool_default_received("resource_main",{resourceId:"resource_main" revision:"published-3" defaultYolo:false})
+assert(A.pool_default_yolo(H.resource_detail)==false)
+H.resource_detail.resource.id="different"
+assert(A.pool_default_yolo(H.resource_detail)==nil)
+H.resource_detail.editing.allowed=true H.resource_detail.executionPolicy.yolo=true
+assert(A.pool_default_yolo(H.resource_detail)==true)
+''',
+'split_total_and_request_limit_are_preserved_on_native_handoff': '''
+main.budget.pool.ceiling=20000000
+open(main)
+H.pool_info.grant={id:"con_main" ownerMxid:"@owner:test" publishedTokens:20000000 perRequestTokens:5000000 grantRevision:1 currentPeriodEndMs:1793491200000}
+let v=A.pool_view(H.resource_detail)
+assert(v.publishedTokens==5000000 && v.totalTokens==20000000)
+main.budget.pool.committed=20000000 main.budget.remainingTokens=0
+H.pool_info.floor=A.pool_floor_read({is_ok:true data:{contributionId:"con_main" heldTokens:5000000 heldAgents:0 mostTokens:20000000}},"con_main")
+v=A.pool_view(H.resource_detail)
+assert(A.pool_available(v)==15000000 && !A.pool_full(v) && v.status.key=="published")
+H.pool_meta={conns:[conn] grants:[H.pool_info.grant] requests:[] counts:[] now:now}
+let card=A.pool_row(main)
+assert(card.status.key=="published" && !card.low && card.capacity.search("20 M")>=0 && card.capacity.search("5 M")>=0)
+
+H.resource_id="resource_main"
+A.pool_succeed("amendment",5000000,nil)
+let call=H.calls[H.calls.len()-1]
+assert(call.args.proposedTokens==20000000 && call.args.proposedPerRequestTokens==5000000)
+assert(A.pool_limit({publishedTokens:20000000 perRequestTokens:5000000})==5000000)
+assert(A.pool_limit({publishedTokens:20000000 perRequestTokens:5000000 nativeAvailableTokens:3000000})==3000000)
+assert(A.pool_limit({publishedTokens:20000000 perRequestTokens:0})==nil)
+assert(A.pool_limit({publishedTokens:20000000 perRequestTokens:20000001})==nil)
+''',
+
+'pool_deletion_explains_authorization_and_process_blocks_without_claiming_agents_are_running': '''
+H.pool_sub_rid="resource_main" H.pool_adv_state="ready"
+H.web.resourceId="resource_main" H.web.catalog={canRetire:false retireBlockedReason:"active_grant"}
+assert(!A.pool_adv_can_delete() && !A.pool_adv_agents_blocked())
+assert(A.pool_adv_delete_note().search(A.t("authorization","授权"))>=0)
+H.web.catalog.retireBlockedReason="runtime_not_stopped"
+assert(A.pool_adv_agents_blocked())
+assert(A.pool_adv_delete_note().search(A.t("process","进程"))>=0)
+H.web.catalog.retireBlockedReason="agent_templates_exist"
+assert(!A.pool_adv_agents_blocked())
+assert(A.pool_adv_delete_note().search(A.t("templates","模板"))>=0)
+H.web.catalog.retireBlockedReason="resource_in_use"
+assert(!A.pool_adv_agents_blocked())
+H.web.catalog.canRetire=true H.web.catalog.retireBlockedReason=nil
+assert(A.pool_adv_can_delete())
+assert(A.pool_adv_delete_note().search(A.t("unresolved usage","未结清"))>=0)
+''',
+'aggregate_pool_hold_does_not_raise_per_agent_minimum': '''
 open(main)
 let v=A.pool_view(H.resource_detail)
 assert(v.quotaMode=="amend" && v.publishedTokens==9000000)
@@ -46,8 +131,8 @@ assert(v.quotaMode=="amend" && v.publishedTokens==9000000)
 assert(A.pool_quota_floor(v)==nil && A.pool_quota_min(v)==1 && A.pool_quota_fixed(v)==nil)
 // The window's own record says what running Agents hold.
 H.pool_info.floor=A.pool_floor_read({is_ok:true data:floor_reply},"con_main")
-assert(A.pool_quota_floor(v)==9000000 && A.pool_quota_min(v)==9000000)
-assert(A.pool_floor_text(v)==A.t("No less than the 9 M running Agents hold","不能低于正在运行的 Agent 已拿到的 9 M"))
+assert(A.pool_quota_floor(v)==nil && A.pool_quota_min(v)==1)
+assert(H.pool_info.floor.held==9000000 && H.pool_info.floor.agents==1)
 // A reply for another pool, or a refusal, is no floor.
 assert(A.pool_floor_read({is_ok:true data:{contributionId:"con_other" heldTokens:1}},"con_main")==nil)
 assert(A.pool_floor_read({is_ok:false error:"management_grant_succession_required"},"con_main")==nil)
@@ -66,16 +151,15 @@ assert(at>=0 && H.calls[at].args.contributionId=="con_main")
 reply(at,floor_reply)
 assert(H.pool_info.floor.held==9000000 && H.pool_info.floor.most==9000000 && H.pool_info.floor.agents==1)
 ''',
-'one_possible_amount_is_shown_fixed_with_why': '''
+'per_agent_limit_can_be_lowered_even_when_total_is_all_reserved': '''
 open(main)
 H.pool_info.floor=A.pool_floor_read({is_ok:true data:floor_reply},"con_main")
 let v=A.pool_view(H.resource_detail)
-assert(A.pool_quota_fixed(v)==9000000)
-let line=A.pool_quota_fixed_line(v)
-assert(line.search("9 M")>=0 && line.search(A.t("Raise the monthly maximum","调高上面的每月上限"))>=0)
-// With room above the floor the slider stays.
+assert(A.pool_quota_fixed(v)==nil && A.pool_quota_min(v)==1)
+// The resource total still cannot be lowered below aggregate commitments.
+assert(v.maxMin==9000000)
 H.pool_info.floor=A.pool_floor_read({is_ok:true data:{contributionId:"con_main" heldTokens:9000000 heldAgents:1 mostTokens:20000000}},"con_main")
-assert(A.pool_quota_fixed(v)==nil && A.pool_quota_min(v)==9000000)
+assert(A.pool_quota_fixed(v)==nil && A.pool_quota_min(v)==1)
 ''',
 'a_month_all_given_out_says_so_and_how_to_give_more': '''
 open(main)

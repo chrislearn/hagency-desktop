@@ -4,6 +4,9 @@ use makepad_widgets::widget_async::ScriptAsyncResult;
 use makepad_widgets::makepad_script::ScriptFnRef;
 use std::collections::HashMap;
 
+/// Stable UI scale for owner-entered amounts, not an authorization limit.
+pub(crate) const DEFAULT_SLIDER_MAX: u64 = 1_000_000_000;
+
 /// An exact integer editor with explicit steps. No artificial capacity ceiling:
 /// the maximum only prevents losing integer precision at the script boundary.
 #[derive(Script, Widget)]
@@ -19,9 +22,8 @@ pub struct MiniAppNumberInput {
     #[live] wan: bool,
     #[live] slider_mode: bool,
     /// A nonnegative maximum is an observed capacity bound. A negative value
-    /// leaves exact entry unrestricted and uses an expanding slider scale.
+    /// leaves exact entry unrestricted and uses the fixed 1B slider scale.
     #[live(-1.0)] maximum: f64,
-    #[rust] slider_ceiling: u64,
     #[live(100000.0)] step: f64,
     #[live(0.0)] minimum: f64,
     #[live] on_change: Option<ScriptFnRef>,
@@ -55,7 +57,6 @@ impl MiniAppNumberInput {
     }
     fn sync_steps(&mut self,cx:&mut Cx){
         let value=self.number();
-        self.slider_ceiling=self.slider_ceiling.max(value.unwrap_or(0)).max(10_000_000);
         self.view.widget(cx,ids!(decrease)).set_visible(cx,!self.slider_mode);
         self.view.widget(cx,ids!(increase)).set_visible(cx,!self.slider_mode);
         self.view.widget(cx,ids!(stepper_gap)).set_visible(cx,!self.slider_mode);
@@ -78,7 +79,7 @@ impl MiniAppNumberInput {
     }
     fn slider_max(&self)->u64 {
         if self.maximum.is_finite() && self.maximum>=0.0 {return self.maximum.min(Self::MAX as f64) as u64;}
-        self.slider_ceiling.max(self.number().unwrap_or(0)).max(10_000_000)
+        DEFAULT_SLIDER_MAX
     }
     /// The values the track spans: its left end is the minimum (such as what
     /// running Agents hold), its right end the maximum. Before this the track

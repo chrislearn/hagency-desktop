@@ -99,7 +99,7 @@ impl PersonalPrompt {
                 crate::i18n::tr("Reading current personal-agent configuration…").into()
             });
         if let Some(code) = &self.failure {
-            let message = match code.as_str() {
+            let message = crate::host::hagency::errors::message(&code).unwrap_or_else(|| match code.as_str() {
                 "personal_execution_device_required" => {
                     "Open these settings on the agent’s execution device to choose folders or edit custom rules."
                 }
@@ -112,7 +112,7 @@ impl PersonalPrompt {
                 _ => {
                     "The personal-agent configuration could not be verified. Close this review or recover the original saved request."
                 }
-            };
+            });
             text.push_str("\n\n");
             text.push_str(crate::i18n::tr(message));
         }

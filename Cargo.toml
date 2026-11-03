@@ -14,7 +14,9 @@ version = "0.5.0"
 metadata.makepad-auto-version = "zqpv-Yj-K7WNVK2I8h5Okhho46Q="
 
 [dependencies]
-hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "779bceb5b500314a783e4ef4188066e6baa3cb1d" }
+hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "fcbd247b17bae376e9dec98895e43980bc16d193" }
+hagency-core = { git = "https://github.com/hagency-org/hagency-client.git", rev = "fcbd247b17bae376e9dec98895e43980bc16d193" }
+hagency-owner-dashboard = { path = "crates/owner-dashboard" }
 octosense-theme-contract = { path = "crates/theme-contract", version = "0.1.0" }
 rinx-system-apps = { path = "crates/system-apps" }
 article-core = { path = "crates/article-core", features = ["l0"] }
@@ -64,6 +66,7 @@ bitflags = "2.6.0"
 blurhash = { version = "0.2.3", default-features = false }
 bytesize = "2.0"
 chrono = "0.4"
+chrono-tz = "0.10.4"
 iana-time-zone = "0.1.64"
 clap = { version = "4.0.16", features = ["derive"] }
 crossbeam-channel = "0.5.10"
@@ -149,7 +152,7 @@ reqwest = { version = "0.12", default-features = false, optional = true, feature
 
 [dev-dependencies]
 # Native writer fixtures must never acquire the user's installation authority.
-hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "779bceb5b500314a783e4ef4188066e6baa3cb1d", features = ["test-support"] }
+hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "fcbd247b17bae376e9dec98895e43980bc16d193", features = ["test-support"] }
 
 [[example]]
 name = "article_editor_review"
@@ -198,7 +201,8 @@ shared-context = ["shared-intake", "hagency/shared-context"]
 agent-budget = ["shared-execution", "hagency/agent-budget"]
 shared-budget-execution = ["agent-budget", "shared-context", "hagency/shared-budget-execution"]
 # Explicit isolated instrumentation binary; never part of production defaults.
-onboarding-test-support = ["resource-adoption", "hagency/test-support"]
+onboarding-test-support = ["resource-adoption", "hagency/test-support", "hagency-owner-dashboard/fixtures"]
+owner-accessibility = ["hagency-owner-dashboard/native-accessibility"]
 # Isolated local accounts exist only in instrument builds.
 palpo-instrument = []
 # Ordinary Hagency Desktop builds include the native management and worker flow.

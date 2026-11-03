@@ -224,6 +224,8 @@ pub const KNOWN_CAPABILITIES: &[&str] = &[
     "hagency.pools.agents.request",
     "hagency.pools.agents.decide",
     "hagency.pools.agents.stop",
+    "hagency.pools.agents.renew",
+    "hagency.pools.agents.reallocate",
     "hagency.pools.agents.room",
     "hagency.allocations.list",
     "hagency.allocations.get",

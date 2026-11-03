@@ -15,22 +15,28 @@ pub(crate) struct SharedSuccessorRequest {
 }
 pub(crate) struct PreparedSuccessorStart {
     owner: Weak<Inner>,
-    executor: Arc<AdoptedSharedExecutor>,
-    prepared: Box<PreparedSharedSuccessor>,
+    custody: SuccessorCustody,
+}
+enum SuccessorCustody {
+    Local {executor: Arc<AdoptedSharedExecutor>, prepared: Box<PreparedSharedSuccessor>},
+    Remote {controller: Arc<::hagency::daemon::bridge::ControllerClient>, prepared: ::hagency::daemon::bridge::PreparedSharedSuccessor},
 }
 impl PreparedSuccessorStart {
     pub(crate) fn expired(&self) -> bool {
-        self.prepared.expired()
+        match &self.custody { SuccessorCustody::Local {prepared,..} => prepared.expired(), SuccessorCustody::Remote {prepared,..} => prepared.expired() }
     }
     pub(crate) fn restrict_to_host(
         mut self,
         gate: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<Self, String> {
-        self.prepared = Box::new((*self.prepared).restrict_to_host(gate).map_err(|e| e.code)?);
+        self.custody = match self.custody {
+            SuccessorCustody::Local {executor,prepared} => SuccessorCustody::Local {executor, prepared:Box::new((*prepared).restrict_to_host(gate).map_err(|e|e.code)?)},
+            SuccessorCustody::Remote {controller,prepared} => SuccessorCustody::Remote {controller, prepared:prepared.restrict_to_host(gate).map_err(|e|e.code)?},
+        };
         Ok(self)
     }
     pub(crate) fn review(&self) -> &SharedSuccessorReview {
-        self.prepared.review()
+        match &self.custody {SuccessorCustody::Local {prepared,..}=>prepared.review(), SuccessorCustody::Remote {prepared,..}=>prepared.review()}
     }
 }
 pub(crate) enum SuccessorAssessment {
@@ -44,11 +50,21 @@ pub(crate) enum SharedSuccessorResumeResult {
     Resumed { progress: SharedExecutionProgress },
 }
 impl Service {
+    fn successor_package(&self) -> ::hagency::native_owner::ManagementPackage {
+        ::hagency::native_owner::ManagementPackage {
+            digest:blake3::hash(b"hagency-desktop-native-shared-worker-v1").to_hex().to_string(),
+            instance:1, account_epoch:self.0.epoch+1, permissions:vec![],
+        }
+    }
     pub(crate) async fn list_shared_successors(
         &self,
         after: Option<String>,
     ) -> Result<::hagency::native_owner::SharedSuccessorPage, String> {
         self.check()?;
+        if let Some(remote)=self.remote_client().await? {
+            let result=remote.list_shared_successors(self.successor_package(),after).await.map_err(|e|e.code);
+            self.check()?;return result;
+        }
         let executor = self.shared_successor_executor().await?;
         let result = executor.list_successors(after).await.map_err(|e| e.code);
         self.check()?;
@@ -57,8 +73,17 @@ impl Service {
     pub(crate) async fn assess_shared_successor(
         &self,
         request: SharedSuccessorRequest,
+        until: std::time::Instant,
     ) -> Result<SuccessorAssessment, String> {
         self.check()?;
+        if let Some(remote)=self.remote_client().await? {
+            let result=remote.assess_shared_successor(self.successor_package(),request.assignment_id,until).await.map_err(|e|e.code)?;
+            self.check()?;
+            return Ok(match result {
+                ::hagency::daemon::bridge::SuccessorAssessment::Ready(prepared)=>SuccessorAssessment::Ready(PreparedSuccessorStart {owner:Arc::downgrade(&self.0),custody:SuccessorCustody::Remote {controller:remote,prepared}}),
+                ::hagency::daemon::bridge::SuccessorAssessment::Blocked(review)=>SuccessorAssessment::Blocked(review),
+            });
+        }
         let executor = self.shared_successor_executor().await?;
         let prepared = executor
             .assess_successor(request.assignment_id)
@@ -69,8 +94,7 @@ impl Service {
             SharedSuccessorAssessment::Ready(prepared) => {
                 SuccessorAssessment::Ready(PreparedSuccessorStart {
                     owner: Arc::downgrade(&self.0),
-                    executor,
-                    prepared,
+                    custody: SuccessorCustody::Local {executor,prepared},
                 })
             }
             SharedSuccessorAssessment::Blocked(review) => SuccessorAssessment::Blocked(review),
@@ -88,11 +112,10 @@ impl Service {
         {
             return Err("shared_successor_preparation_changed".into());
         }
-        let result = pending
-            .executor
-            .start_successor(*pending.prepared)
-            .await
-            .map_err(|e| e.code);
+        let result = match pending.custody {
+            SuccessorCustody::Local {executor,prepared}=>executor.start_successor(*prepared).await,
+            SuccessorCustody::Remote {controller,prepared}=>controller.start_shared_successor(self.successor_package(),prepared).await,
+        }.map_err(|e|e.code);
         self.check()?;
         result
     }
@@ -101,6 +124,10 @@ impl Service {
         request: SharedSuccessorRequest,
     ) -> Result<SharedSuccessorDescription, String> {
         self.check()?;
+        if let Some(remote)=self.remote_client().await? {
+            let result=remote.shared_successor_description(self.successor_package(),request.assignment_id).await.map_err(|e|e.code);
+            self.check()?;return result;
+        }
         let executor = self.shared_successor_executor().await?;
         let description = executor
             .successor_description(request.assignment_id)
@@ -112,8 +139,14 @@ impl Service {
     pub(crate) async fn resume_shared_successor(
         &self,
         request: SharedSuccessorRequest,
+        until: std::time::Instant,
     ) -> Result<SharedSuccessorResumeResult, String> {
         self.check()?;
+        if let Some(remote)=self.remote_client().await? {
+            let result=remote.resume_shared_successor(self.successor_package(),request.assignment_id,until).await.map_err(|e|e.code)?;
+            self.check()?;
+            return Ok(match result {Some(progress)=>SharedSuccessorResumeResult::Resumed{progress},None=>SharedSuccessorResumeResult::NoSavedIntent});
+        }
         let executor = self.shared_successor_executor().await?;
         let result = executor
             .resume_successor(request.assignment_id)

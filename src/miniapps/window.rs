@@ -1,11 +1,6 @@
-//! Hosts a popped-out mini app in its own native window on desktop.
-//!
-//! Mini apps open docked beside the chat (`side.rs`). The region's pop-out
-//! button moves its front tab, still running, into this window: the same
-//! surface, so the app keeps its state, its lease and its startup guard.
-//! Closing the window stops that app and revokes its lease, as closing its tab
-//! would. Popping out another tab sends the window's current one back to the
-//! docked region rather than closing it.
+//! Hosts the whole mini-app workspace in one native window. Dock/undock moves
+//! every live surface and its tabs together, retaining order, selection, leases,
+//! browser sessions and editor drafts. Closing the window closes all its tabs.
 //!
 //! Makepad creates a window's OS window as soon as its `Window` widget is built,
 //! and has no way to re-show a window once hidden. So this host lives directly
@@ -13,9 +8,12 @@
 //! builds the `MiniAppsWindow` widget when a surface first pops out, and drops
 //! it once the user or the app closes that window.
 use makepad_widgets::*;
-use super::surface::{MiniAppsSurfaceDeckRef, MiniAppsSurfaceDeckWidgetRefExt, MiniAppsSurfaceRef, MiniAppsSurfaceWidgetRefExt, SurfaceKey};
+use super::surface::{MiniAppsSurfaceRef, SurfaceKey};
+use super::side::{MiniAppsSideRegionRef, MiniAppsSideRegionWidgetRefExt, MiniAppsWorkspace};
 use super::ui::MiniAppsAction;
 use crate::hagency::ui::HagencyAction;
+use crate::shared::web_browser::{WebBrowserAction, WebBrowserRef};
+use crate::article_app::ArticleAction;
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -44,17 +42,12 @@ script_mod! {
                     text: #(crate::i18n::tr("Dock back")) i18n_text: "Dock back"
                 }
             }
-            deck := MiniAppsSurfaceDeck {
-                Surface := MiniAppsSurface {}
-            }
+            workspace := MiniAppsSideRegion {}
         }
     }
 
     mod.widgets.MiniAppsWindowHost = #(MiniAppsWindowHost::register_widget(vm)) {}
 }
-
-/// The window's one surface, in its deck.
-const SURFACE: LiveId = id!(surface);
 
 #[derive(Clone, Debug, Default)]
 pub enum MiniAppsWindowAction {
@@ -79,10 +72,6 @@ pub struct MiniAppsWindowHost {
     closing: bool,
     #[rust]
     focused: bool,
-    /// This window's app sent the person to a chat; the app shell closes the
-    /// window when it follows (as it did when the window was the only host).
-    #[rust]
-    navigated: bool,
 }
 
 impl ScriptHook for MiniAppsWindowHost {
@@ -129,20 +118,6 @@ impl Widget for MiniAppsWindowHost {
         let Some(window) = self.window.clone() else {
             return;
         };
-        // The app shell handles each batch of actions before this host sees
-        // it, so a navigation it didn't follow doesn't linger.
-        if matches!(event, Event::Actions(_)) {
-            self.navigated = false;
-        }
-        if let Event::Actions(actions) = event {
-            // A management "Open chat" action returns to the original conversation window.
-            if self.surface(cx).key(cx) == Some(SurfaceKey::Management) && actions.iter().any(|action| {
-                action.downcast_ref::<crate::hagency::ui::ProjectRoomNavigation>().is_some_and(|nav| nav.current())
-                    || matches!(action.downcast_ref(), Some(crate::home::main_desktop_ui::MainDesktopUiAction::ShowChats))
-            }) {
-                self.close(cx);
-            }
-        }
         let window_id = window.as_window().window_id();
         if let Event::Actions(actions) = event {
             if !self.closing && window.button(cx, ids!(dock_back)).clicked(actions) {
@@ -171,7 +146,7 @@ impl Widget for MiniAppsWindowHost {
         let closed = matches!(event, Event::WindowClosed(e) if Some(e.window_id) == window_id);
         let visibility = script_visibility_signal(event, window_id, was_focused, self.focused, closed);
         if let Some(visible) = visibility {
-            self.surface(cx).set_host_visible(cx, visible);
+            self.workspace(cx).set_host_visible(cx, visible);
         }
         // `Window` records its own geometry as the app-wide display context, which
         // drives the main window's desktop/mobile layout choice. This small window
@@ -189,15 +164,12 @@ impl Widget for MiniAppsWindowHost {
             cx.display_context.safe_area_insets = safe_area_insets;
             cx.display_context.updated_on_event_id = updated_on_event_id;
         }
-        // The app asked to close (Back on its catalog, or handing off to a native app).
-        if !self.deck(cx).take_close_requests().is_empty() {
+        // A tab can close itself without closing its neighbours.
+        if !closed && !self.closing && self.workspace(cx).tabs().is_empty() {
             self.close(cx);
         }
-        if self.deck(cx).take_navigated() {
-            self.navigated = true;
-        }
         if closed {
-            self.surface(cx).close(cx);
+            self.workspace(cx).close_all(cx);
             self.window = None;
             self.closing = false;
             self.focused = false;
@@ -207,6 +179,7 @@ impl Widget for MiniAppsWindowHost {
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, _walk: Walk) -> DrawStep {
         if let Some(window) = self.window.as_ref() {
+            self.workspace(cx).prepare_window(cx);
             let walk = window.walk(cx);
             window.draw_walk(cx, scope, walk)?;
         }
@@ -215,15 +188,16 @@ impl Widget for MiniAppsWindowHost {
 }
 
 impl MiniAppsWindowHost {
-    fn deck(&self, cx: &mut Cx) -> MiniAppsSurfaceDeckRef {
+    fn workspace(&self, cx: &mut Cx) -> MiniAppsSideRegionRef {
         self.window
             .as_ref()
-            .map(|window| window.mini_apps_surface_deck(cx, ids!(deck)))
+            .map(|window| window.mini_apps_side_region(cx, ids!(workspace)))
             .unwrap_or_default()
     }
 
     fn surface(&self, cx: &mut Cx) -> MiniAppsSurfaceRef {
-        self.deck(cx).surface(SURFACE)
+        let workspace = self.workspace(cx);
+        workspace.selected().map(|id| workspace.surface(cx, id)).unwrap_or_default()
     }
 
     /// What the window shows, while it is open.
@@ -234,36 +208,27 @@ impl MiniAppsWindowHost {
         self.surface(cx).key(cx)
     }
 
-    /// Shows a running surface in this window, opening the window if needed.
-    /// Returns the surface the window held before, still running.
-    pub fn adopt(&mut self, cx: &mut Cx, surface: WidgetRef) -> Option<WidgetRef> {
-        let previous = if self.window.is_some() && !self.closing {
-            self.deck(cx).remove(cx, SURFACE)
-        } else {
-            None
-        };
+    /// Moves all tabs into this window. Existing tabs, if any, remain open.
+    pub fn adopt_workspace(&mut self, cx: &mut Cx, workspace: MiniAppsWorkspace) {
         self.ensure_window(cx);
-        self.deck(cx).insert(cx, SURFACE, surface);
-        self.surface(cx).set_host_visible(cx, self.focused);
+        self.workspace(cx).restore_workspace(cx, workspace);
+        self.workspace(cx).set_host_visible(cx, self.focused);
         if let Some(window) = &self.window {
             window.redraw(cx);
         }
-        previous
     }
 
     /// Detach the running app before closing its now-empty native window.
     /// A delayed click from an older window must not move a newer app.
-    fn take_for_dock(&mut self, cx: &mut Cx, expected: WindowId) -> Option<WidgetRef> {
+    fn take_for_dock(&mut self, cx: &mut Cx, expected: WindowId) -> Option<MiniAppsWorkspace> {
         if self.closing || self.window.as_ref()?.as_window().window_id() != Some(expected) {
             return None;
         }
-        let surface = self.deck(cx).remove(cx, SURFACE)?;
-        surface.as_mini_apps_surface().set_host_visible(cx, false);
-        self.navigated = false;
+        let workspace = self.workspace(cx).take_workspace(cx)?;
         self.focused = false;
         self.closing = true;
         cx.push_unique_platform_op(CxOsOp::CloseWindow(expected));
-        Some(surface)
+        Some(workspace)
     }
 
     fn ensure_window(&mut self, cx: &mut Cx) {
@@ -275,6 +240,8 @@ impl MiniAppsWindowHost {
             self.window = Some(window);
             self.closing = false;
             self.focused = false;
+            self.workspace(cx).prepare_window(cx);
+            self.workspace(cx).set_host_visible(cx, false);
             cx.widget_tree_mark_dirty(self.uid);
         } else {
             // Reusing the mini-app window should bring it back in front of the chat.
@@ -300,24 +267,14 @@ impl MiniAppsWindowHost {
         }
     }
 
-    /// The window with a surface in it, bringing an open one to front. A host
-    /// used on its own (the dev examples) opens a fresh window with a new surface.
-    fn ensure_surface(&mut self, cx: &mut Cx) {
-        self.ensure_window(cx);
-        if self.deck(cx).surface_widget(SURFACE).is_none() {
-            self.deck(cx).create(cx, SURFACE);
-            self.surface(cx).set_host_visible(cx, self.focused);
-        }
-    }
-
     /// Routes a mini-app action to the surface in this window, bringing it to front.
     pub fn action(&mut self, cx: &mut Cx, action: &MiniAppsAction) {
         if matches!(action, MiniAppsAction::Close) {
             self.close(cx);
             return;
         }
-        self.ensure_surface(cx);
-        self.surface(cx).action(cx, action);
+        self.ensure_window(cx);
+        self.workspace(cx).open(cx, action);
         if let Some(window) = &self.window {
             window.redraw(cx);
         }
@@ -326,8 +283,8 @@ impl MiniAppsWindowHost {
     /// Routes Hagency management to the surface in this window, bringing it to front.
     pub fn hagency_action(&mut self, cx: &mut Cx, action: &HagencyAction) {
         log!("Hagency management {action:?} in the mini-apps window");
-        self.ensure_surface(cx);
-        self.surface(cx).hagency_action(cx, action);
+        self.ensure_window(cx);
+        self.workspace(cx).hagency_action(cx, action);
         if let Some(window) = &self.window {
             window.redraw(cx);
         }
@@ -338,7 +295,7 @@ impl MiniAppsWindowHost {
         let Some(window) = self.window.clone() else {
             return;
         };
-        self.surface(cx).close(cx);
+        self.workspace(cx).close_all(cx);
         if !self.closing {
             if let Some(window_id) = window.as_window().window_id() {
                 cx.push_unique_platform_op(CxOsOp::CloseWindow(window_id));
@@ -349,15 +306,30 @@ impl MiniAppsWindowHost {
 }
 
 impl MiniAppsWindowHostRef {
-    /// Whether this window's own app just sent the person to a chat.
-    pub fn take_navigated(&self) -> bool {
-        self.borrow_mut().is_some_and(|mut inner| std::mem::take(&mut inner.navigated))
+    pub fn adopt_workspace(&self, cx: &mut Cx, workspace: MiniAppsWorkspace) {
+        if let Some(mut inner) = self.borrow_mut() {inner.adopt_workspace(cx, workspace);}
     }
-    pub fn adopt(&self, cx: &mut Cx, surface: WidgetRef) -> Option<WidgetRef> {
-        self.borrow_mut()?.adopt(cx, surface)
-    }
-    pub fn take_for_dock(&self, cx: &mut Cx, expected: WindowId) -> Option<WidgetRef> {
+    pub fn take_for_dock(&self, cx: &mut Cx, expected: WindowId) -> Option<MiniAppsWorkspace> {
         self.borrow_mut()?.take_for_dock(cx, expected)
+    }
+    pub fn is_open(&self) -> bool {
+        self.borrow().is_some_and(|inner| inner.window.is_some() && !inner.closing)
+    }
+    pub fn workspace(&self, cx: &mut Cx) -> MiniAppsSideRegionRef {
+        self.borrow().map(|inner| inner.workspace(cx)).unwrap_or_default()
+    }
+    pub fn reader(&self, cx: &mut Cx) -> WebBrowserRef {self.workspace(cx).reader(cx)}
+    pub fn web_action(&self, cx: &mut Cx, action: &WebBrowserAction) {
+        if let Some(mut inner) = self.borrow_mut() {
+            if !matches!(action, WebBrowserAction::Close) {inner.ensure_window(cx);}
+            inner.workspace(cx).web_action(cx, action);
+        }
+    }
+    pub fn article_action(&self, cx: &mut Cx, action: &ArticleAction) {
+        if let Some(mut inner) = self.borrow_mut() {
+            if !matches!(action, ArticleAction::Close) {inner.ensure_window(cx);}
+            inner.workspace(cx).article_action(cx, action);
+        }
     }
     pub fn hagency_action(&self, cx: &mut Cx, action: &HagencyAction) {
         if let Some(mut inner) = self.borrow_mut() {

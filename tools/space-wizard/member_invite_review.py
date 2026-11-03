@@ -41,6 +41,39 @@ class InviteReview(Review):
         self.request('/event', data='picker:members')
         time.sleep(.15)
         self.open()
+        self.scenario('many-people')
+        field = self.widget('user_id_input')['r']
+        action = self.widget('confirm_button')['r']
+        self.capture('people-list')
+        first_id = next(w for w in self.snap() if w.get('i') == 'person_id' and w.get('t', '').startswith('@person_00:'))
+        assert first_id['r'][3] >= 14, 'Identity text must have room to render, not just exist in the snapshot'
+        # The last of 80 entries must be reachable inside the dialog. It may not
+        # cover the search field or footer, even with long federated identities.
+        x, y, width, height = self.widget('people_list')['r']
+        assert 0 <= x and x+width <= self.width+1
+        assert field[1]+field[3] <= y and y+height <= action[1]
+        self.request('/m', w=0, k='scroll', x=x+width/2, y=y+height/2,
+                     dy=10000, precise=1, wait=1)
+        time.sleep(.3)
+        self.capture('people-scrolled')
+        last = next(w for w in self.snap() if w.get('i') == 'person_name' and w.get('t') == 'Friend 79 · 同名测试')
+        lx, ly, lw, lh = last['r']
+        assert y <= ly+lh/2 < y+height
+        self.request('/click', w=0, x=lx+lw/2, y=ly+lh/2, wait=1)
+        time.sleep(.15)
+        assert self.widget('user_id_input')['val'] == '@person_79:a-very-long-federated-homeserver.example.invalid'
+        self.fill('user_id_input', 'Friend 42')
+        self.capture('people-filtered')
+        assert self.widget('person_name')['t'] == 'Friend 42 · 同名测试'
+        assert self.widget('user_id_input')['r'] == field, 'Filtering must not move the input'
+        assert self.widget('confirm_button')['r'] == action, 'Filtering must not move the footer'
+        self.fill('user_id_input', 'no-such-person')
+        assert not any(w.get('i') == 'person_name' and w.get('r', [0,0,0,0])[2] > 0 for w in self.snap())
+        assert self.widget('user_id_input')['r'] == field
+        self.footer('confirm_button')
+        self.click('cancel_button')
+        self.checks.append('80 people scroll within modal; long IDs stay inside width; selected identity is exact; name filtering and no results keep controls stable')
+        self.open()
         self.click('confirm_button')
         assert self.status() == ('请输入名称或 Matrix ID。' if self.language == 'zh-CN' else 'Enter a name or Matrix ID.')
         self.capture('empty-input')
@@ -84,6 +117,15 @@ class InviteReview(Review):
         self.click('okay_button')
         self.closed()
         self.checks.append('Permission error releases busy state; saved pending can check status; confirmed join shows Done')
+        self.open()
+        self.fill('user_id_input', '@_hagency_agt_expired:example.invalid')
+        self.click('confirm_button')
+        self.scenario('agent_owner_binding_required')
+        assert self.enabled()
+        assert ('资源授权' in self.status() if self.language == 'zh-CN' else 'resource authorization' in self.status())
+        self.capture('unavailable-agent')
+        self.click('cancel_button')
+        self.checks.append('Unavailable Agent points to ownership and resource authorization; does not claim the invite succeeded')
         self.open()
         self.fill('user_id_input', '@friend:example.invalid')
         self.click('confirm_button')

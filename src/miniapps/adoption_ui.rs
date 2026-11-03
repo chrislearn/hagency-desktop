@@ -76,6 +76,7 @@ mod enabled {
         }
     }
     fn message(code: &str) -> &'static str {
+        if let Some(message)=crate::host::hagency::errors::message(code){return message;}
         match code {
             "invalid_adoption_budget" | "invalid_adoption_ceiling" => {
                 "Enter a positive whole monthly token limit for the shared account."

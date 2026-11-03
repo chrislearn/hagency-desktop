@@ -2,6 +2,8 @@
 
 use makepad_widgets::*;
 use ruma::OwnedUserId;
+use std::collections::HashMap;
+use crate::shared::navigation_bar_button::NavigationBarButtonWidgetRefExt;
 
 use crate::home::room_screen::InviteResultAction;
 use crate::sliding_sync::{MatrixRequest, get_client, spawn_async_task, submit_async_request};
@@ -18,8 +20,9 @@ script_mod! {
 
         title := ModalTitle {}
 
-        registered_agents := DropDown {width: Fill labels: ["People you know"]}
         user_id_input := RobrixTextInput {
+            width: Fill
+            height: 44
             draw_text +: {
                 text_style: REGULAR_TEXT {font_size: (11 * mod.widgets.RINX_TEXT_SCALE)},
                 color: mod.widgets.RINX_INK
@@ -27,6 +30,33 @@ script_mod! {
             empty_text: #(crate::i18n::tr("Name or @user:example.org")) i18n_empty_text: "Name or @user:example.org",
             autocapitalize: None,
             autocorrect: Disabled,
+        }
+
+        people_section := View {
+            width: Fill height: Fit flow: Down spacing: 8 margin: Inset{top: 12}
+            Label {width: Fill height: Fit
+                text: #(crate::i18n::tr("People you know")) i18n_text: "People you know"
+                draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: (11 * mod.widgets.RINX_TEXT_SCALE)}}
+            }
+            people_list := PortalList {
+                width: Fill height: 176 flow: Down auto_tail: false
+                Empty := Label {width: Fill height: Fit flow: Flow.Right{wrap: true} padding: 10
+                    text: #(crate::i18n::tr("Search by name or enter a Matrix ID.")) i18n_text: "Search by name or enter a Matrix ID."
+                    draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: (11 * mod.widgets.RINX_TEXT_SCALE)}}
+                }
+                Person := NavigationBarButton {
+                    width: Fill height: Fit{min: FitBound.Abs(56.0)} flow: Down spacing: 3
+                    padding: Inset{left: 10 right: 14 top: 8 bottom: 8}
+                    align: Align{x: 0.0 y: 0.5}
+                    draw_bg +: {color_hover: mod.widgets.RINX_HOVER color_active: mod.widgets.RINX_SELECTED border_radius: 8}
+                    person_name := Label {width: Fill height: Fit padding: 0 max_lines: 1 text_overflow: Ellipsis
+                        draw_text +: {color: mod.widgets.RINX_INK text_style: theme.font_regular {font_size: (12 * mod.widgets.RINX_TEXT_SCALE)}}
+                    }
+                    person_id := Label {width: Fill height: Fit padding: 0 max_lines: 1 text_overflow: Ellipsis
+                        draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular {font_size: (9 * mod.widgets.RINX_TEXT_SCALE)}}
+                    }
+                }
+            }
         }
 
         buttons_view := ModalButtonsRow {
@@ -125,8 +155,9 @@ pub struct InviteModal {
     #[deref] view: View,
     #[rust] state: InviteModalState,
     #[rust] room_name_id: Option<RoomNameId>,
-    /// The dropdown's entries after its "People you know" header.
-    #[rust] agents: Vec<OwnedUserId>,
+    #[rust] offered: Vec<Person>,
+    /// Pin clicks to the identity actually drawn, even if a lookup replaces the list.
+    #[rust] rendered_people: HashMap<WidgetUid, OwnedUserId>,
     /// Registered agents and people who share a room with the user.
     #[rust] known: Vec<Person>,
     #[rust] request: u64,
@@ -142,7 +173,27 @@ impl Widget for InviteModal {
     }
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
-        self.view.draw_walk(cx, scope, walk)
+        self.rendered_people.clear();
+        let selected = self.view.text_input(cx, ids!(user_id_input)).text();
+        while let Some(item) = self.view.draw_walk(cx, scope, walk).step() {
+            if let Some(mut list) = item.borrow_mut::<PortalList>() {
+                list.set_item_range(cx, 0, self.offered.len().max(1));
+                while let Some(index) = list.next_visible_item(cx) {
+                    if self.offered.is_empty() {
+                        list.item(cx, index, id!(Empty)).draw_all(cx, scope);
+                        continue;
+                    }
+                    let Some((id, name)) = self.offered.get(index) else {continue;};
+                    let row = list.item(cx, index, id!(Person));
+                    row.label(cx, ids!(person_name)).set_text(cx, name.as_deref().filter(|n| !n.is_empty()).unwrap_or(id.localpart()));
+                    row.label(cx, ids!(person_id)).set_text(cx, id.as_str());
+                    row.as_navigation_bar_button().set_selected(cx, selected == id.as_str());
+                    self.rendered_people.insert(row.widget_uid(), id.clone());
+                    row.draw_all(cx, scope);
+                }
+            }
+        }
+        DrawStep::done()
     }
 }
 
@@ -157,10 +208,12 @@ impl WidgetMatchEvent for InviteModal {
                         }
                     }
                     self.known.sort_by_key(|(id, name)| (name.as_deref().unwrap_or(id.as_str()).to_lowercase(), id.clone()));
-                    let known = self.known.clone();
-                    self.offer(cx, &known);
+                    let query = self.view.text_input(cx, ids!(user_id_input)).text();
+                    let matches = self.local_matches(query.trim());
+                    self.offer(cx, &matches);
                 }
-                Some(InvitePeopleAction::Searched { request, query, people }) if *request == self.request => {
+                Some(InvitePeopleAction::Searched { request, query, people }) if *request == self.request
+                    && self.view.text_input(cx, ids!(user_id_input)).text().trim() == query => {
                     let mut matches = self.local_matches(query);
                     for person in people {
                         if !matches.iter().any(|(id, _)| id == &person.0) {
@@ -172,8 +225,22 @@ impl WidgetMatchEvent for InviteModal {
                 _ => {}
             }
         }
-        if let Some(index) = self.view.drop_down(cx, ids!(registered_agents)).selected(actions) && let Some(user) = index.checked_sub(1).and_then(|i| self.agents.get(i)) {
-            self.view.text_input(cx, ids!(user_id_input)).set_text(cx, user.as_str());
+        if !matches!(self.state, InviteModalState::WaitingForInvite(_)) {
+            let input = self.view.text_input(cx, ids!(user_id_input));
+            if let Some(query) = input.changed(actions) {
+                let matches = self.local_matches(query.trim());
+                self.offer(cx, &matches);
+            }
+            let list = self.view.portal_list(cx, ids!(people_list));
+            for (_, row) in list.items_with_actions(actions) {
+                if !list.was_scrolling() && row.as_navigation_bar_button().clicked(actions)
+                    && let Some(user) = self.rendered_people.get(&row.widget_uid()) {
+                    input.set_text(cx, user.as_str());
+                    input.set_key_focus(cx);
+                    self.view.redraw(cx);
+                    break;
+                }
+            }
         }
         let cancel_button = self.view.button(cx, ids!(cancel_button));
 
@@ -239,7 +306,6 @@ impl WidgetMatchEvent for InviteModal {
                         self.state = InviteModalState::WaitingForInvite(user_id);
                         self.status(cx, crate::i18n::tr(if agent {"Adding Agent to this room…"} else {"Sending invite..."}), false);
                         confirm_button.set_enabled(cx, false);
-                        self.view.drop_down(cx, ids!(registered_agents)).set_disabled(cx, true);
                         user_id_input.set_is_read_only(cx, true);
                     }
                 }
@@ -289,26 +355,19 @@ impl InviteModal {
         let confirm=self.view.button(cx,ids!(confirm_button));
         confirm.set_visible(cx,!success);
         confirm.set_enabled(cx,true);
-        self.view.drop_down(cx,ids!(registered_agents)).set_disabled(cx,false);
         confirm.set_text(cx,crate::i18n::tr(if pending {"Check status"} else {"Invite"}));
         self.view.button(cx,ids!(cancel_button)).set_visible(cx,!success);
         self.view.button(cx,ids!(okay_button)).set_visible(cx,success);
         self.view.text_input(cx,ids!(user_id_input)).set_is_read_only(cx,false);
         self.view.redraw(cx);
     }
-    /// Put `people` in the dropdown, after its header.
+    /// Keep results inside a bounded, scrollable part of the dialog. An overlay
+    /// menu cannot fit a large directory or long federated IDs on compact screens.
     fn offer(&mut self, cx: &mut Cx, people: &[Person]) {
-        self.agents = people.iter().map(|(id, _)| id.clone()).collect();
-        let labels = std::iter::once(crate::i18n::tr("People you know").into())
-            .chain(people.iter().map(|(id, name)| match name {
-                Some(name) if !name.is_empty() => format!("{name} ({id})"),
-                _ => id.to_string(),
-            }))
-            .collect();
-        let drop_down = self.view.drop_down(cx, ids!(registered_agents));
-        drop_down.set_labels(cx, labels);
-        drop_down.set_selected_item(cx, 0);
-        drop_down.set_visible(cx, !people.is_empty());
+        if self.offered == people {return;}
+        self.offered = people.to_vec();
+        self.rendered_people.clear();
+        self.view.portal_list(cx, ids!(people_list)).set_first_id_and_scroll(0, 0.0);
         self.view.redraw(cx);
     }
 
@@ -351,7 +410,7 @@ impl InviteModal {
     }
 
     /// One match fills the field, ready to invite; several are offered in the
-    /// dropdown; none asks for the full ID.
+    /// list; none asks for the full ID.
     fn resolved(&mut self, cx: &mut Cx, query: &str, matches: Vec<Person>) {
         match matches.as_slice() {
             [(id, _)] => {
@@ -449,7 +508,6 @@ impl InviteModal {
         confirm_button.set_enabled(cx, true);
         confirm_button.set_text(cx, crate::i18n::tr("Invite"));
         confirm_button.reset_hover(cx);
-        self.view.drop_down(cx,ids!(registered_agents)).set_disabled(cx,false);
         cancel_button.set_visible(cx, true);
         cancel_button.set_enabled(cx, true);
         cancel_button.reset_hover(cx);
@@ -474,6 +532,11 @@ impl InviteModalRef {
         inner.review_mode=true;
         if scenario=="ready" {
             inner.known=vec![("@_hagency_agt_cabbage:example.invalid".try_into().unwrap(),Some("小白菜".into())),("@friend:example.invalid".try_into().unwrap(),Some("Alex".into()))];
+            let known=inner.known.clone();inner.offer(cx,&known);
+            return;
+        }
+        if scenario=="many-people" {
+            inner.known=(0..80).map(|i| (format!("@person_{i:02}:a-very-long-federated-homeserver.example.invalid").try_into().unwrap(), Some(format!("Friend {i:02} · 同名测试")))).collect();
             let known=inner.known.clone();inner.offer(cx,&known);
             return;
         }

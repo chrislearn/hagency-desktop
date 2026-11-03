@@ -97,7 +97,7 @@ impl AccountLoginFlow {
     pub fn cancelled_before_start(&self) -> ::hagency::native_owner::AccountLoginStatus {
         ::hagency::native_owner::AccountLoginStatus{command_id:self.input.command_id.clone(),account_id:self.input.account_id.clone(),state:"cancelled".into()}
     }
-    async fn manager(&self) -> Result<std::sync::Arc<::hagency::native_owner::NativeManagement>,String> {
+    async fn manager(&self) -> Result<std::sync::Arc<::hagency::daemon::bridge::ManagementClient>,String> {
         self.check()?;let manager=self.host.manager(&self.lease).await?;self.check()?;Ok(manager)
     }
     pub async fn start(&self) -> Result<::hagency::native_owner::AccountLoginStatus,String> {
@@ -111,7 +111,7 @@ impl AccountLoginFlow {
     pub async fn cancel(&self) -> Result<::hagency::native_owner::AccountLoginStatus,String> {
         let result=self.manager().await?.cancel_account_login(self.input.clone()).await.map_err(|e|e.code);self.check()?;result
     }
-    pub async fn authorization(&self) -> Result<::hagency::native_owner::AccountLoginAuthorization,String> {
+    pub async fn authorization(&self) -> Result<::hagency::daemon::bridge::AccountLoginAuthorization,String> {
         let result=self.manager().await?.account_login_authorization(self.input.clone()).await.map_err(|e|e.code);self.check()?;result
     }
 }

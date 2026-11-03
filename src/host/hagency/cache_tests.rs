@@ -69,7 +69,11 @@ fn host_request_polls_on_backend_stack() {
 async fn retired_host_cache_releases_profile_before_fresh_native_authorization() {
     let fixture = NativeFixture::new().await;
     let owner = fixture.open_detached().await.unwrap();
-    let manager = owner.management(package()).await.unwrap();
+    let native = owner.management(package()).await.unwrap();
+    // Exercise the same facade cached by production, while tracking the
+    // underlying native Arc that owns the real profile lock.
+    let old = Arc::downgrade(&native);
+    let manager = NativeManagement::local(native);
     assert!(!manager.is_retired());
     assert!(
         manager
@@ -85,7 +89,6 @@ async fn retired_host_cache_releases_profile_before_fresh_native_authorization()
         &host.cached_manager().unwrap().unwrap(),
         &manager
     ));
-    let old = Arc::downgrade(&manager);
 
     // Failed logout has retired/cleaned the native owner, while the same
     // account's still-open mini app retains its cached manager.
@@ -110,7 +113,7 @@ async fn retired_host_cache_releases_profile_before_fresh_native_authorization()
         "evicting a cached manager must not restore a logged-out session"
     );
     let fresh_owner = fixture.open_after_explicit_signin().await.unwrap();
-    let fresh = fresh_owner.management(package()).await.unwrap();
+    let fresh = NativeManagement::local(fresh_owner.management(package()).await.unwrap());
     assert!(!fresh.is_retired());
     assert!(
         fresh
@@ -164,7 +167,7 @@ async fn retired_package_or_old_epoch_cannot_recreate_a_cached_manager() {
 async fn failed_adoption_cache_eviction_releases_original_profile_before_recovery() {
     let fixture = NativeFixture::new().await;
     let owner = fixture.open_detached().await.unwrap();
-    let manager = owner.management(package()).await.unwrap();
+    let manager = NativeManagement::local(owner.management(package()).await.unwrap());
     let (host, _) = host_and_lease();
     *host.0.manager.lock().unwrap() = Some(manager.clone());
     host.evict_retired_adoption_caches().unwrap();

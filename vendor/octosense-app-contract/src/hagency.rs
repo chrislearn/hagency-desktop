@@ -8,6 +8,8 @@ pub const SERVICES: &[&str] = &[
     "hagency.pools.agents.request",
     "hagency.pools.agents.decide",
     "hagency.pools.agents.stop",
+    "hagency.pools.agents.renew",
+    "hagency.pools.agents.reallocate",
     "hagency.pools.agents.room",
 
     "hagency.navigation.open",
@@ -279,6 +281,8 @@ pub fn words(service: &str) -> Option<&'static str> {
         "hagency.pools.agents.list" | "hagency.pools.agents.get" => "Read your pool Agent requests and their current status",
         "hagency.pools.agents.request" => "Request your own Agent from a selected resource pool",
         "hagency.pools.agents.decide" => "Approve or reject Agent capacity on resources you own",
+        "hagency.pools.agents.reallocate" => "Authorize a new allocation for an existing Agent using your resources",
+        "hagency.pools.agents.renew" => "Renew a new authorization period for an Agent using your resources",
         "hagency.pools.agents.stop" => "Remove your Agent or stop supplying resources you own",
         "hagency.pools.agents.room" => "Prepare and recover a private Agent conversation",
         "hagency.agents.request" => "Request an agent as this project's manager",

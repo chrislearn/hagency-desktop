@@ -15,12 +15,13 @@
 //!   layout, the region covers the chat, with Back to return to it. A resize
 //!   alone never covers the chat: the region waits until something opens.
 //!
-//! The pop-out button moves the front tab, live, into its own window (see
-//! `window.rs`); a window that already holds one sends that one back here.
+//! The pop-out button moves every tab, live and in order, into the shared
+//! workspace window (`window.rs`). Dock back returns that entire workspace.
 //!
 //! One instance serves both layouts through `CachedWidget`, so tabs survive
 //! a switch between them, and every app keeps receiving its actions.
 use makepad_widgets::*;
+use makepad_widgets::splitter::DrawSplitter;
 use super::surface::{MiniAppsSurfaceDeckRef, MiniAppsSurfaceDeckWidgetExt, MiniAppsSurfaceRef, MiniAppsSurfaceWidgetRefExt, SurfaceKey};
 use super::ui::MiniAppsAction;
 use crate::hagency::ui::HagencyAction;
@@ -37,7 +38,7 @@ pub const SIDE_DEFAULT: f64 = 440.0;
 /// region shows over the chat instead of squeezing it.
 pub const CHAT_MIN: f64 = 400.0;
 /// The draggable strip between the chat and the region.
-pub const HANDLE: f64 = 8.0;
+pub const HANDLE: f64 = crate::shared::pane_splitter::WIDTH;
 /// Where the rooms list ends, when the dock cannot say.
 pub const ROOMS_DEFAULT: f64 = 300.0;
 
@@ -77,11 +78,10 @@ script_mod! {
     }
 
     mod.widgets.MiniAppsSideHandle = #(MiniAppsSideHandle::register_widget(vm)) {
-        ..mod.widgets.SolidView
-        width: (8) height: Fill align: Align{x: 0.5}
-        cursor: MouseCursor.ColResize
-        draw_bg.color: mod.widgets.RINX_PAGE
-        SolidView {width: 1 height: Fill draw_bg.color: mod.widgets.RINX_BORDER}
+        width: #(HANDLE) height: Fill
+        // Use the very same shader and animation as the rooms-list splitter.
+        draw_bg: mod.widgets.RobrixSplitter.draw_bg {is_vertical: 1.0}
+        animator: mod.widgets.RobrixSplitter.animator
     }
 
     mod.widgets.MiniAppsSideRegion = #(MiniAppsSideRegion::register_widget(vm)) {
@@ -100,6 +100,12 @@ script_mod! {
                     icon +: {draw_icon +: {svg: ICON_CHEVRON_LEFT}}
                 }
                 tabs := mod.widgets.MiniAppsTabStrip {}
+                hosting := NavigationBarButton {
+                    visible: false width: Fit height: (mod.widgets.RINX_CONTROL_HEIGHT)
+                    padding: Inset{left: 10 right: 10} align: Align{y: 0.5}
+                    draw_bg +: {color_hover: mod.widgets.RINX_HOVER color_active: mod.widgets.RINX_SELECTED border_radius: 6}
+                    label := RinxLabel {text: #(crate::i18n::tr("Hosting"))}
+                }
                 pop_out := SideIconButton {
                     tooltip_text: #(crate::i18n::tr("Open in a new window"))
                     icon +: {draw_icon +: {svg: ICON_EXTERNAL_LINK}}
@@ -136,8 +142,15 @@ fn reopened_apps(before: &[(LiveId, SurfaceKey)], now: &[(LiveId, SurfaceKey)]) 
 /// Actions the app shell handles for the region.
 #[derive(Clone, Debug)]
 pub enum MiniAppsSideAction {
-    /// Move the front tab into its own window.
+    /// Move the entire workspace into its own window.
     PopOut,
+}
+
+/// A move, not a snapshot: each live surface has exactly one host. Native
+/// readers carry all their own browser tabs, and editors retain their drafts.
+pub struct MiniAppsWorkspace {
+    surfaces: Vec<(LiveId, WidgetRef)>,
+    selected: Option<LiveId>,
 }
 
 /// How the region is laid out this frame.
@@ -316,10 +329,23 @@ impl MiniAppsTabStrip {
 }
 
 /// The strip between the chat and the docked region: dragging it resizes the region.
-#[derive(Script, ScriptHook, Widget)]
+#[derive(Script, ScriptHook, Widget, Animator)]
 pub struct MiniAppsSideHandle {
-    #[deref]
-    view: View,
+    #[uid]
+    uid: WidgetUid,
+    #[source]
+    source: ScriptObjectRef,
+    #[walk]
+    walk: Walk,
+    #[live(true)]
+    #[apply_state]
+    #[visible]
+    visible: bool,
+    #[apply_default]
+    animator: Animator,
+    #[redraw]
+    #[live]
+    draw_bg: DrawSplitter,
     /// How far the current drag has moved, while one is under way.
     #[rust]
     drag: Option<f64>,
@@ -328,18 +354,42 @@ pub struct MiniAppsSideHandle {
 }
 
 impl Widget for MiniAppsSideHandle {
-    fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
-        match event.hits(cx, self.view.area()) {
-            Hit::FingerDown(fe) if fe.is_primary_hit() => self.drag = Some(0.0),
+    fn handle_event(&mut self, cx: &mut Cx, event: &Event, _scope: &mut Scope) {
+        if !self.visible && event.requires_visibility() {
+            return;
+        }
+        if self.animator_handle_event(cx, event).must_redraw() {
+            self.draw_bg.redraw(cx);
+        }
+        // Match Makepad Splitter's native pointer behavior; only the owning
+        // pane's resize calculation differs (the right pane grows leftward).
+        match event.hits_with_options(cx, self.draw_bg.area(), HitOptions::new()
+            .with_margin(Inset {left: 3.0, right: 3.0, top: 0.0, bottom: 0.0})
+            .with_touch_margin(Inset {left: 8.0, right: 8.0, top: 0.0, bottom: 0.0})) {
+            Hit::FingerHoverIn(_) => {
+                cx.set_cursor(MouseCursor::ColResize);
+                self.animator_play(cx, ids!(hover.on));
+            }
+            Hit::FingerHoverOut(_) => self.animator_play(cx, ids!(hover.off)),
+            Hit::FingerDown(fe) if self.drag.is_none() && fe.is_primary_hit() => {
+                cx.set_cursor(MouseCursor::ColResize);
+                self.animator_play(cx, ids!(hover.drag));
+                self.drag = Some(0.0);
+            }
             Hit::FingerMove(fe) if self.drag.is_some() => self.drag = Some(fe.abs.x - fe.abs_start.x),
-            Hit::FingerUp(_) if self.drag.is_some() => self.released = true,
+            Hit::FingerUp(fe) if self.drag.is_some() => {
+                self.released = true;
+                self.animator_play(cx, if fe.is_over && fe.device.has_hovers() {ids!(hover.on)} else {ids!(hover.off)});
+            }
             _ => {}
         }
-        self.view.handle_event(cx, event, scope);
     }
 
-    fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
-        self.view.draw_walk(cx, scope, walk)
+    fn draw_walk(&mut self, cx: &mut Cx2d, _scope: &mut Scope, walk: Walk) -> DrawStep {
+        if self.visible {
+            self.draw_bg.draw_walk(cx, walk);
+        }
+        DrawStep::done()
     }
 }
 
@@ -375,6 +425,10 @@ pub struct MiniAppsSideRegion {
     /// opening its app) redraws its title, and nothing else does.
     #[rust]
     drawn_titles: Vec<(LiveId, String)>,
+    #[rust]
+    floating: bool,
+    #[rust(true)]
+    host_visible: bool,
 }
 
 impl Widget for MiniAppsSideRegion {
@@ -432,11 +486,15 @@ impl Widget for MiniAppsSideRegion {
         }
 
         if let Event::Actions(actions) = event {
+            if self.view.navigation_bar_button(cx, ids!(frame.header.hosting)).clicked(actions) {
+                if let Some(id) = self.selected { self.surface(cx, id).toggle_hosting(cx); }
+                self.view.redraw(cx);
+            }
             if self.view.navigation_bar_button(cx, ids!(frame.header.back)).clicked(actions) {
                 self.dismissed = true;
                 self.refresh(cx);
             }
-            if self.view.navigation_bar_button(cx, ids!(frame.header.pop_out)).clicked(actions) && self.selected.is_some() {
+            if !self.floating && self.view.navigation_bar_button(cx, ids!(frame.header.pop_out)).clicked(actions) && self.selected.is_some() {
                 cx.action(MiniAppsSideAction::PopOut);
             }
             // Going to a chat from an app, or to another page from the left
@@ -463,6 +521,9 @@ impl Widget for MiniAppsSideRegion {
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
         // Titles follow what each tab shows (a catalog tab becomes its app).
+        let hosting = self.selected.and_then(|id| self.surface(cx, id).hosting_state(cx));
+        self.view.widget(cx, ids!(frame.header.hosting)).set_visible(cx, hosting.is_some());
+        self.view.label(cx, ids!(frame.header.hosting.label)).set_text(cx, crate::i18n::tr(if hosting == Some(true) {"Manage"} else {"Hosting"}));
         self.drawn_titles = self.titles(cx);
         let items: Vec<(LiveId, String, bool)> = self
             .drawn_titles
@@ -668,29 +729,44 @@ impl MiniAppsSideRegion {
         self.refresh(cx);
     }
 
-    /// Takes the front tab's surface out, still running, for its own window.
-    fn take_front(&mut self, cx: &mut Cx) -> Option<WidgetRef> {
-        let id = self.selected?;
-        let index = self.tabs.iter().position(|tab| *tab == id)?;
-        let surface = self.deck(cx).remove(cx, id)?;
-        surface.as_mini_apps_surface().set_host_visible(cx, false);
-        self.tabs.remove(index);
-        self.keys.retain(|(tab, _)| *tab != id);
-        self.selected = self.tabs.get(index.min(self.tabs.len().saturating_sub(1))).copied();
-        self.deck(cx).set_front(cx, self.selected);
-        self.publish_front(cx);
+    fn take_workspace(&mut self, cx: &mut Cx) -> Option<MiniAppsWorkspace> {
+        if self.tabs.is_empty() {return None;}
+        let deck = self.deck(cx);
+        let selected = self.selected.take();
+        let surfaces = std::mem::take(&mut self.tabs).into_iter().filter_map(|id| {
+            let surface = deck.remove(cx, id)?;
+            surface.as_mini_apps_surface().set_host_visible(cx, false);
+            Some((id, surface))
+        }).collect();
+        self.keys.clear();
+        self.drawn_titles.clear();
+        deck.set_front(cx, None);
+        deck.take_navigated();
         self.refresh(cx);
-        Some(surface)
+        Some(MiniAppsWorkspace {surfaces, selected})
     }
 
-    /// Takes a running surface back as the front tab.
-    fn dock_surface(&mut self, cx: &mut Cx, surface: WidgetRef) {
-        let id = LiveId::unique();
-        self.deck(cx).insert(cx, id, surface);
-        self.tabs.push(id);
-        self.select(cx, id);
+    fn restore_workspace(&mut self, cx: &mut Cx, workspace: MiniAppsWorkspace) {
+        let deck = self.deck(cx);
+        for (id, surface) in workspace.surfaces {
+            deck.insert(cx, id, surface);
+            if !self.tabs.contains(&id) {self.tabs.push(id);}
+        }
+        if let Some(id) = workspace.selected.or_else(|| self.tabs.first().copied()) {
+            self.select(cx, id);
+        }
         self.remember_keys(cx);
         self.refresh(cx);
+    }
+
+    fn prepare_window(&mut self, cx: &mut Cx) {
+        self.floating = true;
+        self.dismissed = false;
+        self.view.walk.width = Size::fill();
+        self.view.visible = !self.tabs.is_empty();
+        for path in [ids!(handle).as_slice(), ids!(frame.header.back).as_slice(), ids!(frame.header.pop_out).as_slice()] {
+            self.view.widget(cx, path).set_visible(cx, false);
+        }
     }
 
     fn close_all(&mut self, cx: &mut Cx) {
@@ -701,7 +777,7 @@ impl MiniAppsSideRegion {
 
     /// Lets the person see the chat: an overlay steps aside, a docked region stays.
     fn reveal_chat(&mut self, cx: &mut Cx) {
-        if self.layout_mode == SideLayout::Overlay && !self.dismissed {
+        if !self.floating && self.layout_mode == SideLayout::Overlay && !self.dismissed {
             self.dismissed = true;
             self.refresh(cx);
         }
@@ -731,7 +807,7 @@ impl MiniAppsSideRegion {
 
     /// Tells each tab's app whether it is in front of the person.
     fn sync_visibility(&mut self, cx: &mut Cx) {
-        let shown = self.view.visible && self.foreground;
+        let shown = self.view.visible && self.foreground && self.host_visible;
         let deck = self.deck(cx);
         for id in &self.tabs {
             deck.surface(*id).set_host_visible(cx, shown && Some(*id) == self.selected);
@@ -740,6 +816,7 @@ impl MiniAppsSideRegion {
 
     /// Redraws everything: showing, hiding or resizing the region moves the chat.
     fn refresh(&mut self, cx: &mut Cx) {
+        if self.floating {self.prepare_window(cx);}
         self.sync_visibility(cx);
         cx.redraw_all();
     }
@@ -771,12 +848,21 @@ impl MiniAppsSideRegionRef {
             inner.hagency_action(cx, action);
         }
     }
-    pub fn take_front(&self, cx: &mut Cx) -> Option<WidgetRef> {
-        self.borrow_mut()?.take_front(cx)
+    pub fn take_workspace(&self, cx: &mut Cx) -> Option<MiniAppsWorkspace> {
+        self.borrow_mut()?.take_workspace(cx)
     }
-    pub fn dock_surface(&self, cx: &mut Cx, surface: WidgetRef) {
+    pub fn restore_workspace(&self, cx: &mut Cx, workspace: MiniAppsWorkspace) {
         if let Some(mut inner) = self.borrow_mut() {
-            inner.dock_surface(cx, surface);
+            inner.restore_workspace(cx, workspace);
+        }
+    }
+    pub fn prepare_window(&self, cx: &mut Cx) {
+        if let Some(mut inner) = self.borrow_mut() {inner.prepare_window(cx);}
+    }
+    pub fn set_host_visible(&self, cx: &mut Cx, visible: bool) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.host_visible = visible;
+            inner.sync_visibility(cx);
         }
     }
     pub fn close_all(&self, cx: &mut Cx) {

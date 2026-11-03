@@ -1,0 +1,34 @@
+[package]
+name = "hagency-owner-dashboard"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shared Hagency owner dashboard: Makepad widget, view model and owner-daemon transport (ADR 0012)"
+publish = false
+
+# Standalone like crates/article-makepad: built and tested on its own, and
+# consumed by path from the Rinx package without joining a shared workspace.
+[workspace]
+
+[lib]
+name = "owner_dashboard"
+
+[dependencies]
+# The exact effective Makepad source Desktop patches every Makepad URL to
+# (Cargo.toml [patch] sections). Naming it directly keeps one package identity
+# when Rinx and the standalone controller both link this crate.
+makepad-widgets = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "ec0283bfd78cb1634788e86a6b26e708980499dd" }
+# Shared DTO contract from the same published Client revision as Desktop.
+hagency-metering = { git = "https://github.com/hagency-org/hagency-client.git", rev = "fcbd247b17bae376e9dec98895e43980bc16d193" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+unicode-segmentation = { version = "1", optional = true }
+
+[features]
+# Deterministic fixture loading for the headless harness. Never enabled in a
+# release controller; production code paths do not read fixtures.
+fixtures = []
+# Requires the tracked Makepad accessibility patch prepared by tooling.
+native-accessibility = ["dep:unicode-segmentation"]

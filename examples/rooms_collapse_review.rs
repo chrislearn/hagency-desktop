@@ -2,6 +2,7 @@
 pub use makepad_widgets;
 use makepad_widgets::*;
 use rinx::app::AppState;
+use rinx::miniapps::side::MiniAppsSideRegionWidgetRefExt;
 
 app_main!(App);
 fn review_size() -> Vec2d {
@@ -51,6 +52,9 @@ impl AppMain for App {
                 for dark in [false,true] {package.set(Some(dark), "typography.scale", octosense_theme_contract::number(1.3));}
                 let mut preferences = rinx::theme::packages::current(cx).unwrap(); preferences.package = Some(package);
                 rinx::theme::packages::apply(cx, preferences).unwrap();
+            }
+            if command=="rooms:open-apps" {
+                self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).open(cx, &rinx::miniapps::MiniAppsAction::Open);
             }
             if command=="rooms:reload" {
                 assert_eq!(self.state.saved_dock_state_home.selected_room.as_ref().map(|room|room.room_id().as_str()),Some("!review:example.invalid"));

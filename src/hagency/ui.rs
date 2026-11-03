@@ -289,6 +289,7 @@ fn provider_error_message(error: &str) -> Option<&'static str> {
     })
 }
 fn visible_error(error: &str) -> String {
+        if let Some(message)=crate::host::hagency::errors::message(error){return message.to_owned();}
     if let Some(message) = provider_error_message(error) {
         format!("{} ({error})", crate::i18n::tr(message))
     } else {

@@ -60,6 +60,7 @@ impl Fixture {
             explicit_reenrollment: std::sync::atomic::AtomicBool::new(false),
             state: directory.0.join("owner"),
             native: tokio::sync::Mutex::new(None),
+            remote: Mutex::new(None),
             native_retirement: Mutex::new(None),
             #[cfg(feature = "resource-adoption")]
             adopted_initialization: Mutex::new(None),

@@ -105,7 +105,7 @@ mod enabled {
             if self.is_resume() {
                 return Err("native_execution_confirmation_required".into());
             }
-            let prepared = self.service.assess_shared_successor(self.request()).await?;
+            let prepared = self.service.assess_shared_successor(self.request(), self.lease.expires()).await?;
             self.check()?;
             let prepared = match prepared {
                 SuccessorAssessment::Blocked(review) => {
@@ -143,7 +143,7 @@ mod enabled {
                 .await?;
             self.check()?;
             self.lease.authorize(self.account(), RESUME, None)?;
-            let result = self.service.resume_shared_successor(self.request()).await;
+            let result = self.service.resume_shared_successor(self.request(), self.lease.expires()).await;
             self.check()
                 .map_err(|_| "management_outcome_unknown".to_owned())?;
             let progress =

@@ -1,7 +1,8 @@
 //! Trusted native initialization selection. No script arguments or registry paths.
 use super::*;
-use ::hagency::native_owner::{AdoptedManagementSelection, ManagementPackage, OwnerGrantAccess};
+use ::hagency::native_owner::{AdoptedManagementSelection, ManagementPackage};
 use std::sync::atomic::Ordering;
+use ::hagency::daemon::bridge::{OwnerGrantAccess, AdoptedSelection, DeviceSetupReview};
 
 /// Static native codes only; never log provider text, paths or credentials.
 fn activation_failure_code(code: &str) -> &'static str {
@@ -104,9 +105,16 @@ impl Service {
     /// a busy original root remains retryable and never falls back to legacy.
     pub(crate) async fn select_adopted_management(
         &self,
-        selection: AdoptedManagementSelection,
+        selection: AdoptedSelection,
     ) -> Result<(), String> {
         self.check()?;
+        let selection = match selection {
+            AdoptedSelection::Local(selection) => selection,
+            AdoptedSelection::Remote => {
+                if self.remote_client().await?.is_none() { return Err("daemon_owner_assignment_changed".into()); }
+                return Ok(());
+            }
+        };
         if !selection.matches_host(&self.0.state, &self.0.origin, &self.0.owner) {
             return Err("adopted_management_scope_changed".into());
         }
@@ -181,6 +189,20 @@ impl Service {
             .map_err(|_| "management_unavailable")? = selected.clone();
         Ok(selected)
     }
+    pub(crate) async fn adopted_grant_access_until(
+        &self, mut package: ManagementPackage, until: std::time::Instant,
+    ) -> Result<OwnerGrantAccess, String> {
+        self.verify_matrix(false).await?;
+        package.account_epoch = self.0.epoch.checked_add(1).ok_or("matrix_account_changed")?;
+        if let Some(remote) = self.remote_client().await? {
+            return OwnerGrantAccess::remote_until(remote, package, until).await.map_err(|e|e.code);
+        }
+        let owner = self.native_owner().await?;
+        let selected = self.load_adopted_initialization().await?.ok_or("owner_source_adoption_required")?;
+        let access = selected.grant_access(&owner, package).await.map_err(|e|e.code)?.restrict_to_deadline(until).map_err(|e|e.code)?;
+        if let Err(error)=self.check(){access.retire();return Err(error)}
+        Ok(OwnerGrantAccess::local(access))
+    }
     pub(crate) async fn adopted_grant_access(
         &self,
         mut package: ManagementPackage,
@@ -191,6 +213,9 @@ impl Service {
             .epoch
             .checked_add(1)
             .ok_or("matrix_account_changed")?;
+        if let Some(remote) = self.remote_client().await? {
+            return OwnerGrantAccess::remote(remote, package).await.map_err(|e| e.code);
+        }
         let owner = self.native_owner().await?;
         let selected = self
             .load_adopted_initialization()
@@ -204,7 +229,7 @@ impl Service {
             access.retire();
             return Err(error);
         }
-        Ok(access)
+        Ok(OwnerGrantAccess::local(access))
     }
 }
 
@@ -219,8 +244,12 @@ impl Service {
     pub(crate) async fn activation_context(
         &self,
         package: ManagementPackage,
+        until: std::time::Instant,
     ) -> Result<::hagency::native_owner::ResourceActivationContext, String> {
         self.verify_matrix(false).await?;
+        if let Some(remote) = self.remote_client().await? {
+            return remote.device_setup_context(package, until).await.map_err(|e| e.code);
+        }
         let owner = self.native_owner().await?;
         let selected = self.load_adopted_initialization().await?;
         let value = owner
@@ -234,8 +263,12 @@ impl Service {
         &self,
         package: ManagementPackage,
         tokens: Option<u64>,
-    ) -> Result<::hagency::native_owner::DeviceSetupReview, String> {
+        until: std::time::Instant,
+    ) -> Result<DeviceSetupReview, String> {
         self.verify_matrix(false).await?;
+        if let Some(remote) = self.remote_client().await? {
+            return remote.review_device_setup(package, tokens, until).await.map_err(|e| e.code);
+        }
         let owner = self.native_owner().await?;
         let selected = self.load_adopted_initialization().await?;
         let value = owner
@@ -243,10 +276,17 @@ impl Service {
             .await
             .map_err(|e| e.code)?;
         self.check()?;
-        Ok(value)
+        Ok(DeviceSetupReview::local(value))
     }
     pub(crate) async fn activation_state(&self) -> Result<&'static str, String> {
         self.verify_matrix(false).await?;
+        if let Some(remote) = self.remote_client().await? {
+            return remote.device_setup_state(ManagementPackage {
+                digest: blake3::hash(b"hagency-native-device-setup-state-v1").to_hex().to_string(),
+                instance: 1, account_epoch: self.0.epoch + 1,
+                permissions: vec![::hagency::native_owner::ManagementPermission::ReadResources],
+            }).await.map_err(|e| e.code);
+        }
         let owner = self.native_owner().await?;
         let selected = self.load_adopted_initialization().await?;
         let state = if let Some(selected) = selected {
@@ -271,10 +311,15 @@ impl Service {
     pub(crate) async fn confirm_activation(
         &self,
         package: ManagementPackage,
-        review: ::hagency::native_owner::DeviceSetupReview,
+        review: DeviceSetupReview,
         gate: Arc<dyn Fn() -> bool + Send + Sync>,
-    ) -> Result<AdoptedManagementSelection, String> {
+    ) -> Result<AdoptedSelection, String> {
         self.check()?;
+        if !gate() { return Err("management_scope_changed".into()); }
+        if let Some(remote) = self.remote_client().await? {
+            return remote.confirm_device_setup(package, review).await.map_err(|e| e.code);
+        }
+        let review = review.into_local().map_err(|e| e.code)?;
         let mut task = self.0.activation.lock().await;
         if matches!(*task, ActivationTask::Empty) {
             let service = self.clone();
@@ -296,7 +341,7 @@ impl Service {
                     service.finish_activation(&mut native, owner, result).await
                 }));
         }
-        Self::await_activation(&mut task).await
+        Self::await_activation(&mut task).await.map(AdoptedSelection::Local)
     }
     // Caller holds the native initialization lock for the entire cleanup.
     // Keeping this shared with cancellation tests exercises actual native revoke.
@@ -349,8 +394,9 @@ impl Service {
     }
     pub(crate) async fn recover_activation_task(
         &self,
-    ) -> Result<Option<AdoptedManagementSelection>, String> {
+    ) -> Result<Option<AdoptedSelection>, String> {
         self.check()?;
+        if self.remote_client().await?.is_some() { return Ok(None); }
         let mut task = self.0.activation.lock().await;
         if matches!(*task, ActivationTask::Empty) {
             return Ok(None);
@@ -361,7 +407,7 @@ impl Service {
         if value.is_err() {
             *task = ActivationTask::Empty;
         }
-        value.map(Some)
+        value.map(|value| Some(AdoptedSelection::Local(value)))
     }
     pub(crate) async fn activation_handoff_complete(&self) {
         *self.0.activation.lock().await = ActivationTask::Empty;

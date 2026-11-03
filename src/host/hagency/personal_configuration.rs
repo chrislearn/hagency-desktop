@@ -1,8 +1,9 @@
 //! Trusted personal configuration review. Paths and full rules stay native.
 use super::*;
 use ::hagency::native_owner::{
-    PersonalModelReview, PersonalRulesReview, PreparePersonalWorkspace, SavePersonalModel,
+    PreparePersonalWorkspace, SavePersonalModel,
 };
+use ::hagency::daemon::bridge::{PersonalModelReview, PersonalRulesReview};
 use serde::Deserialize;
 use std::path::PathBuf;
 

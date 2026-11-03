@@ -250,6 +250,7 @@ impl MatrixTokenSource for SdkTokens {
 static CURRENT: LazyLock<Mutex<Option<Service>>> = LazyLock::new(|| Mutex::new(None));
 static PROCESS_CLOSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 mod lifecycle;
+mod daemon_bridge;
 mod signin;
 #[cfg(feature = "resource-adoption")]
 mod adoption;
@@ -275,6 +276,7 @@ struct Inner {
     explicit_reenrollment: std::sync::atomic::AtomicBool,
     state: PathBuf,
     native: tokio::sync::Mutex<Option<NativeOwner>>,
+    remote: Mutex<Option<Arc<::hagency::daemon::bridge::ControllerClient>>>,
     // Separate from the async initialization/cleanup lock: account transitions
     // must revoke queued ledger work before awaiting SDK or native shutdown.
     native_retirement: Mutex<Option<NativeOwner>>,
@@ -297,7 +299,12 @@ pub struct Service(Arc<Inner>);
 impl Service {
     fn state_for(origin: &str, owner: &str) -> Result<PathBuf, String> {
         let identity = serde_json::to_vec(&(origin, owner)).map_err(|_| "invalid_account_identity")?;
-        Ok(crate::app_data_dir().join("native-owner").join(blake3::hash(&identity).to_hex().as_str()))
+        let original=crate::app_data_dir().join("native-owner").join(blake3::hash(&identity).to_hex().as_str());
+        let home=crate::hagency::owner_dashboard::endpoint().home;
+        if let Some(enrolled)=::hagency::daemon::enrollment::Enrollment::load(&home).map_err(|e|e.code().to_owned())? {
+            if enrolled.owner==owner && enrolled.origin==origin && !original.exists(){return Ok(enrolled.owner_root)}
+        }
+        Ok(original)
     }
     pub fn for_current() -> Result<Self, String> {
         if PROCESS_CLOSING.load(std::sync::atomic::Ordering::Acquire)
@@ -358,6 +365,7 @@ impl Service {
             ),
             state,
             native: tokio::sync::Mutex::new(None),
+            remote: Mutex::new(None),
             native_retirement: Mutex::new(None),
             #[cfg(feature = "resource-adoption")]
             adopted_initialization: Mutex::new(None),
@@ -374,6 +382,7 @@ impl Service {
             matrix_checked: tokio::sync::Mutex::new(None),
         }));
         *current = Some(service.clone());
+        service.watch_daemon_assignment();
         let startup = service.clone();
         crate::sliding_sync::backend_runtime().spawn(async move {
             let _ = startup.execute(Command::LoginStatus).await;
@@ -563,9 +572,12 @@ impl Service {
         if !matches!(command, Command::Logout) {
             self.verify_matrix(false).await?;
         }
-        let native = self.native_owner().await?;
-        self.check()?;
-        let result = native.execute(command).await.map_err(|e| e.code);
+        let result = if let Some(remote) = self.remote_client().await? {
+            if matches!(command, Command::Logout) { remote.sign_out().await.map(|_| Value::Null) }
+            else { remote.execute(command).await }
+        } else {
+            self.native_owner().await?.execute(command).await
+        }.map_err(|e| e.code);
         if let Err(e) = self.check() {
             if self.suspend().await.is_err() {
                 return Err("native_owner_drain_required".into());
@@ -610,6 +622,7 @@ impl Service {
         let native = {
             let mut native = self.0.native.lock().await;
             self.check()?;
+            if self.daemon_assignment()?.is_some() { return Err("owner_daemon_management_required".into()); }
             #[cfg(feature = "resource-adoption")]
             self.drain_adoption_source(&mut native).await?;
             if native.is_none() {
@@ -683,9 +696,13 @@ impl Service {
         use ::hagency::native_owner::{ManagementCommand,ManagementPackage,ManagementPermission};
         if !matches!(&command,ManagementCommand::SharedApprovals{..}|ManagementCommand::SharedApprovalDecide{..}) {return Err("invalid_permission_command".into());}
         let manager=self.management(ManagementPackage{digest:blake3::hash(b"hagency-native-chat-permissions-v1").to_hex().to_string(),instance:1,account_epoch:1,permissions:vec![ManagementPermission::ReadAgentWork,ManagementPermission::DecideAgentRequests]}).await?;
-        self.shared_permissions_with(manager,command).await
+        // This polling handle belongs to this request, unlike the retained
+        // mini-app manager passed directly to shared_permissions_with.
+        let result=self.shared_permissions_with(manager.clone(),command).await;
+        manager.retire();
+        result
     }
-    pub(crate) async fn shared_permissions_with(&self,manager:Arc<::hagency::native_owner::NativeManagement>,command: ::hagency::native_owner::ManagementCommand)->Result<Value,String> {
+    pub(crate) async fn shared_permissions_with(&self,manager:Arc<::hagency::daemon::bridge::ManagementClient>,command: ::hagency::native_owner::ManagementCommand)->Result<Value,String> {
         use ::hagency::native_owner::ManagementCommand;
         self.check()?;
         if !matches!(&command,ManagementCommand::SharedApprovals{..}|ManagementCommand::SharedApprovalDecide{..}) {return Err("invalid_permission_command".into());}
@@ -718,13 +735,21 @@ impl Service {
         }
         Ok(result)
     }
-    pub async fn management(&self, mut package: ::hagency::native_owner::ManagementPackage) -> Result<Arc<::hagency::native_owner::NativeManagement>, String> {
+    pub async fn management(&self, package: ::hagency::native_owner::ManagementPackage) -> Result<Arc<::hagency::daemon::bridge::ManagementClient>, String> {
+        self.management_scoped(package,None).await
+    }
+    pub async fn management_until(&self,package: ::hagency::native_owner::ManagementPackage,until:std::time::Instant)->Result<Arc<::hagency::daemon::bridge::ManagementClient>,String>{self.management_scoped(package,Some(until)).await}
+    async fn management_scoped(&self,mut package: ::hagency::native_owner::ManagementPackage,until:Option<std::time::Instant>)->Result<Arc<::hagency::daemon::bridge::ManagementClient>,String>{
         self.check()?;
         self.verify_matrix(false).await?;
         package.account_epoch = self.0.epoch.checked_add(1).ok_or("matrix_account_changed")?;
-        let native = self.native_owner().await?;
-        self.check()?;
-        let management = native.management(package).await.map_err(|e| e.code)?;
+        let management = if let Some(remote) = self.remote_client().await? {
+            match until {Some(until)=>remote.management_until(package,until).await,None=>remote.management(package).await}.map_err(|e|e.code)?
+        } else {
+            let native=self.native_owner().await?.management(package).await.map_err(|e|e.code)?;
+            if let Some(until)=until {native.restrict_to_deadline(until).map_err(|e|e.code)?;}
+            ::hagency::daemon::bridge::ManagementClient::local(native)
+        };
         if let Err(error) = self.check() {
             management.retire();
             return Err(error);
@@ -760,6 +785,7 @@ impl Service {
         Ok(())
     }
     fn retire(&self) {
+        if let Some(remote) = self.0.remote.lock().unwrap_or_else(|p| p.into_inner()).as_ref() { remote.retire(); }
         self.0
             .retired
             .store(true, std::sync::atomic::Ordering::Release);

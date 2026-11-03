@@ -77,6 +77,8 @@ impl Lease {
     pub fn services(&self) -> &BTreeSet<String> {
         &self.services
     }
+    /// Fixed host-issued expiry. Reading it never renews package authority.
+    pub fn expires(&self) -> Instant { self.expires }
     pub fn revoke(&self) {
         self.alive.store(false, Ordering::Release);
     }

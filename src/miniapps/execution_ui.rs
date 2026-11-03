@@ -54,6 +54,7 @@ mod enabled {
         Progress(Value),
     }
     fn failure(code: &str) -> &'static str {
+        if let Some(message)=crate::host::hagency::errors::message(code){return message;}
         match code {
             "shared_successor_preparation_changed" => {
                 "This review expired or changed. Close it and review the same assignment again."
@@ -73,6 +74,7 @@ mod enabled {
         }
     }
     fn safe_code(code: &str) -> &'static str {
+        if let Some(code)=crate::host::hagency::errors::known_code(code){return code;}
         match code {
             "shared_successor_preparation_changed" => "shared_successor_preparation_changed",
             "shared_successor_capacity_unavailable" => "shared_successor_capacity_unavailable",

@@ -1,8 +1,8 @@
 //! Built-in Hagency services. The SDK owns identity; Splash gets no credentials,
 //! paths, provider URLs or generic engine/HTTP entry point.
 use ::hagency::native_owner::{
-    ManagementCommand, ManagementPackage, ManagementPermission, ManagementRuntime, NativeManagement,
-};
+    ManagementCommand, ManagementPackage, ManagementPermission, ManagementRuntime, };
+use ::hagency::daemon::bridge::{ManagementClient as NativeManagement};
 use crate::miniapps::{InstanceId, Lease};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -33,6 +33,7 @@ mod templates;
 mod graphs;
 mod graph_history;
 pub(crate) mod reauthentication;
+pub(crate) mod errors;
 mod local;
 mod personal;
 pub(crate) mod personal_configuration;
@@ -122,7 +123,7 @@ struct Inner {
     reauthentication_required: AtomicBool,
     initialising: tokio::sync::Mutex<()>,
     manager: Mutex<Option<Arc<NativeManagement>>>,
-    grant_access: Mutex<Option<::hagency::native_owner::OwnerGrantAccess>>,
+    grant_access: Mutex<Option<::hagency::daemon::bridge::OwnerGrantAccess>>,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -415,21 +416,21 @@ impl Host {
         }
         let service = crate::hagency::backend::Service::for_current()?;
         let manager = service
-            .management(ManagementPackage {
+            .management_until(ManagementPackage {
                 digest: self.0.digest.clone(),
                 instance: self.0.identity.generation,
                 account_epoch: self.0.epoch + 1,
                 permissions: permissions(lease),
-            })
+            }, lease.expires())
             .await.map_err(|error| {self.note_reauthentication_error(&error);error})?;
         self.0.reauthentication_required.store(false,Ordering::Release);
         #[cfg(feature = "resource-adoption")]
         let grant_access = if lease.authorize(&self.0.identity.account, grants::REVIEW_GRANT, None).is_ok() {
             // Read the actual adopted inventory before enabling native consent.
-            match service.adopted_grant_access(ManagementPackage {
+            match service.adopted_grant_access_until(ManagementPackage {
                 digest: self.0.digest.clone(), instance: self.0.identity.generation,
                 account_epoch: self.0.epoch + 1, permissions: Vec::new(),
-            }).await {
+            }, lease.expires()).await {
                 Ok(access) => {
                     if let Err(error) = manager.resources(Default::default()).await {
                         access.retire(); manager.retire(); return Err(error.code);
@@ -814,7 +815,7 @@ impl Host {
         };
         self.check(&lease)?;
         lease.authorize(&account, service, None)?;
-        rinx_miniapp_core::bounded_reply(budget::display_reply(service, control::display_reply(service, allocations::display_reply(service, agents::display_reply(service, local_zone::display(service, result?))?)?)?)?)
+        rinx_miniapp_core::bounded_reply(budget::display_reply(service, control::display_reply(service, allocations::display_reply(service, agents::display_reply(service, local_zone::display(service, pools::display(result?)))?)?)?)?)
     }
 }
 fn value(input: impl serde::Serialize) -> Result<Value, String> {

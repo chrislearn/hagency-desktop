@@ -2,8 +2,9 @@
 //! a native document picker; script requests contain public metadata alone.
 use super::{Host, Lease, ManagementPermission, NativeManagement, Value, parse, value};
 use ::hagency::native_owner::{
-    WebConnectionEdit, WebConnectionProbeInput, WebConnectionReview, NativeConnectionRegistration,
+    WebConnectionEdit, WebConnectionProbeInput, NativeConnectionRegistration,
 };
+use ::hagency::daemon::bridge::{WebConnectionReview};
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 

@@ -25,6 +25,74 @@ let collect=fn(value){if !value.is_object(){return} for i key child in value {bu
 '''
 
 CASES = {
+    "recovery_explains_rooms_that_need_a_fresh_invitation": '''
+assert(A.pool_reinvite_notice({})=="")
+assert(A.pool_reinvite_notice({roomsRequiringReinvite:0})=="")
+let note=A.pool_reinvite_notice({roomsRequiringReinvite:2})
+assert(note.search("2")>=0 && note.search(A.t("fresh invitation","重新邀请"))>=0)
+''',
+    "legacy_publication_renewal_remains_separate_from_agent_renewal": '''
+H.resource_detail={id:"legacy-pool"} H.pool_detail=nil
+A.pool_view=fn(detail){return {renewOpen:true publishedTokens:1000}}
+A.pool_succeed=fn(kind,tokens,people){H.calls.push({kind:kind tokens:tokens})}
+A.pool_renew()
+assert(H.calls.len()==1 && H.calls[0].kind=="renewal" && H.calls[0].tokens==1000)
+''',
+    "reauthorization_requires_owner_and_explicit_new_terms": '''
+H.pool_detail={id:"old-request" revision:3 resourceOwnerMxid:"@owner:test" canReallocate:true currentGrantRevision:8}
+H.pool_confirm="reallocate" H.entry_role="owner" H.session.account="@owner:test"
+H.pool_reallocate_mode="" A.pool_reallocate() assert(H.calls.len()==0)
+H.pool_reallocate_mode="automatic" A.pool_reallocate()
+assert(H.calls.len()==1 && H.calls[0].service=="hagency.pools.agents.reallocate")
+assert(H.calls[0].args.requestId=="old-request" && H.calls[0].args.expectedRevision==3 && H.calls[0].args.expectedGrantRevision==8 && H.calls[0].args.renewalMode=="automatic")
+H.entry_role="manager" A.pool_reallocate() assert(H.calls.len()==1)
+assert(A.pool_renewal({})==A.t("Renewal not selected","续期方式尚未选择"))
+''',
+
+    "recurring_request_requires_explicit_mode_and_keeps_owner_calendar": '''
+pool.calendar={cadence:"weekly" timeZone:"America/Los_Angeles"}
+pool.periodResetLabel="2026-11-09 00:00 PST · America/Los_Angeles"
+H.pool_draft.tokens="1000" render()
+assert(!button("pool_review").enabled && button("pool_renew_automatic")!=nil && button("pool_renew_owner")!=nil)
+button("pool_renew_automatic").on_click() render()
+assert(H.pool_draft.renewalMode=="automatic" && button("pool_review").enabled)
+H.pool_draft.roomCommand="existing" H.pool_draft.roomId="!existing:test"
+A.pool_review() A.pool_send_verified()
+assert(H.calls[0].service=="hagency.pools.agents.request" && H.calls[0].args.request.renewalMode=="automatic")
+assert(A.recipient_optional(H.calls[0].args.request,"calendar")==nil)
+''',
+    "recurring_pause_and_owner_renew_are_period_bound": '''
+let r={id:"req" revision:9 state:"approved_waiting_executor" resourceOwnerMxid:"@owner:test" reservationState:"reserved" runtimeState:"qualified" blockingReason:nil currentPeriod:{key:"2026-11-02" state:"exhausted"} canRenew:false}
+assert(A.local_pool_state(r)==A.t("Paused · allowance used up","已暂停 · 本期额度已用完"))
+assert(A.pool_tone(r)=="waiting")
+H.pool_detail=r H.pool_confirm="renew" H.entry_role="owner" H.session.account="@owner:test"
+A.pool_agent_renew() assert(H.calls.len()==0)
+r.canRenew=true r.currentPeriod.state="awaiting_owner"
+A.pool_agent_renew() assert(H.calls.len()==1 && H.calls[0].service=="hagency.pools.agents.renew")
+assert(H.calls[0].args.expectedRevision==9 && H.calls[0].args.expectedPeriodKey=="2026-11-02")
+H.entry_role="manager" A.pool_agent_renew() assert(H.calls.len()==1)
+''',
+    "recurring_wait_reasons_and_definite_refill_rejection_are_clear": '''
+for state in ["awaiting_owner","awaiting_executor","awaiting_capacity","exhausted","revoked"] {
+    let label=A.pool_period_state({currentPeriod:{state:state}})
+    assert(label!="")
+}
+assert(A.topup_not_applied("hagency.agents.topups.request","agent_period_allowance_fixed"))
+assert(A.pool_reason("agent_period_allowance_fixed").search(A.t("next period","下一周期"))>=0)
+assert(A.pool_reason("pool_resource_owner_required").search(A.t("resource owner","owner"))>=0)
+''',
+
+    "period_pause_wins_over_stale_runtime_readiness": '''
+let r={state:"approved_waiting_executor" reservationState:"reserved" runtimeState:"qualified" membershipState:"matrix_verified" assignmentId:"same-agent" blockingReason:"agent_period_ended"}
+assert(A.local_pool_state(r)==A.t("Paused · authorization ended","已暂停 · 本期授权结束"))
+assert(A.pool_state(r)==A.t("Paused · waiting for renewed authorization","已暂停 · 等待续期授权"))
+assert(A.pool_tone(r)=="waiting")
+assert(A.pool_reason(r.blockingReason).search(A.t("rooms and history","房间和历史记录"))>=0)
+r.runtimeState="stopped"
+assert(A.local_pool_state(r)==A.t("Paused · authorization ended","已暂停 · 本期授权结束"))
+r.state="revoked" r.blockingReason=nil
+assert(A.local_pool_state(r)==A.t("Stopped","已停止"))
+''',
     "selected_pool_replaces_old_unsubmitted_pool": '''
 let terra=pool.to_json().parse_json()
 terra.id="terra" terra.label="Terra" terra.publishedTokens=5000000 terra.capabilities=["review"]

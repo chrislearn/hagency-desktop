@@ -2,9 +2,10 @@
 //! private creation custody and recovery; Splash cannot supply a Matrix payload.
 use super::{parse, value};
 use ::hagency::native_owner::{
-    AssignAdministrator, BeginSetup, ManagementPermission, NativeManagement, ProjectSetupTransport,
+    AssignAdministrator, BeginSetup, ManagementPermission,
     RebaseSetup, SetupCandidates,
 };
+use ::hagency::daemon::bridge::{ManagementClient as NativeManagement, ProjectSetupTransport};
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;

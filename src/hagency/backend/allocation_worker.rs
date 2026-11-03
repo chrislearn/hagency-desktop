@@ -4,8 +4,21 @@ use super::*;
 use ::hagency::native_owner::{AdoptedManagementSelection, AllocationProgress, ManagementPackage};
 use std::{
     sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+#[derive(Default)]
+struct RenewalWarnings(Option<(String, Instant)>);
+
+impl RenewalWarnings {
+    fn should_log(&mut self, code: &str, now: Instant) -> bool {
+        if self.0.as_ref().is_some_and(|(previous, at)| previous == code && now.duration_since(*at) < Duration::from_secs(600)) {
+            return false;
+        }
+        self.0 = Some((code.into(), now));
+        true
+    }
+}
 
 #[derive(Default)]
 struct Control {
@@ -81,6 +94,8 @@ async fn run(
     let mut allocation_cursor = None;
     let mut settlement_cursor = None;
     let mut executor = None;
+    let mut last_renewal: Option<std::time::Instant> = None;
+    let mut renewal_warnings = RenewalWarnings::default();
     loop {
         if control.retired.load(Ordering::Acquire) || !gate() {
             break;
@@ -106,6 +121,28 @@ async fn run(
                 .await
                 .ok();
         }
+        // Only the native owner worker can extend standing V4 consent. A new
+        // calendar period never comes from the script clock or a UI timer.
+        if last_renewal.is_none_or(|last| last.elapsed() >= Duration::from_secs(30)) {
+            last_renewal = Some(std::time::Instant::now());
+            let package = ManagementPackage {
+                digest: blake3::hash(b"hagency-desktop-native-recurring-grant-worker-v1").to_hex().to_string(),
+                instance: 1, account_epoch: epoch, permissions: vec![],
+            };
+            if let Ok(access) = selection.grant_access(&owner, package).await {
+                let grant_gate = gate.clone();
+                if let Ok(access) = access.restrict_to_host(move || grant_gate()) {
+                    match access.renew_recurring().await {
+                        Err(error) if renewal_warnings.should_log(&error.code, Instant::now()) => {
+                            makepad_widgets::warning!("Recurring capacity renewal pending: {}", error.code);
+                        }
+                        Ok(_) => renewal_warnings = RenewalWarnings::default(),
+                        Err(_) => {},
+                    }
+                    access.retire();
+                }
+            }
+        }
         // No operation future is cancelled by a UI timeout or the wake signal.
         // The transport owns bounded network leases and durable receipt recovery.
         if let Some(executor) = executor.as_ref() {
@@ -125,6 +162,22 @@ async fn run(
             _ = control.wake.notified() => {},
             _ = tokio::time::sleep(Duration::from_secs(5)) => {},
         }
+    }
+}
+
+#[cfg(test)]
+mod renewal_warning_tests {
+    use super::*;
+    #[test]
+    fn recurring_failure_logs_on_change_and_at_bounded_intervals() {
+        let mut warnings = RenewalWarnings::default();
+        let now = Instant::now();
+        assert!(warnings.should_log("offline", now));
+        assert!(!warnings.should_log("offline", now + Duration::from_secs(30)));
+        assert!(warnings.should_log("offline", now + Duration::from_secs(600)));
+        assert!(warnings.should_log("scope_changed", now + Duration::from_secs(601)));
+        warnings = RenewalWarnings::default();
+        assert!(warnings.should_log("scope_changed", now + Duration::from_secs(602)));
     }
 }
 

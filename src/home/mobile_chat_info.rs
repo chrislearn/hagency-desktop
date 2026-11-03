@@ -155,6 +155,11 @@ script_mod! {
                     popup_menu_position: PopupMenuPosition.BelowInput
                     draw_text.text_style: theme.font_regular{font_size: (12 * mod.widgets.RINX_TEXT_SCALE)}
                     popup_menu: RobrixSettingsPopupMenu {width: 310 menu_item: RobrixSettingsPopupMenuItem {height: 36}}}
+                ModalBody {margin: Inset{top: 12}
+                    text: #(crate::i18n::tr("Only available Agents are listed. If a pool Agent is missing, check its resource authorization in Agent → My Agents."))
+                    i18n_text: "Only available Agents are listed. If a pool Agent is missing, check its resource authorization in Agent → My Agents."
+                    draw_text.color: mod.widgets.RINX_MUTED
+                }
                 buttons_view := ModalButtonsRow {
                     close_agent_picker := RobrixNeutralIconButton {
                         width: Fit{min: FitBound.Abs(120.0)} height: 44 align: Align{x: 0.5 y: 0.5} padding: 12
@@ -288,7 +293,7 @@ pub(super) fn agent_binding_error(code: &str) -> &'static str {
         "agent_service_banned" => "The Hagency service is banned from this room. Ask a room administrator to unban it, then retry.",
         "matrix_permission_denied" => "You do not have permission to invite members to this room. Ask a room administrator to enable invitations.",
         "agent_creation_denied" => "This space or room does not allow you to add Agents. Ask its owner to update the Agent permissions.",
-        "agent_owner_binding_required" => "This Agent is not available in your account. Its owner must add it to this room using Add agent.",
+        "agent_owner_binding_required" => "This Agent is not available to add. Check that it belongs to you and its resource authorization is still valid in Agent → My Agents.",
         "agent_retired" => "This Agent has been retired and cannot join another room.",
         "agent_command_recovery_required" => "An original binding request needs confirmation. Resume it in Agents.",
         "sign_in_required" | "matrix_account_changed" => "Your account session changed. Reopen this room after signing in.",
@@ -1253,7 +1258,11 @@ mod information_target_tests {
             "opening the overlay must not move or shrink the members list");
         let dialog = info.view.view(&mut cx, ids!(agent_picker_modal.content)).area().rect(&cx);
         assert!(dialog.size.x > 200.0 && dialog.size.x <= 400.0);
-        assert!(dialog.pos.y > controls.pos.y, "dialog is centered in the window");
+        // A taller dialog can start above the member buttons and still be
+        // centered. Check its center and bounds instead of a background row.
+        assert!((dialog.pos.y + dialog.size.y * 0.5 - 775.0 * 0.5).abs() <= 1.0,
+            "dialog is centered in the window: {dialog:?}");
+        assert!(dialog.pos.y >= 0.0 && dialog.pos.y + dialog.size.y <= 775.0);
         let invite=info.view.button(&mut cx,ids!(invite_people)).area().rect(&cx);
         let agent=info.view.button(&mut cx,ids!(invite_my_agent)).area().rect(&cx);
         assert!((invite.pos.y-agent.pos.y).abs()<1.0,"member actions share a compact row");

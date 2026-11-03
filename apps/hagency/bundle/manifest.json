@@ -154,6 +154,8 @@
     "hagency.pools.agents.request",
     "hagency.pools.agents.decide",
     "hagency.pools.agents.stop",
+    "hagency.pools.agents.renew",
+    "hagency.pools.agents.reallocate",
     "hagency.pools.agents.room",
     "hagency.shared_approvals.list",
     "hagency.shared_approvals.decide",
@@ -166,7 +168,7 @@
   ],
   "id": "im.palpo.operations",
   "integrity": {
-    "bundle_blake3": "8e298c21e45d8f3013e53d8602c02ec5f9b5524962b1fc103779fd6d4e4e8ba2"
+    "bundle_blake3": "9c9c741cb38ed1ed7f8f2969a399732a97afe16b1363dcf03bfcf21628b1357d"
   },
   "name": "Hagency",
   "requires": [

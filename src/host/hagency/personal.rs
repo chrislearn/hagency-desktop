@@ -1,8 +1,9 @@
 //! Closed original personal-agent policy services. No provider/path arguments.
 use super::{parse, Id, ManagementPermission, Value};
 use ::hagency::native_owner::{
-    NativeManagement, ObservePersonalSettings, PersonalAgentQuery, SavePersonalPolicy,
+    ObservePersonalSettings, PersonalAgentQuery, SavePersonalPolicy,
 };
+use ::hagency::daemon::bridge::{ManagementClient as NativeManagement};
 use std::sync::Arc;
 pub(super) const LIST: &str = "hagency.personal_agents.list";
 pub(super) const GET: &str = "hagency.personal_agents.get";

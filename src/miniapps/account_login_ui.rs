@@ -1,7 +1,8 @@
 //! Native provider authorization. No URL, credential or path reaches Splash.
 use super::*;
 use crate::host::hagency::accounts::AccountLoginFlow;
-use ::hagency::native_owner::{AccountLoginAuthorization, AccountLoginStatus};
+use ::hagency::native_owner::AccountLoginStatus;
+use ::hagency::daemon::bridge::AccountLoginAuthorization;
 enum Reply {
     Status(Result<AccountLoginStatus, String>),
     Authorization(Result<AccountLoginAuthorization, String>),

@@ -67,7 +67,16 @@ pub(crate) fn amendment_details(language: Language, review: &CeilingAmendmentRev
         )
         .to_owned(),
     };
-    format!("{lead}\n{unchanged}")
+    let text=format!("{lead}\n{unchanged}");
+    if review.calendar.is_some() {calendar_words(&text)} else {text}
+}
+
+/// Calendar-backed resources keep the same maximum controls, but the
+/// accounting period is the approved owner calendar rather than a UTC month.
+pub(crate) fn calendar_words(text: &str) -> String {
+    let mut text=text.to_owned();
+    for (from,to) in [("Monthly Maximum","Period Maximum"),("Monthly maximum","Period maximum"),("monthly maximum","period maximum"),("this month","this period"),("Per-request limit","Tokens per Agent per period"),("per-request limit","per-Agent period allowance"),("每月上限","每期上限"),("本月","本期"),("每次申请上限","每个 Agent 每期额度")] {text=text.replace(from,to);}
+    text
 }
 
 /// What the monthly-maximum sheet shows beside the change, read natively
@@ -76,6 +85,7 @@ pub(crate) fn amendment_details(language: Language, review: &CeilingAmendmentRev
 pub(crate) struct CeilingFacts {
     /// The owner's name for the pool, when one is set.
     pub name: Option<String>,
+    pub calendar: Option<hagency_core::recurring_quota::Calendar>,
     /// The monthly maximum in force now.
     pub current: Option<u64>,
     /// What this request would set it to.
@@ -229,12 +239,13 @@ impl ResourceEditConsent {
     }
     /// The pool's maximum, committed total and per-request limit, read from
     /// its own record. A failed read only leaves the sheet without them.
-    async fn ceiling_facts(&self, manager: &::hagency::native_owner::NativeManagement) -> Option<CeilingFacts> {
+    async fn ceiling_facts(&self, manager: &::hagency::daemon::bridge::ManagementClient) -> Option<CeilingFacts> {
         let detail = manager
             .resource_detail(::hagency::native_owner::ResourceDetailQuery { id: self.input.resource_id.clone() })
             .await
             .ok()?;
         Some(CeilingFacts {
+            calendar: detail.calendar.clone(),
             name: detail
                 .resource
                 .local_name
@@ -384,6 +395,7 @@ mod tests {
             previous_tokens: 3_000_000,
             tokens: 5_000_000,
             per_request_tokens: Some(1_000_000),
+            calendar: None,
         };
         assert_eq!(
             amendment_details(Language::English, &review),

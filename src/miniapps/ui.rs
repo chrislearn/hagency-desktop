@@ -48,6 +48,8 @@ mod personal_folder_picker;
 mod account_login_ui;
 #[path = "startup.rs"]
 mod startup;
+#[path = "owner_approvals.rs"]
+mod owner_approvals;
 pub use super::sandbox::SYSTEM_APP_TIME_BUDGET;
 pub use startup::hagency_root_installed;
 #[path = "locale.rs"]
@@ -73,6 +75,8 @@ pub enum MiniAppsAction {
     Open,
     /// The Agent sidebar entry: open or focus Hagency without notification routing.
     OpenAgent,
+    /// Read-only owner review landing; never a personal marker-inbox route.
+    ReviewOwnerApprovals { owner: String, handover_id: Option<u64> },
     /// The assistant opened the reviewed app: show its review; Run grants it.
     OpenReviewed,
     /// Untrusted notification routing hint; backend authorization remains mandatory.
@@ -212,6 +216,30 @@ script_mod! {
                     // The value box sits beside the slider; with large text it moves under it so the slider keeps its length.
                     tokens := RinxNumberInput {width: Fill flow: (if mod.widgets.RINX_TEXT_SCALE > 1.2 {Flow.Right{wrap: true}} else {Flow.Right}) millions: true slider_mode: true maximum: 0 minimum: 1 empty_text: "1" input +: {width: 80}}
                     quota_hint := RinxHint {width: Fill flow: Flow.Right{wrap: true} padding: Inset{left: 4 right: 4}}
+                }
+            }
+            request_quota := View {visible: false width: Fill{max: 640} height: Fit flow: Down spacing: 6
+                label := SheetCaption {}
+                SheetGroup {padding: Inset{left: 12 right: 12 top: 6 bottom: 12} spacing: 4
+                    limit := RinxNumberInput {width: Fill millions: true slider_mode: true maximum: 0 minimum: 1 empty_text: "" input +: {width: 80}}
+                    hint := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
+                }
+            }
+            calendar := View {visible: false width: Fill{max: 640} height: Fit flow: Down spacing: 6
+                title := SheetCaption {}
+                SheetGroup {padding: 12 spacing: 10
+                    cadence := View {width: Fill height: Fit flow: Right spacing: 6
+                        daily := RinxKeyButton {width: Fill height: 44 margin: 0 text: "Daily"}
+                        weekly := RinxKeyButton {width: Fill height: 44 margin: 0 text: "Weekly"}
+                        monthly := RinxKeyButton {width: Fill height: 44 margin: 0 text: "Monthly"}
+                    }
+                    zone_label := RinxLabel {width: Fill}
+                    zone := RinxInput {width: Fill height: 44 empty_text: "America/Los_Angeles"}
+                    zones := DropDown {width: Fill height: 44 margin: 0 labels: ["Choose a time zone"]
+                        draw_text +: {color: RINX_INK color_hover: RINX_INK color_focus: RINX_INK color_down: RINX_INK}
+                        popup_menu: PopupMenu {width: 300 menu_item: PopupMenuItem {height: 36}}
+                    }
+                    note := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
                 }
             }
             people := View {visible: false width: Fill{max: 640} height: Fit flow: Down spacing: 6
@@ -598,6 +626,8 @@ pub struct MiniAppsPanel {
     #[rust]
     palpo_action: Option<String>,
     #[rust]
+    owner_approvals: Option<owner_approvals::Pending>,
+    #[rust]
     board: Option<super::palpo::ActionsRoomTarget>,
     #[rust]
     octos_unavailable: Option<String>,
@@ -828,6 +858,7 @@ impl MiniAppsPanel {
         self.view.widget(cx, ids!(notice)).set_visible(cx, (self.board.is_none() && self.hagency.is_none()) || !message.is_empty());
     }
     fn stop(&mut self, cx: &mut Cx) {
+        self.finish_pending_owner_approvals(cx, false);
         self.account_login=None;
         self.view.view(cx,ids!(account_login_panel)).set_visible(cx,false);
         self.view.view(cx, ids!(hagency_review)).set_visible(cx, false);
@@ -1236,7 +1267,9 @@ impl MiniAppsPanel {
         Ok(())
     }
     fn run(&mut self, cx: &mut Cx) -> Result<(), String> {
+        let owner_approvals = self.owner_approvals.take();
         self.stop(cx);
+        self.owner_approvals = owner_approvals;
         let package = self.package.as_ref().ok_or("Review a bundle first")?;
         package.unchanged()?;
         let account = crate::sliding_sync::current_user_id()
@@ -1569,6 +1602,9 @@ impl MiniAppsPanel {
             return Err("management_navigation_unavailable".into());
         }
         let args = args.as_object().ok_or("invalid_management_navigation")?;
+        if matches!(args.get("destination").and_then(Value::as_str), Some("owner_approvals_ready" | "owner_approvals_rejected")) {
+            return self.finish_owner_approvals(cx, args, account.as_str());
+        }
         let action = match (args.get("destination").and_then(Value::as_str), args.len()) {
             (Some("matrix_workspaces"), 1) => crate::hagency::ui::HagencyAction::OpenProjects,
             (Some("local_agents"), 1) => crate::hagency::ui::HagencyAction::OpenAgents,
@@ -1585,6 +1621,7 @@ impl MiniAppsPanel {
         Ok(())
     }
     fn pump(&mut self, cx: &mut Cx) {
+        self.pump_owner_approvals(cx);
         let Some(lease) = self.lease.clone() else {
             return;
         };
@@ -1864,6 +1901,7 @@ impl Widget for MiniAppsPanel {
                 else if self.view.button(cx,ids!(grant_confirmation.buttons.primary)).clicked(actions) {self.grant_primary(cx);}
                 else if self.view.button(cx,ids!(grant_confirmation.scroll.actions.recover)).clicked(actions) {self.grant_recover(cx);}
                 else if self.view.button(cx,ids!(grant_confirmation.scroll.actions.cancel_intent)).clicked(actions) {self.grant_cancel_intent(cx);}
+                else if self.grant_calendar_actions(cx, actions) {}
                 else if let Some(days) = self.grant_preset_clicked(cx,actions) {self.grant_expiry_preset(cx,days);}
                 else if self.view.button(cx,ids!(grant_confirmation.scroll.sharing.sharing_row.sharing_toggle)).clicked(actions) {self.grant_sharing_toggle(cx);}
                 else if self.view.button(cx,ids!(grant_confirmation.scroll.people.list.open_add.open_add_button)).clicked(actions) {self.grant_add_people(cx);}
@@ -2023,6 +2061,11 @@ impl Widget for MiniAppsPanel {
         self.pump(cx);
     }
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
+        // The direct Agent surface already supplies its navigation. The generic
+        // mini-app Back row is only needed when entering through the catalog.
+        if self.direct_agent {
+            self.view.view(cx, ids!(header)).set_visible(cx, false);
+        }
         self.view.label(cx, ids!(header.title)).set_text(cx,
             crate::i18n::tr(if self.direct_agent {"Agent"} else {"Mini apps"}));
         while let Some(item) = self.view.draw_walk(cx, scope, walk).step() {
@@ -2127,6 +2170,10 @@ impl MiniAppsPanelRef {
                             if let Err(error) = inner.open_builtin(cx, index) { inner.notice(cx, &error); }
                         }
                     }
+                    modal.open(cx);
+                }
+                MiniAppsAction::ReviewOwnerApprovals { owner, handover_id } => {
+                    inner.open_owner_approvals(cx, owner, *handover_id);
                     modal.open(cx);
                 }
                 MiniAppsAction::OpenPalpo(id) => {

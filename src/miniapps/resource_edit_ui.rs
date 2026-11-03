@@ -7,6 +7,7 @@ use super::*;
 use super::sheet_ui::{Fact, Figure, SheetGlyph, SheetTone, SheetView};
 use crate::host::hagency::resource_edit::{CeilingFacts, EditRefusal, ResourceEditConsent};
 use ::hagency::native_owner::CeilingAmendmentReview;
+use crate::miniapps::design::DEFAULT_SLIDER_MAX;
 
 /// Native panel words for a monthly-maximum amendment: title, purpose,
 /// consequence and confirmation. The sheet itself is `ceiling_view`.
@@ -19,6 +20,7 @@ pub(super) const AMENDMENT_WORDS: (&str, &str, &str, &str) = (
 
 /// The English catalog key shown when the review could not be loaded.
 fn failure_text(code: Option<&str>, amendment: bool) -> &'static str {
+    if let Some(message)=code.and_then(crate::host::hagency::errors::message){return message;}
     match code {
         None if amendment => "Reading this pool…",
         None => "Reading current resource configuration…",
@@ -102,10 +104,10 @@ impl CeilingState<'_> {
             None => 1,
         }
     }
-    /// The highest the slider reaches: the account limit when it is known.
+    /// Stable 1B scale, bounded by an explicitly known account limit.
     fn top(&self) -> u64 {
         let known = self.facts.and_then(|facts| facts.account_limit).filter(|limit| *limit > 0);
-        known.unwrap_or_else(|| self.previous().unwrap_or(0).max(self.value().unwrap_or(0)).saturating_mul(2).max(10_000_000))
+        known.unwrap_or(DEFAULT_SLIDER_MAX).min(DEFAULT_SLIDER_MAX)
     }
     /// The slider is shown: a review to confirm, or choosing again after a refusal.
     fn choosing(&self) -> bool {
@@ -276,11 +278,11 @@ pub(super) fn ceiling_view(s: &CeilingState) -> SheetView {
                     },
                     &[("amount", amount(value))],
                 );
-                let (floor, top) = (s.floor(), s.top());
+                let floor = s.floor();
                 let limit = facts.account_limit.filter(|limit| *limit > 0);
                 let range = match limit {
                     Some(limit) => fmt("Choose {min} – {max}.", &[("min", amount(Some(floor))), ("max", amount(Some(limit)))]),
-                    None => fmt("At least {min}.", &[("min", amount(Some(floor)))]),
+                    None => fmt("Slider range: {min} – 1 B. You can also type an amount.", &[("min", amount(Some(floor)))]),
                 };
                 // Opened from the pool's page with its value: say so, so this slider reads as a check.
                 v.quota_hint = match (s.proposed, s.chosen) {
@@ -301,9 +303,9 @@ pub(super) fn ceiling_view(s: &CeilingState) -> SheetView {
                         tr("While use is still being reported, it can only go up.").into()
                     }
                     Some(n) if Some(n) == previous => tr("That’s the current monthly maximum. Choose another amount.").into(),
-                    Some(n) if limit.is_some_and(|limit| n > limit) || n > top => fmt(
+                    Some(n) if limit.is_some_and(|limit| n > limit) => fmt(
                         "It can’t be more than the account limit of {max}.",
-                        &[("max", amount(Some(top)))],
+                        &[("max", amount(limit))],
                     ),
                     Some(_) => String::new(),
                 };
@@ -336,6 +338,13 @@ pub(super) fn ceiling_view(s: &CeilingState) -> SheetView {
                 v.status = tr("Reading this pool…").into();
             }
         },
+    }
+    if let Some(calendar)=s.review.and_then(|review| review.calendar.as_ref()).or(facts.calendar.as_ref()) {
+        use crate::host::hagency::resource_edit::calendar_words;
+        for text in [&mut v.title,&mut v.caption,&mut v.quota_label,&mut v.primary,&mut v.lead,&mut v.problem,&mut v.status,&mut v.quota_hint] {*text=calendar_words(text);}
+        for fact in &mut v.facts {fact.label=calendar_words(&fact.label);fact.note=calendar_words(&fact.note);}
+        if let Some(figure)=&mut v.after {figure.tag=calendar_words(&figure.tag);}
+        v.facts.push(super::grant_ui::calendar_fact(calendar,None,crate::host::hagency::grants::now_ms()));
     }
     v
 }
@@ -408,8 +417,10 @@ impl CeilingPreview {
             previous_tokens: tokens("current").ok_or("preview field current missing")?,
             tokens: tokens("proposed").ok_or("preview field proposed missing")?,
             per_request_tokens: tokens("perRequest"),
+            calendar: serde_json::from_value(fixture["calendar"].clone()).ok(),
         };
         let facts = CeilingFacts {
+            calendar: review.calendar.clone(),
             name: review.name.clone(),
             current: Some(review.previous_tokens),
             proposed: Some(review.tokens),
@@ -837,6 +848,19 @@ mod tests {
             base[key] = value.clone();
         }
         base
+    }
+
+    #[test]
+    fn owner_ceiling_slider_stays_at_one_billion_while_the_amount_changes() {
+        for proposed in [20_000_000u64, 500_000_000, 1_000_000_000, 2_000_000_000] {
+            let preview = CeilingPreview::from_fixture(&fixture(json!({
+                "current":20_000_000u64, "proposed":proposed, "committed":5_000_000u64, "accountLimit":null
+            }))).unwrap();
+            assert_eq!(ceiling_inputs(&preview.state()), Some((5_000_000, 1_000_000_000, proposed)));
+            let view = ceiling_view(&preview.state());
+            assert!(view.quota_hint.contains("1 B"));
+            if proposed != 20_000_000 { assert!(view.problem.is_empty(), "{}", view.problem); }
+        }
     }
 
     #[test]

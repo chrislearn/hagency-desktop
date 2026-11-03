@@ -299,6 +299,10 @@ impl NavigationBarButton {
         &self.tooltip_text
     }
 
+    pub fn is_selected(&self, cx: &Cx) -> bool {
+        self.animator_in_state(cx, ids!(active.on))
+    }
+
     /// Sets whether this button is visually marked as selected.
     ///
     /// The "selected" state is drawn with a darker background

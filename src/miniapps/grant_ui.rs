@@ -1,15 +1,16 @@
 //! Trusted native owner grant screen. The package cannot render or acknowledge
 //! this confirmation; its reply contains only public progress and original IDs.
 use super::*;
+use hagency_core::recurring_quota::{Calendar, Cadence};
 use super::sheet_ui::{Fact, Figure, Person, SheetGlyph, SheetTone, SheetView};
 use crate::host::hagency::grants::{
     GrantChoices, GrantFlow, GrantResult, Succession, month_ended, now_ms,
 };
 use ::hagency::native_owner::{
-    OwnerGrantProgress, OwnerGrantReview, OwnerGrantState, OwnerGrantPublicationReview,
-    OwnerGrantPublicationProgress, OwnerGrantPublicationState, OwnerGrantCancellationReview,
-    OwnerGrantSummary, OwnerGrantForm, OwnerGrantSuccessionForm, OwnerGrantSuccessionKind,
+    OwnerGrantProgress, OwnerGrantState, OwnerGrantPublicationProgress, OwnerGrantPublicationState, OwnerGrantSummary, OwnerGrantForm, OwnerGrantSuccessionForm, OwnerGrantSuccessionKind,
 };
+
+use ::hagency::daemon::bridge::{OwnerGrantReview, OwnerGrantPublicationReview, OwnerGrantCancellationReview};
 
 pub(super) struct GrantPrompt {
     flow: GrantFlow,
@@ -80,6 +81,26 @@ fn amount(value: Option<u64>) -> String {
         .unwrap_or_else(|| crate::i18n::tr("Unavailable").into())
 }
 /// A month as owners read it: "10 月" in Chinese, "October" in English.
+const CALENDAR_ZONES: &[&str] = &["America/Los_Angeles", "America/New_York", "Europe/London", "Europe/Berlin", "Asia/Shanghai", "Asia/Tokyo", "Asia/Singapore", "Asia/Kolkata", "Australia/Sydney", "UTC"];
+fn default_calendar() -> Calendar {
+    let time_zone = iana_time_zone::get_timezone().ok().filter(|zone| zone.parse::<chrono_tz::Tz>().is_ok()).unwrap_or_else(|| "UTC".into());
+    Calendar {cadence: Cadence::Monthly, time_zone}
+}
+fn calendar_note(calendar: &Calendar, now: u64) -> String {
+    let tr = crate::i18n::tr;
+    let Ok(period) = calendar.period_at(now) else {return tr("Enter a valid IANA time zone, such as America/Los_Angeles.").into()};
+    let Ok(zone) = calendar.time_zone.parse::<chrono_tz::Tz>() else {return String::new()};
+    let at = utc_at(period.end_ms).with_timezone(&zone);
+    format!("{} {} · {}. {}", tr("First reset:"), at.format("%Y-%m-%d %H:%M %Z"), calendar.time_zone, tr("Weeks start Monday. Unused tokens do not carry over; exhausted Agents wait for the next period."))
+}
+pub(super) fn calendar_fact(calendar: &Calendar, end_ms: Option<u64>, now: u64) -> Fact {
+    let tr=crate::i18n::tr;
+    let mut note=calendar.time_zone.clone();
+    if let (Some(end),Ok(zone))=(end_ms.or_else(|| calendar.period_at(now).ok().map(|p|p.end_ms)),calendar.time_zone.parse::<chrono_tz::Tz>()) {
+        note=format!("{} · {} {}",note,tr("Period ends:"),utc_at(end).with_timezone(&zone).format("%Y-%m-%d %H:%M %Z"));
+    }
+    Fact::new(tr("Authorization calendar"),tr(match calendar.cadence {Cadence::Daily=>"Daily",Cadence::Weekly=>"Weekly",Cadence::Monthly=>"Monthly"})).note(note)
+}
 fn month_name(month: u32) -> String {
     const NAMES: [&str; 12] = [
         "January", "February", "March", "April", "May", "June", "July", "August",
@@ -242,7 +263,7 @@ fn choices_valid(bounds: &Bounds, draft: &GrantChoices) -> bool {
                 .iter()
                 .all(|manager| choices.eligible_managers.contains(manager))
             && choices.delegation_expires_at_ms > bounds.expiry_after_ms
-            && choices.delegation_expires_at_ms <= bounds.expiry_until_ms
+            && (choices.calendar.is_some() || choices.delegation_expires_at_ms <= bounds.expiry_until_ms)
     })
 }
 #[cfg(test)]
@@ -276,7 +297,7 @@ fn successor_preset(form: &OwnerGrantSuccessionForm, days: Option<i64>, now: u64
 /// only the applicants field; the owner can edit both and the committed values
 /// are always read back from those widgets.
 fn initial_draft(proposal: Option<u64>, applicants: &[String]) -> GrantChoices {
-    GrantChoices {
+    GrantChoices { per_request: String::new(),
         tokens: proposal.map(|tokens| tokens.to_string()).unwrap_or_default(),
         managers: applicants.join(" "),
         ..GrantChoices::default()
@@ -287,6 +308,7 @@ fn initial_draft(proposal: Option<u64>, applicants: &[String]) -> GrantChoices {
 /// (applicants are never removed), and the current delegation for an
 /// amendment or the end of the new month for a renewal.
 fn fill_successor_defaults(draft: &mut GrantChoices, form: &OwnerGrantSuccessionForm, now: u64) {
+    draft.calendar = form.predecessor.calendar.clone();
     if draft.tokens.is_empty() {
         draft.tokens = form.predecessor.allocated_tokens.to_string();
     }
@@ -294,6 +316,12 @@ fn fill_successor_defaults(draft: &mut GrantChoices, form: &OwnerGrantSuccession
     // be confirmed here: the form starts at that floor and says why.
     if let Ok(tokens) = draft.tokens.trim().parse::<u64>() {
         draft.tokens = in_range(tokens, &successor_bounds(form)).to_string();
+    }
+    // Legacy grants have no independent Agent cap. Their default follows the
+    // proposed total; an explicit V5 cap or a caller's proposal stays intact.
+    if draft.per_request.is_empty() {
+        draft.per_request = form.predecessor.per_request_tokens
+            .map(|n| n.to_string()).unwrap_or_else(|| draft.tokens.clone());
     }
     let mut managers: Vec<String> = form
         .predecessor
@@ -343,9 +371,11 @@ fn sharing_moved(form: &OwnerGrantSuccessionForm, draft: &GrantChoices) -> bool 
 /// is kept exactly, even above the available capacity: the form then shows it
 /// and stays unconfirmable instead of silently lowering it.
 fn fill_form_defaults(draft: &mut GrantChoices, form: &OwnerGrantForm) {
+    if form.calendar.is_some() {draft.calendar = form.calendar.clone();}
     if draft.tokens.is_empty() {
-        draft.tokens = form.context.remaining_tokens.unwrap_or(0).min(1_000_000).to_string();
+        draft.tokens = form.context.resource_total_tokens.unwrap_or(0).to_string();
     }
+    if draft.per_request.is_empty() { draft.per_request = draft.tokens.clone(); }
     if draft.expires_utc.is_empty() {
         draft.expires_utc = publication_expiry(None);
     }
@@ -416,7 +446,7 @@ fn published_grant(phase: &Phase, now: u64) -> bool {
     matches!(phase, Phase::PublicationProgress(p) if matches!(p.state, OwnerGrantPublicationState::ServerObserved))
         && !ended_grant(phase, now)
 }
-/// The pool's current per-request limit: the tokens of a grant the server last
+/// The pool's current pool total allowance: the tokens of a grant the server last
 /// reported as active whose month has started. Reserved, rejected, revoked,
 /// superseded, expired or scheduled grants set none.
 fn live_grant_tokens(phase: &Phase, now: u64) -> Option<u64> {
@@ -457,11 +487,11 @@ const PENDING_NOTE: &str = "An unfinished publish is waiting, so this amount isn
 /// without succession support.
 const PUBLISHED_NOTE: &str = "This pool is already published this month and the server takes one publish a month, so this amount wasn’t applied. Nothing was withdrawn or changed.";
 /// Beside a published grant on a server that supports amendments.
-const AMENDABLE_NOTE: &str = "Not applied yet. Tap Change Per-Request Limit to continue; what running Agents hold stays as it is.";
+const AMENDABLE_NOTE: &str = "Not applied yet. Tap Change Pool Limits to continue; what running Agents hold stays as it is.";
 /// Beside a revoked, superseded or expired grant this month.
 const NOT_AMENDABLE_NOTE: &str = "This publish no longer applies, so it can’t be changed.";
 /// Beside next month's scheduled renewal: this month can no longer change here.
-const SCHEDULED_NOTE: &str = "Next month is already published ahead, so this month’s per-request limit can’t change now.";
+const SCHEDULED_NOTE: &str = "Next month is already published ahead, so this month’s pool total allowance can’t change now.";
 /// A published grant whose month has not started: a scheduled renewal.
 fn scheduled_grant(phase: &Phase, now: u64) -> bool {
     matches!(phase, Phase::PublicationProgress(p) if p.summary.period_start_ms > now)
@@ -481,7 +511,7 @@ fn capacity_problem(s: &GrantState) -> String {
     tr(match context.and_then(|c| c.capacity_blocker.as_deref()) {
         Some("pool_limit_missing") => "Set a monthly maximum for this pool before publishing.",
         Some("usage_unsettled") => "Final usage is still unsettled for calls covered by this pool’s budget. Check the Agent execution records, then refresh after settlement.",
-        Some("account_period_mismatch") => "The explicitly declared account limit and this pool use different periods. Their available capacity cannot be combined.",
+        Some("account_period_mismatch") => "A shared account limit requires all its pools to use UTC and the same period. Review the account limit or use a compatible pool.",
         Some("account_limit_reached") => "The explicitly declared shared account limit is fully allocated. Review its existing allocations before publishing more capacity.",
         Some("pool_limit_reached") => "This pool has no capacity left to publish. Review its existing allocations or change its monthly maximum.",
         _ if s.regrant => REGRANT_UNKNOWN_STATUS,
@@ -495,7 +525,7 @@ fn capacity_problem(s: &GrantState) -> String {
 enum GrantKind {
     /// This month's publish of a pool.
     Publish,
-    /// A new per-request limit this month.
+    /// A new pool total allowance this month.
     Amend,
     /// People added to this month's list, the limit unchanged.
     AddPeople,
@@ -565,6 +595,7 @@ impl GrantState<'_> {
         match (self.phase, self.successor) {
             (Phase::Choose, Some(form)) if !renewal(form) => {
                 self.draft.tokens.trim().parse::<u64>().ok() != Some(form.predecessor.allocated_tokens)
+                    || (!self.draft.per_request.trim().is_empty() && self.draft.per_request.trim().parse::<u64>().ok() != Some(form.predecessor.per_request_tokens.unwrap_or(form.predecessor.allocated_tokens)))
                     || !added_people(form, &managers_of(&self.draft.managers)).is_empty()
                     || sharing_moved(form, self.draft)
             }
@@ -691,7 +722,7 @@ fn grant_title(kind: GrantKind, tone: SheetTone, s: &GrantState, month: Option<&
     match (tone, kind, month) {
         (SheetTone::Done, GrantKind::Publish, Some(month)) => fmt("Published {month}", month),
         (SheetTone::Done, GrantKind::Publish, None) => tr("Pool Published").into(),
-        (SheetTone::Done, GrantKind::Amend, _) => tr("Per-Request Limit Saved").into(),
+        (SheetTone::Done, GrantKind::Amend, _) => tr("Pool Limits Saved").into(),
         (SheetTone::Done, GrantKind::AddPeople, _) => tr("People Added").into(),
         (SheetTone::Done, GrantKind::Renew, Some(month)) => fmt("Published {month} Ahead", month),
         (SheetTone::Done, GrantKind::Renew, None) => tr("Next Month Published Ahead").into(),
@@ -699,13 +730,13 @@ fn grant_title(kind: GrantKind, tone: SheetTone, s: &GrantState, month: Option<&
         (SheetTone::Done, GrantKind::Record, None) => tr("This Pool Is Published").into(),
         (SheetTone::Failed, GrantKind::Publish | GrantKind::Record, Some(month)) => fmt("{month} Wasn’t Published", month),
         (SheetTone::Failed, GrantKind::Publish | GrantKind::Record, None) => tr("Not Published").into(),
-        (SheetTone::Failed, GrantKind::Amend, _) => tr("Per-Request Limit Not Saved").into(),
+        (SheetTone::Failed, GrantKind::Amend, _) => tr("Pool Limits Not Saved").into(),
         (SheetTone::Failed, GrantKind::AddPeople, _) => tr("No One Was Added").into(),
         (SheetTone::Failed, GrantKind::Renew, Some(month)) => fmt("{month} Wasn’t Published Ahead", month),
         (SheetTone::Failed, GrantKind::Renew, None) => tr("Next Month Wasn’t Published Ahead").into(),
         (_, GrantKind::Publish, Some(month)) => fmt("Publish {month}", month),
         (_, GrantKind::Publish, None) => tr("Publish This Pool").into(),
-        (_, GrantKind::Amend, _) => tr("Change Per-Request Limit").into(),
+        (_, GrantKind::Amend, _) => tr("Change Pool Limits").into(),
         (_, GrantKind::AddPeople, _) => tr("Add People Who Can Request").into(),
         (_, GrantKind::Renew, Some(month)) => fmt("Publish {month} Ahead", month),
         (_, GrantKind::Renew, None) => tr("Publish Next Month Ahead").into(),
@@ -754,11 +785,11 @@ fn draft_problem(bounds: &Bounds, draft: &GrantChoices, renewing: Option<&str>, 
     let tr = crate::i18n::tr;
     let fmt = crate::i18n::format;
     let tokens = match draft.tokens.trim().parse::<u64>() {
-        Ok(0) | Err(_) => return Some(tr("Enter a per-request limit above 0, for example 0.25.").into()),
+        Ok(0) | Err(_) => return Some(tr("Enter a pool total allowance above 0, for example 0.25.").into()),
         Ok(tokens) => tokens,
     };
     if let Some(remaining) = bounds.remaining.filter(|remaining| tokens > *remaining) {
-        return Some(fmt("The per-request limit can be at most {max}.", &[("max", amount(Some(remaining)))]));
+        return Some(fmt("The pool total allowance can be at most {max}.", &[("max", amount(Some(remaining)))]));
     }
     if tokens < bounds.minimum {
         return Some(fmt(
@@ -803,6 +834,7 @@ fn unchanged_failure(code: &str) -> bool {
         code,
         "invalid_grant_budget"
             | "invalid_grant_expiry"
+            | "invalid_grant_calendar"
             | "invalid_grant_manager"
             | "owner_grant_capacity_unavailable"
             | "management_grant_succession_required"
@@ -830,6 +862,7 @@ fn fixable_failure(code: &str) -> bool {
         code,
         "invalid_grant_budget"
             | "invalid_grant_expiry"
+            | "invalid_grant_calendar"
             | "invalid_grant_manager"
             | "owner_grant_capacity_unavailable"
             | "owner_grant_below_floor"
@@ -843,6 +876,9 @@ fn unknown_failure(code: &str) -> bool {
         && !matches!(
             code,
             "owner_grant_original_review_expired"
+                | "daemon_review_expired"
+                | "daemon_grant_review_expired"
+                | "daemon_bridge_lease_expired"
                 | "owner_grant_publication_review_expired"
                 | "native_grant_not_publishable"
                 | "owner_grant_publication_history_unavailable"
@@ -964,7 +1000,7 @@ fn choose_facts(kind: GrantKind, s: &GrantState, bounds: Option<&Bounds>, month:
     let remaining = bounds.and_then(|b| b.remaining);
     match (kind, s.successor) {
         (GrantKind::AddPeople, Some(form)) => facts.push(Fact::new(
-            tr("Per-request limit"),
+            tr("Pool total allowance"),
             fmt("{amount} (unchanged)", &[("amount", amount(Some(form.predecessor.allocated_tokens)))]),
         )),
         // Next month's capacity leads the hero; the row stays only to say it isn't known.
@@ -983,7 +1019,7 @@ fn choose_facts(kind: GrantKind, s: &GrantState, bounds: Option<&Bounds>, month:
     if let Some(form) = s.successor.filter(|_| matches!(kind, GrantKind::Amend | GrantKind::Renew)) {
         let fact = Fact::new(tr("Held by running Agents"), held_value(form.floor.retained_tokens, form.floor.children));
         facts.push(match kind {
-            GrantKind::Amend if form.floor.retained_tokens > 0 => fact.note(tr("The per-request limit can’t go below it.")),
+            GrantKind::Amend if form.floor.retained_tokens > 0 => fact.note(tr("The pool total allowance can’t go below it.")),
             GrantKind::Renew if form.floor.children > 0 => fact.note(fmt(
                 "They carry on into {month} without requesting again.",
                 &[("month", month.unwrap_or_default().to_owned())],
@@ -1067,7 +1103,7 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
                         v.after = s.bounds().map(|b| Figure::new(local_day_time(draft_end(&b, &s.draft.expires_utc)), tr("Being saved")));
                     }
                     _ if tokens.is_some() => {
-                        v.caption = tr("Per-request limit").into();
+                        v.caption = tr("Pool total allowance").into();
                         v.before = current.filter(|c| Some(*c) != tokens).map(|c| Figure::new(amount(Some(c)), tr("Now")));
                         v.after = Some(Figure::new(amount(tokens), tr("Being saved")));
                     }
@@ -1078,7 +1114,7 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
                 v.caption = tr("People who can request").into();
                 v.lead = fmt("Adds {people} once you confirm.", &[("people", people_text(s.applicants))]);
             } else if let Some(proposed) = s.proposal.filter(|_| kind != GrantKind::AddPeople) {
-                v.caption = tr("Per-request limit").into();
+                v.caption = tr("Pool total allowance").into();
                 v.after = Some(Figure::new(amount(Some(proposed)), tr("You chose")));
             }
         }
@@ -1102,7 +1138,7 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
             // The hero: what this window changes.
             match kind {
                 GrantKind::Publish | GrantKind::Record => {
-                    v.caption = tr("Per-request limit").into();
+                    v.caption = tr("Pool total allowance").into();
                     v.before = Some(Figure::new(tr("Not published"), tr("Now")));
                     v.after = Some(Figure::new(amount(tokens), tr("After you confirm")));
                     let until = bounds.as_ref().map(|b| local_time(draft_end(b, &s.draft.expires_utc)));
@@ -1115,7 +1151,7 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
                     };
                 }
                 GrantKind::Amend => {
-                    v.caption = tr("Per-request limit").into();
+                    v.caption = tr("Pool total allowance").into();
                     let also_ends = match new_end.filter(|_| moved) {
                         Some(end) => fmt("Sharing then ends before {when}.", &[("when", local_time(end))]),
                         None => String::new(),
@@ -1127,18 +1163,18 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
                         v.after = new_end.map(|end| Figure::new(local_day_time(end), tr("After you confirm")));
                         let was = s.successor.map(|form| form.predecessor.delegation_expires_at_ms).unwrap_or_default();
                         v.lead = fmt(
-                            "Now until {now}. Once you confirm, people on the list can request until {when}; the per-request limit and what running Agents hold stay as they are.",
+                            "Now until {now}. Once you confirm, people on the list can request until {when}; the pool total allowance and what running Agents hold stay as they are.",
                             &[("now", local_time(was)), ("when", local_time(new_end.unwrap_or(was)))],
                         );
                     } else if tokens == current && added.is_empty() {
                         v.after = Some(Figure::new(amount(current), tr("Now")));
                         v.lead = match (fixed, adjusted) {
                             (Some(all), Some(page)) => fmt(
-                                "You chose {page} on the pool’s page, but running Agents hold all {amount} this month can give out, so the per-request limit can only be {amount} now. To give more, raise the monthly maximum on the pool’s page.",
+                                "You chose {page} on the pool’s page, but running Agents hold all {amount} this month can give out, so the pool total allowance can only be {amount} now. To give more, raise the monthly maximum on the pool’s page.",
                                 &[("page", amount(Some(page))), ("amount", amount(Some(all)))],
                             ),
                             (Some(all), None) => fmt(
-                                "Running Agents hold all {amount} this month can give out, so the per-request limit can only be {amount} now. To give more, raise the monthly maximum on the pool’s page.",
+                                "Running Agents hold all {amount} this month can give out, so the pool total allowance can only be {amount} now. To give more, raise the monthly maximum on the pool’s page.",
                                 &[("amount", amount(Some(all)))],
                             ),
                             (None, Some(page)) if bounds.as_ref().is_some_and(|b| page < b.minimum) => fmt(
@@ -1200,7 +1236,7 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
                                 &[("month", month_text.clone()), ("amount", amount(Some(capacity))), ("when", local_time(form.period_start_ms))],
                             ),
                             (Some(form), Some(_)) => fmt(
-                                "Starts {when}. The list, the monthly maximum and the per-request limit carry over.",
+                                "Starts {when}. The list, the monthly maximum and the pool total allowance carry over.",
                                 &[("when", local_time(form.period_start_ms))],
                             ),
                             (Some(form), None) => fmt(
@@ -1216,7 +1252,7 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
                         },
                     ]);
                     v.caution = fmt(
-                        "Once {month} is published ahead, this month’s per-request limit and list can’t change any more, and it can’t be withdrawn.",
+                        "Once {month} is published ahead, this month’s pool total allowance and list can’t change any more, and it can’t be withdrawn.",
                         &[("month", month_text.clone())],
                     );
                 }
@@ -1264,7 +1300,7 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
                 && s.add_error.is_empty();
             v.people_open = !v.people_collapsible || s.disclosure.people;
             v.people_summary = people_count(v.people.len());
-            v.quota_label = tr("Per-request limit").into();
+            v.quota_label = tr("Pool total allowance").into();
             v.people_note = match kind {
                 GrantKind::Renew => tr("The list carries over. You can add people, not remove them."),
                 GrantKind::Amend | GrantKind::AddPeople => tr("This month’s list only grows: people already on it can’t be removed."),
@@ -1438,7 +1474,7 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
                     }
                     v.lead = match (s.submitted, kind, started) {
                         _ if sharing_saved => fmt(
-                            "People on the list can request until {when}. The per-request limit stays {amount}.",
+                            "People on the list can request until {when}. The pool total allowance stays {amount}.",
                             &[("when", local_time(p.summary.delegation_expires_at_ms.min(p.summary.period_end_ms))), ("amount", limit.clone())],
                         ),
                         (true, GrantKind::AddPeople, _) => fmt(
@@ -1459,12 +1495,12 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
                             &[("amount", limit.clone())],
                         ),
                         (false, _, true) => fmt(
-                            "{month} is published: up to {amount} per request.",
+                            "{month} is published: up to {amount} in total.",
                             &[("month", month_text.clone()), ("amount", limit.clone())],
                         ),
                     };
                     if !started {
-                        v.status = tr("This month’s per-request limit and list can’t change any more.").into();
+                        v.status = tr("This month’s pool total allowance and list can’t change any more.").into();
                     }
                     v.facts_label = tr("This pool").into();
                     let until = p.summary.delegation_expires_at_ms.min(p.summary.period_end_ms);
@@ -1546,7 +1582,7 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
         v.people_summary = people_count(people.len());
         v.people = people;
         // This month's record can add people right here, in an amendment that
-        // keeps the per-request limit; elsewhere the pool's page adds them.
+        // keeps the pool total allowance; elsewhere the pool's page adds them.
         v.people_add_visible = (kind == GrantKind::Record || !s.can_choose_new_limits)
             && s.actionable()
             && s.succession_supported == Some(true)
@@ -1573,7 +1609,7 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
         v.after = None;
         v.lead = tr(ENDED_LEAD).into();
         v.status = tr(ENDED_STATUS).into();
-        primary = "Set This Month’s Capacity";
+        primary = "Update Pool Allowance";
         primary_text = None;
     }
     let live = live_grant_tokens(s.phase, now);
@@ -1581,12 +1617,12 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
         // A proposal beside this month's live publish: open the change form.
         v.tone = SheetTone::Proposal;
         v.glyph = SheetGlyph::Change;
-        v.title = tr("Change Per-Request Limit").into();
-        v.caption = tr("Per-request limit").into();
+        v.title = tr("Change Pool Limits").into();
+        v.caption = tr("Pool total allowance").into();
         v.before = Some(Figure::new(amount(live), tr("Now")));
         v.after = Some(Figure::new(amount(s.proposal), tr("Proposed")));
         v.lead = tr("Not applied yet. Continue to choose the amount; what running Agents hold stays as it is.").into();
-        primary = "Change Per-Request Limit";
+        primary = "Change Pool Limits";
         primary_text = None;
     }
     if !s.active {
@@ -1649,10 +1685,46 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
         v.primary_enabled = true;
         v.primary = v.recover.clone();
     }
+    let calendar = if choosing {s.draft.calendar.as_ref()} else {summary.as_ref().and_then(|summary| summary.calendar.as_ref())};
+    if let Some(calendar) = calendar {
+        v.calendar = (choosing && s.successor.is_none() && s.form.is_none_or(|form| form.calendar.is_none())).then(|| calendar.clone());
+        v.quota_label = tr("Tokens per period").into();
+        v.sharing_visible = false;
+        for text in [&mut v.title,&mut v.lead,&mut v.problem,&mut v.status,&mut v.quota_hint,&mut v.people_note] {*text=crate::host::hagency::resource_edit::calendar_words(text);}
+        for fact in &mut v.facts {fact.label=crate::host::hagency::resource_edit::calendar_words(&fact.label);fact.note=crate::host::hagency::resource_edit::calendar_words(&fact.note);}
+        if !choosing && v.tone == SheetTone::Done {
+            v.title = tr("Recurring Capacity Published").into();
+            v.caption = tr("Tokens per period").into();
+            v.lead = tr("This allowance renews every period until you withdraw it. Each Agent follows the renewal mode you approved.").into();
+        }
+        if !choosing || s.successor.is_some() || s.form.is_some_and(|form| form.calendar.is_some()) {
+            v.facts.push(calendar_fact(calendar,summary.as_ref().map(|summary|summary.period_end_ms),now));
+        }
+        if choosing {
+            v.caption = tr("Tokens per period").into();
+            v.before = None;
+            v.after = Some(Figure::new(amount(s.draft.tokens.trim().parse().ok()), tr("Tokens per period")));
+            // Budget facts remain visible in every locale. Their labels above
+            // use period wording; translated text must never control visibility.
+            if v.tone != SheetTone::Failed {
+                v.title = tr("Publish Recurring Capacity").into();
+                v.lead = tr("Authorize this allowance every period until you withdraw it. Each Agent separately requires your approval for automatic or manual renewal.").into();
+                v.status.clear();
+            }
+            if calendar.period_at(now).is_err() {v.primary_enabled = false;}
+        }
+    }
+    if let Some(limit) = if choosing {s.draft.per_request.parse::<u64>().ok()} else {summary.as_ref().and_then(|s|s.per_request_tokens)} {
+        if !choosing { v.facts.insert(0, Fact::new(tr("Maximum per Agent per period"), amount(Some(limit)))); }
+        if choosing && (limit == 0 || s.draft.tokens.parse::<u64>().is_ok_and(|total| limit > total)) {
+            v.problem = tr("The Agent limit must be above zero and no greater than the pool total.").into();
+            v.primary_enabled = false;
+        }
+    }
     v
 }
 /// Publishing next month ahead: the hero leads with that month's capacity and
-/// says the per-request limit under it. The limit's before → after shows only
+/// says the pool total allowance under it. The limit's before → after shows only
 /// when it changes, never an arrow between two equal amounts.
 fn renew_hero(v: &mut GrantView, capacity: Option<u64>, before: Option<u64>, after: Option<u64>, this_month: &str, month: &str) {
     let tr = crate::i18n::tr;
@@ -1660,16 +1732,16 @@ fn renew_hero(v: &mut GrantView, capacity: Option<u64>, before: Option<u64>, aft
     v.before = None;
     match (before, after, capacity) {
         (Some(old), Some(new), _) if old != new => {
-            v.caption = tr("Per-request limit").into();
+            v.caption = tr("Pool total allowance").into();
             v.before = Some(Figure::new(amount(Some(old)), this_month.to_owned()));
             v.after = Some(Figure::new(amount(Some(new)), month.to_owned()));
         }
         (_, _, Some(capacity)) => {
             v.caption = fmt("{month} capacity", &[("month", month.to_owned())]);
-            v.after = Some(Figure::new(amount(Some(capacity)), fmt("Up to {amount} per request", &[("amount", amount(after))])));
+            v.after = Some(Figure::new(amount(Some(capacity)), fmt("Up to {amount} in total", &[("amount", amount(after))])));
         }
         _ => {
-            v.caption = tr("Per-request limit").into();
+            v.caption = tr("Pool total allowance").into();
             v.after = Some(Figure::new(amount(after), month.to_owned()));
         }
     }
@@ -1695,7 +1767,7 @@ fn summary_hero(v: &mut GrantView, kind: GrantKind, summary: &OwnerGrantSummary,
             &key_month(&summary.period_key).unwrap_or_default(),
         ),
         _ => {
-            v.caption = tr("Per-request limit").into();
+            v.caption = tr("Pool total allowance").into();
             v.before = summary
                 .succession
                 .as_ref()
@@ -1724,7 +1796,7 @@ fn unknown_hero(v: &mut GrantView, kind: GrantKind, s: &GrantState, current: Opt
         }
         GrantKind::AddPeople | GrantKind::Record => {}
         _ if tokens.is_some() => {
-            v.caption = tr("Per-request limit").into();
+            v.caption = tr("Pool total allowance").into();
             v.before = current.filter(|c| Some(*c) != tokens).map(|c| Figure::new(amount(Some(c)), tr("Before")));
             v.after = Some(Figure::new(amount(tokens), tr("You chose")));
         }
@@ -1741,7 +1813,7 @@ fn failure_hero(v: &mut GrantView, code: &str, s: &GrantState, bounds: Option<&B
     match code {
         "owner_grant_below_floor" | "grant_successor_below_reserved" if bounds.is_some_and(|b| b.minimum > 1) => {
             let held = bounds.map_or(0, |b| b.minimum);
-            v.caption = tr("The per-request limit must be at least").into();
+            v.caption = tr("The pool total allowance must be at least").into();
             v.after = Some(Figure::new(amount(Some(held)), tr("Held by running Agents")));
             v.fix_tokens = Some(held);
             v.lead = match chosen {
@@ -1774,7 +1846,7 @@ fn failure_hero(v: &mut GrantView, code: &str, s: &GrantState, bounds: Option<&B
         }
         "owner_grant_capacity_unavailable" if bounds.and_then(|b| b.remaining).is_some() => {
             let most = bounds.and_then(|b| b.remaining);
-            v.caption = tr("The per-request limit can be at most").into();
+            v.caption = tr("The pool total allowance can be at most").into();
             v.after = Some(Figure::new(amount(most), tr("Left this month")));
             v.fix_tokens = most.filter(|most| *most > 0 && chosen.is_some_and(|chosen| chosen > *most));
             v.lead = match chosen {
@@ -1788,7 +1860,7 @@ fn failure_hero(v: &mut GrantView, code: &str, s: &GrantState, bounds: Option<&B
         _ => v.lead = tr(failure_message(code)).into(),
     }
 }
-/// Native text for a script's proposed per-request limit: the current limit,
+/// Native text for a script's proposed pool total allowance: the current limit,
 /// the amount this screen would commit, and why a phase does not use it.
 fn proposal_notice(
     phase: &Phase,
@@ -1843,7 +1915,7 @@ fn proposal_notice(
         .map(|tokens| amount(Some(tokens)))
         .unwrap_or_else(|| crate::i18n::tr("Not in effect").into());
     let mut text = crate::i18n::format(
-        "Per-request limit: {current} → {new}",
+        "Pool total allowance: {current} → {new}",
         &[("current", current), ("new", amount(new))],
     );
     if let Some(note) = note {
@@ -1873,6 +1945,7 @@ fn same_successor_resource(form: &OwnerGrantSuccessionForm, review: &OwnerGrantR
 /// Only exact reviewed native codes may enter diagnostics. A prefix match would
 /// allow arbitrary provider errors, paths or credentials to escape into logs.
 fn grant_failure_code(code: &str) -> &'static str {
+    if let Some(code)=crate::host::hagency::errors::known_code(code){return code;}
     match code {
         "management_access_required" => "management_access_required",
         "management_admission_receipts_required" => "management_admission_receipts_required",
@@ -1939,6 +2012,7 @@ fn grant_failure_code(code: &str) -> &'static str {
         "allocation_enrollment_changed" => "allocation_enrollment_changed",
         "invalid_grant_budget" => "invalid_grant_budget",
         "invalid_grant_expiry" => "invalid_grant_expiry",
+        "invalid_grant_calendar" => "invalid_grant_calendar",
         "invalid_grant_manager" => "invalid_grant_manager",
         "management_grant_succession_required" => "management_grant_succession_required",
         "pool_grant_succession_unavailable" => "pool_grant_succession_unavailable",
@@ -1957,6 +2031,7 @@ fn grant_failure_code(code: &str) -> &'static str {
     }
 }
 fn failure_message(code: &str) -> &'static str {
+        if let Some(message)=crate::host::hagency::errors::message(code){return message;}
     match code {
         "owner_grant_original_review_expired" | "owner_grant_publication_review_expired" => {
             "This confirmation expired. Check the record again."
@@ -1988,6 +2063,7 @@ fn failure_message(code: &str) -> &'static str {
             "The account or session changed. Sign in again, then open this again."
         }
         "invalid_grant_expiry" => "Choose when sharing ends under Sharing Period.",
+        "invalid_grant_calendar" => "Enter a valid IANA time zone, such as America/Los_Angeles.",
         "owner_grant_new_admission_required" => {
             "The server administrator must approve this pool again before it can be published."
         }
@@ -1995,7 +2071,7 @@ fn failure_message(code: &str) -> &'static str {
             "There isn’t enough capacity left, or it isn’t known yet. Nothing was published."
         }
         "invalid_grant_budget" => {
-            "Enter a per-request limit above 0 and at least one person who can request."
+            "Enter a pool total allowance above 0 and at least one person who can request."
         }
         "invalid_grant_manager" => "Someone on the list isn’t an account on your server. Remove them and add them again.",
         "grant_person_not_found" => "An account on the list no longer exists. Remove it and search for the person again.",
@@ -2028,6 +2104,7 @@ fn failure_message(code: &str) -> &'static str {
 /// The list and the expiry are native state the owner edits through the
 /// sheet's own rows and buttons; only the amount is a typed field.
 pub(super) struct GrantInputs {
+    per_request: String,
     tokens: String,
     minimum: u64,
     maximum: Option<u64>,
@@ -2054,6 +2131,7 @@ impl GrantInputs {
         ];
         Self {
             tokens: s.draft.tokens.clone(),
+            per_request: s.draft.per_request.clone(),
             minimum: bounds.as_ref().map_or(1, |b| b.minimum),
             maximum: bounds.as_ref().map(|b| b.remaining.unwrap_or(0)),
             presets,
@@ -2150,7 +2228,7 @@ impl MiniAppsPanel {
             phase: Phase::Loading,
             original: None,
             receiver: None,
-            draft: initial_draft(proposal, flow.applicants()),
+            draft: { let mut draft = initial_draft(proposal, flow.applicants()); draft.per_request = flow.proposed_per_request_tokens().map(|n| n.to_string()).unwrap_or_default(); draft },
             publishing: false,
             cancelling: false,
             form: None,
@@ -2217,7 +2295,34 @@ impl MiniAppsPanel {
     /// refills the native amount field; the draft is always read back from it.
     fn apply_grant_view(&mut self, cx: &mut Cx, view: &GrantView, inputs: Option<&GrantInputs>) {
         self.apply_sheet(cx, id!(grant_confirmation), view);
+        self.view.view(cx, ids!(grant_confirmation.scroll.request_quota)).set_visible(cx, view.choosing);
+        self.view.label(cx, ids!(grant_confirmation.scroll.request_quota.label)).set_text(cx, crate::i18n::tr("Maximum per Agent per period"));
+        self.view.label(cx, ids!(grant_confirmation.scroll.request_quota.hint)).set_text(cx, crate::i18n::tr("Each Agent can request up to this amount. All Agents share the pool total above."));
         self.apply_sheet_disclosure(cx, id!(grant_confirmation), view.more_open);
+        self.view.view(cx, ids!(grant_confirmation.scroll.calendar)).set_visible(cx, view.calendar.is_some());
+        if let Some(calendar) = &view.calendar {
+            let tr = crate::i18n::tr;
+            self.view.label(cx, ids!(grant_confirmation.scroll.calendar.title)).set_text(cx, tr("Authorization calendar"));
+            self.view.label(cx, ids!(grant_confirmation.scroll.calendar.zone_label)).set_text(cx, tr("Owner time zone"));
+            for (path, cadence, label) in [
+                (ids!(grant_confirmation.scroll.calendar.cadence.daily), Cadence::Daily, "Daily"),
+                (ids!(grant_confirmation.scroll.calendar.cadence.weekly), Cadence::Weekly, "Weekly"),
+                (ids!(grant_confirmation.scroll.calendar.cadence.monthly), Cadence::Monthly, "Monthly"),
+            ] {
+                self.view.widget(cx, path).set_text(cx, &format!("{}{}", tr(label), if cadence == calendar.cadence {" ✓"} else {""}));
+            }
+            if inputs.is_some() {self.view.text_input(cx, ids!(grant_confirmation.scroll.calendar.zone)).set_text(cx, &calendar.time_zone);}
+            let zones = self.view.drop_down(cx, ids!(grant_confirmation.scroll.calendar.zones));
+            zones.set_labels(cx, std::iter::once(tr("Choose a time zone").to_owned()).chain(CALENDAR_ZONES.iter().map(|zone| (*zone).to_owned())).collect());
+            zones.set_selected_item(cx, CALENDAR_ZONES.iter().position(|zone| *zone == calendar.time_zone).map_or(0, |i| i + 1));
+            let note = calendar_note(calendar, now_ms());
+            self.view.label(cx, ids!(grant_confirmation.scroll.calendar.note)).set_text(cx, &note);
+            let mut note_widget=self.view.widget(cx, ids!(grant_confirmation.scroll.calendar.note));
+            if calendar.period_at(now_ms()).is_ok() {script_apply_eval!(cx, note_widget, {draw_text +: {color: mod.widgets.RINX_MUTED}});}
+            else {script_apply_eval!(cx, note_widget, {draw_text +: {color: mod.widgets.RINX_DANGER_FG}});}
+
+        }
+
         if let Some(inputs) = inputs.filter(|_| view.choosing) {
             for (index, (id, on)) in [
                 (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.day), ids!(grant_confirmation.scroll.sharing.period.expiry_presets.day_on)),
@@ -2232,6 +2337,12 @@ impl MiniAppsPanel {
                 self.view.widget(cx, id).set_visible(cx, !inputs.selected[index]);
                 self.view.widget(cx, on).set_visible(cx, inputs.selected[index]);
             }
+            let limit = self.view.widget(cx, ids!(grant_confirmation.scroll.request_quota.limit));
+            if let Some(mut editor) = limit.borrow_mut::<crate::miniapps::design::MiniAppNumberInput>() {
+                editor.set_minimum(cx, 1);
+                editor.set_maximum(cx, inputs.tokens.parse().unwrap_or(0));
+            }
+            self.view.widget(cx, ids!(grant_confirmation.scroll.request_quota.limit)).set_text(cx, &inputs.per_request);
             let widget = self.view.widget(cx, ids!(grant_confirmation.scroll.quota.tokens));
             if let Some(mut editor) = widget.borrow_mut::<crate::miniapps::design::MiniAppNumberInput>() {
                 editor.set_minimum(cx, inputs.minimum);
@@ -2243,6 +2354,30 @@ impl MiniAppsPanel {
                 .widget(cx, ids!(grant_confirmation.scroll.quota.tokens))
                 .set_text(cx, &inputs.tokens);
         }
+    }
+    fn calendar_input(&self, cx: &Cx, actions: &Actions, original: &Calendar) -> Option<Calendar> {
+        let mut calendar = original.clone();
+        for (path, cadence) in [
+            (ids!(grant_confirmation.scroll.calendar.cadence.daily), Cadence::Daily),
+            (ids!(grant_confirmation.scroll.calendar.cadence.weekly), Cadence::Weekly),
+            (ids!(grant_confirmation.scroll.calendar.cadence.monthly), Cadence::Monthly),
+        ] { if crate::miniapps::design::key_button_clicked(&self.view.widget(cx, path), actions) {calendar.cadence = cadence;} }
+        if let Some(zone) = self.view.text_input(cx, ids!(grant_confirmation.scroll.calendar.zone)).changed(actions) {calendar.time_zone = zone.trim().into();}
+        if let Some(index) = self.view.drop_down(cx, ids!(grant_confirmation.scroll.calendar.zones)).selected(actions) {
+            if let Some(zone) = index.checked_sub(1).and_then(|i| CALENDAR_ZONES.get(i)) {calendar.time_zone = (*zone).into();}
+        }
+        (calendar != *original).then_some(calendar)
+    }
+    pub(super) fn grant_calendar_actions(&mut self, cx: &mut Cx, actions: &Actions) -> bool {
+        let Some(calendar) = self.grant_confirmation.as_ref().filter(|p| matches!(p.phase, Phase::Choose) && p.successor.is_none() && p.form.as_ref().is_none_or(|form| form.calendar.is_none())).and_then(|p| p.draft.calendar.as_ref()) else {return false};
+        let Some(calendar) = self.calendar_input(cx, actions, calendar) else {return false};
+        let typing=self.view.text_input(cx, ids!(grant_confirmation.scroll.calendar.zone)).changed(actions).is_some();
+        if let Some(prompt) = &mut self.grant_confirmation {prompt.draft.calendar = Some(calendar);}
+        if typing {
+            if let Some(prompt)=&self.grant_confirmation {let view=grant_view(&prompt.state(),now_ms());self.apply_grant_view(cx,&view,None);}
+            self.request_confirmation_redraw(cx);
+        } else {self.present_grant_confirmation(cx);}
+        true
     }
     /// Open or close the technical details; the draft is read back first.
     pub(super) fn grant_disclose(&mut self, cx: &mut Cx) {
@@ -2264,7 +2399,7 @@ impl MiniAppsPanel {
     }
     /// From this month's record: add people in this same window. It opens
     /// the amendment form of the record's own pool, which keeps the
-    /// per-request limit; only that form's own confirmation commits anything.
+    /// pool total allowance; only that form's own confirmation commits anything.
     pub(super) fn grant_add_people(&mut self, cx: &mut Cx) {
         let Some(prompt) = &mut self.grant_confirmation else {
             return;
@@ -2468,6 +2603,7 @@ impl MiniAppsPanel {
                     prompt.submit_publication = false;
                     prompt.submitted = false;
                     prompt.successor = None;
+                    if prompt.draft.calendar.is_none() { prompt.draft.calendar = Some(default_calendar()); }
                     fill_form_defaults(&mut prompt.draft, &form);
                     prompt.draft.coordinator=prompt.flow.account().into();
                     prompt.form=Some(form);
@@ -2607,7 +2743,7 @@ impl MiniAppsPanel {
         // The amount is the one typed field. The list and the expiry are
         // native state changed only by this sheet's add, remove and preset
         // controls, so they are kept as they are.
-        let draft = GrantChoices {
+        let draft = GrantChoices { per_request: self.view.widget(cx, ids!(grant_confirmation.scroll.request_quota.limit)).text(),
             coordinator: prompt.flow.account().to_owned(),
             managers: prompt.draft.managers.clone(),
             tokens: self
@@ -2616,8 +2752,9 @@ impl MiniAppsPanel {
                 .text(),
             expires_utc: prompt.draft.expires_utc.clone(),
             self_approval: false,
+            calendar: prompt.draft.calendar.clone(),
         };
-        let changed = draft.tokens != prompt.draft.tokens;
+        let changed = draft.tokens != prompt.draft.tokens || draft.per_request != prompt.draft.per_request;
         prompt.draft = draft;
         // Keep every sentence, the list and the confirm button equal to what
         // the fields would commit. The fields themselves are left untouched.
@@ -2868,6 +3005,13 @@ impl MiniAppsPanel {
                     if prompt.people_search.selected.is_some() { targets.push(add_selected); }
                 }
             }
+            if view.calendar.is_some() {
+                for path in [ids!(grant_confirmation.scroll.calendar.cadence.daily), ids!(grant_confirmation.scroll.calendar.cadence.weekly), ids!(grant_confirmation.scroll.calendar.cadence.monthly)] {
+                    targets.push(self.view.widget(cx, path).area());
+                }
+                targets.push(self.view.text_input(cx, ids!(grant_confirmation.scroll.calendar.zone)).area());
+                targets.push(self.view.drop_down(cx, ids!(grant_confirmation.scroll.calendar.zones)).area());
+            }
             if view.quota_visible {
                 if let Some(slider) = self
                     .view
@@ -2877,6 +3021,7 @@ impl MiniAppsPanel {
                     targets.push(slider.focus_area());
                 }
                 targets.push(self.view.text_input(cx, ids!(grant_confirmation.scroll.quota.tokens.input)).area());
+                targets.push(self.view.text_input(cx, ids!(grant_confirmation.scroll.request_quota.limit.input)).area());
             }
         }
         if view.sharing_visible {
@@ -2924,6 +3069,19 @@ impl MiniAppsPanel {
             if view.people_add_visible && cx.has_key_focus(open_add) {
                 self.grant_add_people(cx);
                 return true;
+            }
+            if view.calendar.is_some() {
+                for (path, cadence) in [
+                    (ids!(grant_confirmation.scroll.calendar.cadence.daily), Cadence::Daily),
+                    (ids!(grant_confirmation.scroll.calendar.cadence.weekly), Cadence::Weekly),
+                    (ids!(grant_confirmation.scroll.calendar.cadence.monthly), Cadence::Monthly),
+                ] {
+                    if cx.has_key_focus(self.view.widget(cx, path).area()) {
+                        if let Some(calendar) = self.grant_confirmation.as_mut().and_then(|p| p.draft.calendar.as_mut()) {calendar.cadence = cadence;}
+                        self.present_grant_confirmation(cx);
+                        return true;
+                    }
+                }
             }
             if view.choosing {
                 if view.people_editable && !folded && cx.has_key_focus(add_selected) {
@@ -3094,7 +3252,7 @@ impl GrantPreview {
             capacity_blocker: f["blockedReason"].as_str().map(str::to_owned),
             observed_at_ms: now,
         };
-        let summary = |tokens: u64, people: Vec<String>, period: (String, u64, u64), succession: Option<::hagency::native_owner::OwnerGrantSuccessionSummary>| OwnerGrantSummary {
+        let summary = |tokens: u64, people: Vec<String>, period: (String, u64, u64), succession: Option<::hagency::native_owner::OwnerGrantSuccessionSummary>| OwnerGrantSummary { per_request_tokens: f["perRequest"].as_u64(),
             intent_id: "intent_preview".into(),
             grant_id: if succession.is_some() { "grant_preview_2".into() } else { "grant_preview_1".into() },
             owner_mxid: account.clone(),
@@ -3108,6 +3266,7 @@ impl GrantPreview {
             period_key: period.0,
             period_start_ms: period.1,
             period_end_ms: period.2,
+            calendar: serde_json::from_value(f["calendar"].clone()).ok(),
             succession,
         };
         let this_period = (key(start), start, end);
@@ -3132,6 +3291,7 @@ impl GrantPreview {
             }
         });
         let form = kind.is_none().then(|| OwnerGrantForm {
+            calendar: serde_json::from_value(f["boundCalendar"].clone()).ok(),
             contribution_id: pool.clone(),
             resource_id: resource.clone(),
             label: text("label", "Research"),
@@ -3148,11 +3308,13 @@ impl GrantPreview {
         // the owner moved the window's slider to.
         let typed = f["chosen"].as_u64().or(if state == "failed" { f["proposed"].as_u64() } else { proposal });
         let mut draft = initial_draft(typed, if kind.is_some() { &added } else { &managers });
+        draft.per_request = f["perRequest"].as_u64().map(|n|n.to_string()).unwrap_or_default();
         match (&successor, &form) {
             (Some(successor), _) => fill_successor_defaults(&mut draft, successor, now),
             (None, Some(form)) => fill_form_defaults(&mut draft, form),
             _ => {}
         }
+        if let Ok(calendar) = serde_json::from_value::<Calendar>(f["calendar"].clone()) {draft.calendar = Some(calendar);}
         draft.coordinator = account.clone();
         let requested = kind.map(succession_arg);
         let published_tokens = f["proposed"].as_u64().unwrap_or(current);
@@ -3257,13 +3419,17 @@ impl MiniAppsPanel {
         let preset = self.grant_preset_clicked(cx, actions);
         let toggle = self.view.button(cx, ids!(grant_confirmation.scroll.sharing.sharing_row.sharing_toggle)).clicked(actions);
         let typed = self.view.widget(cx, ids!(grant_confirmation.scroll.quota.tokens)).text();
+        let per_request = self.view.widget(cx, ids!(grant_confirmation.scroll.request_quota.limit)).text();
         let now = GRANT_PREVIEW.with(|cell| cell.borrow().as_ref().map(|p| p.now)).unwrap_or_else(now_ms);
+        let calendar = GRANT_PREVIEW.with(|cell| cell.borrow().as_ref().and_then(|p| p.draft.calendar.as_ref().and_then(|c| self.calendar_input(cx, actions, c))));
+        let calendar_typing=self.view.text_input(cx, ids!(grant_confirmation.scroll.calendar.zone)).changed(actions).is_some();
         let (changed, refill) = GRANT_PREVIEW.with(|cell| {
             let mut cell = cell.borrow_mut();
             let Some(preview) = cell.as_mut().filter(|p| matches!(p.phase, Phase::Choose)) else {
                 return (false, false);
             };
             let mut changed = false;
+            if let Some(calendar) = calendar {preview.draft.calendar = Some(calendar); changed = true;}
             if let Some(days) = preset {
                 let value = match &preview.successor {
                     Some(form) => successor_preset(form, days, now),
@@ -3278,7 +3444,11 @@ impl MiniAppsPanel {
                 preview.disclosure.sharing = !preview.disclosure.sharing;
                 changed = true;
             }
-            let refill = changed;
+            let refill = changed && !calendar_typing;
+            if per_request != preview.draft.per_request {
+                preview.draft.per_request = per_request;
+                changed = true;
+            }
             if typed != preview.draft.tokens {
                 preview.draft.tokens = typed;
                 changed = true;
@@ -3302,6 +3472,34 @@ impl MiniAppsPanel {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recurring_publication_discloses_standing_consent_and_owner_calendar() {
+        let fixture=json!({"state":"publish","total":2_000_000,"remaining":2_000_000,"proposed":500_000,"managers":["@chris:test"],"calendar":{"cadence":"weekly","timeZone":"America/Los_Angeles"}});
+        let preview=GrantPreview::from_fixture(&fixture,now_ms()).unwrap();
+        let view=grant_view(&preview.state(),now_ms());
+        assert_eq!(view.title,"Publish Recurring Capacity");
+        assert!(view.lead.contains("until you withdraw"));
+        assert!(view.facts.iter().any(|fact| fact.label == "Period maximum" && fact.value == "2 M"));
+        assert!(view.facts.iter().any(|fact| fact.label == "Left this period" && fact.value == "2 M"));
+        assert!(!view.sharing_visible && view.calendar.is_some());
+        assert!(calendar_note(view.calendar.as_ref().unwrap(),now_ms()).contains("America/Los_Angeles"));
+        let mut bound=fixture.clone();
+        bound["boundCalendar"]=bound["calendar"].clone();
+        let preview=GrantPreview::from_fixture(&bound,now_ms()).unwrap();
+        let view=grant_view(&preview.state(),now_ms());
+        assert!(view.calendar.is_none());
+        assert!(view.facts.iter().any(|fact| fact.note.contains("America/Los_Angeles")));
+        let mut blocked=fixture;
+        blocked["remaining"]=json!(0);
+        blocked["blockedReason"]=json!("pool_limit_reached");
+        let preview=GrantPreview::from_fixture(&blocked,now_ms()).unwrap();
+        let view=grant_view(&preview.state(),now_ms());
+        assert_eq!(view.title,"Cannot Publish");
+        assert!(!view.primary_enabled && view.lead.is_empty());
+        assert!(view.problem.contains("no capacity left"));
+        assert_eq!(view.caption,"Tokens per period");
+        assert!(view.before.is_none());
+    }
     #[test]
     fn blocked_publication_explains_the_reason_and_keeps_publish_disabled() {
         for (remaining, reason, message) in [
@@ -3361,13 +3559,13 @@ mod tests {
     }
     #[test]
     fn publication_form_requires_known_capacity_and_expiry_in_current_period() {
-        let mut form=OwnerGrantForm {contribution_id:"c".into(),resource_id:"r".into(),label:"Pool".into(),
+        let mut form=OwnerGrantForm {calendar:None,contribution_id:"c".into(),resource_id:"r".into(),label:"Pool".into(),
             context: ::hagency::native_owner::OwnerGrantReviewContext {
                 server_origin:"https://matrix.test".into(),profile_id:"profile".into(),resource_revision:"revision".into(),
                 framework:"codex".into(),model:"model".into(),remaining_tokens:Some(1_000_001),
                 resource_total_tokens:Some(2_000_000),shared_account_total_tokens:Some(9_000_000),capacity_blocker:None,observed_at_ms:1,
             }};
-        let mut draft=GrantChoices {coordinator:"@owner:test".into(),managers:"@manager:test".into(),tokens:"1000001".into(),expires_utc:publication_expiry(None),self_approval:false};
+        let mut draft=GrantChoices { per_request: String::new(),coordinator:"@owner:test".into(),managers:"@manager:test".into(),tokens:"1000001".into(),expires_utc:publication_expiry(None),self_approval:false,calendar:None};
         assert!(form_choices_valid(&form,&draft));
         draft.tokens="1000002".into();assert!(!form_choices_valid(&form,&draft));
         draft.tokens="1000001".into();
@@ -3383,7 +3581,7 @@ mod tests {
         draft.managers.clear();assert!(!form_choices_valid(&form,&draft));
     }
     fn pool_form(remaining: u64) -> OwnerGrantForm {
-        OwnerGrantForm {contribution_id:"pool_1".into(),resource_id:"r".into(),label:"Pool".into(),
+        OwnerGrantForm {calendar:None,contribution_id:"pool_1".into(),resource_id:"r".into(),label:"Pool".into(),
             context: ::hagency::native_owner::OwnerGrantReviewContext {
                 server_origin:"https://matrix.test".into(),profile_id:"profile".into(),resource_revision:"revision".into(),
                 framework:"codex".into(),model:"model".into(),remaining_tokens:Some(remaining),
@@ -3391,14 +3589,14 @@ mod tests {
             }}
     }
     fn summary(tokens: u64) -> OwnerGrantSummary {
-        OwnerGrantSummary {
+        OwnerGrantSummary { per_request_tokens: None,
             intent_id: "original".into(), grant_id: "grant_original".into(), owner_mxid: "@owner:test".into(),
             contribution_id: "pool_1".into(), resource_id: "resource".into(),
             coordinator_mxid: "@owner:test".into(), allocated_tokens: tokens,
             eligible_managers: vec!["@manager:test".into()], allow_self_approval: false,
             delegation_expires_at_ms: 1793491200000, period_key: "2026-10".into(),
             period_start_ms: 1790812800000, period_end_ms: 1793491200000,
-            succession: None,
+            calendar: None, succession: None,
         }
     }
     fn publication(state: OwnerGrantPublicationState, server: Option<&str>) -> Phase {
@@ -3430,7 +3628,8 @@ mod tests {
         assert_eq!(draft.expires_utc, publication_expiry(None));
         let mut default = initial_draft(None, &[]);
         fill_form_defaults(&mut default, &form);
-        assert_eq!(default.tokens, "1000000");
+        assert_eq!(default.tokens, "20000000");
+        assert_eq!(default.per_request, "20000000");
         // Above the available capacity the proposal stays visible and unconfirmable.
         let mut above = initial_draft(Some(12_000_000), &[]);
         fill_form_defaults(&mut above, &form);
@@ -3439,6 +3638,8 @@ mod tests {
         assert_eq!(above.tokens, "12000000");
         assert!(!form_choices_valid(&form, &above));
         above.tokens = "3000000".into();
+        assert!(!form_choices_valid(&form, &above), "Agent cap cannot exceed the lowered total");
+        above.per_request = "2000000".into();
         assert!(form_choices_valid(&form, &above));
         // A reopened form keeps what the owner typed over the proposal.
         let mut edited = initial_draft(Some(3_000_000), &[]);
@@ -3453,13 +3654,13 @@ mod tests {
         for (field, shown) in [("3000000", "3 M"), ("2500000", "2.5 M"), ("2.5", "Unavailable")] {
             assert_eq!(
                 proposal_notice(&Phase::Choose, Some(3_000_000), field, false, OCTOBER).as_deref(),
-                Some(format!("Per-request limit: Not in effect → {shown}").as_str())
+                Some(format!("Pool total allowance: Not in effect → {shown}").as_str())
             );
         }
         assert!(proposal_notice(&Phase::Choose, None, "3000000", false, OCTOBER).is_none());
         assert!(proposal_notice(&Phase::Loading, Some(3_000_000), "", false, OCTOBER).is_none());
         let declined = proposal_notice(&progress(OwnerGrantState::Declined, false), Some(3_000_000), "", false, OCTOBER).unwrap();
-        assert_eq!(declined, "Per-request limit: Not in effect → 3 M\nThis amount is filled in when you choose again.");
+        assert_eq!(declined, "Pool total allowance: Not in effect → 3 M\nThis amount is filled in when you choose again.");
         let closed = proposal_notice(&progress(OwnerGrantState::Recorded, true), Some(3_000_000), "", false, OCTOBER).unwrap();
         assert!(closed.ends_with("filled in when you choose again."), "{closed}");
         let failed = proposal_notice(&Phase::Failed("owner_grant_prior_intent_required".into()), Some(3_000_000), "", false, OCTOBER).unwrap();
@@ -3471,7 +3672,7 @@ mod tests {
         assert_eq!(live_grant_tokens(&live, OCTOBER), Some(2_000_000));
         assert_eq!(
             proposal_notice(&live, Some(3_000_000), "", false, OCTOBER).unwrap(),
-            format!("Per-request limit: 2 M → 3 M\n{PUBLISHED_NOTE}")
+            format!("Pool total allowance: 2 M → 3 M\n{PUBLISHED_NOTE}")
         );
         // A grant revoked, or expired by its delegation, within its month still
         // used this month of the admission: no current limit, and the proposal
@@ -3481,7 +3682,7 @@ mod tests {
             assert_eq!(live_grant_tokens(&used, OCTOBER), None);
             assert_eq!(
                 proposal_notice(&used, Some(3_000_000), "", false, OCTOBER).unwrap(),
-                format!("Per-request limit: Not in effect → 3 M\n{PUBLISHED_NOTE}")
+                format!("Pool total allowance: Not in effect → 3 M\n{PUBLISHED_NOTE}")
             );
         }
         // No proposal, applicant or selector flag offers a commit beside a
@@ -3537,7 +3738,7 @@ mod tests {
             assert_eq!(live_grant_tokens(&phase, NOVEMBER), None);
             assert_eq!(
                 proposal_notice(&phase, Some(3_000_000), "", false, NOVEMBER).unwrap(),
-                format!("Per-request limit: Not in effect → 3 M\n{ENDED_NOTE}")
+                format!("Pool total allowance: Not in effect → 3 M\n{ENDED_NOTE}")
             );
             assert!(primary_available(
                 &phase,
@@ -3582,7 +3783,7 @@ mod tests {
     }
     #[test]
     fn other_originals_keep_their_amounts_and_their_own_actions() {
-        const EXISTING: &str = "Per-request limit: Not in effect → 3 M\nThis amount doesn’t change the existing publish; it keeps its own amounts.";
+        const EXISTING: &str = "Pool total allowance: Not in effect → 3 M\nThis amount doesn’t change the existing publish; it keeps its own amounts.";
         for phase in [
             publication(OwnerGrantPublicationState::Rejected, None),
             publication(OwnerGrantPublicationState::OutcomeUnknown, None),
@@ -3599,7 +3800,7 @@ mod tests {
         for state in [OwnerGrantState::ReviewRequired, OwnerGrantState::ReviewExpired] {
             assert_eq!(
                 proposal_notice(&progress(state, false), Some(3_000_000), "", false, OCTOBER).unwrap(),
-                format!("Per-request limit: Not in effect → 3 M\n{PENDING_NOTE}")
+                format!("Pool total allowance: Not in effect → 3 M\n{PENDING_NOTE}")
             );
         }
         // A proposal adds or removes no action on an existing original.
@@ -3686,6 +3887,7 @@ mod tests {
         for (tokens, valid) in [("600000", true), ("599999", false), ("5000000", true), ("5000001", false)] {
             let mut d = draft.clone();
             d.tokens = tokens.into();
+            d.per_request = "100000".into();
             assert_eq!(choices_valid(&bounds, &d), valid, "{tokens}");
         }
         // Removing a current applicant is never committed from this form.
@@ -3706,8 +3908,8 @@ mod tests {
         let view = preview_view(&Phase::Choose, &draft, Some(&form), None, &applicants, Disclosure::default());
         assert_eq!(view.tone, SheetTone::Proposal);
         assert_eq!(view.glyph, SheetGlyph::Change);
-        assert_eq!(view.title, "Change Per-Request Limit");
-        assert_eq!(view.caption, "Per-request limit");
+        assert_eq!(view.title, "Change Pool Limits");
+        assert_eq!(view.caption, "Pool total allowance");
         assert_eq!(view.before, Some(Figure::new("2 M", "Now")));
         assert_eq!(view.after, Some(Figure::new("0.8 M", "After you confirm")));
         assert_eq!(view.lead, "Applies this month as soon as you confirm. What running Agents hold stays as it is. Also adds @new to this month’s list.");
@@ -3718,7 +3920,7 @@ mod tests {
             ("Held by running Agents".to_owned(), "0.6 M · 2 Agents".to_owned()),
         ]);
         assert_eq!(view.facts[0].note, "What this month can still give out.");
-        assert_eq!(view.facts[1].note, "The per-request limit can’t go below it.");
+        assert_eq!(view.facts[1].note, "The pool total allowance can’t go below it.");
         assert_eq!(view.primary, "Confirm Changes");
         assert!(view.primary_enabled && !view.primary_closes && !view.primary_recovers);
         // Listed people are locked; the person this window adds can be removed.
@@ -3770,13 +3972,13 @@ mod tests {
         let this = ms_month(form.predecessor.period_start_ms);
         assert_eq!(view.title, format!("Publish {month} Ahead"));
         assert_eq!(view.glyph, SheetGlyph::Renew);
-        // The hero leads with next month's capacity and the per-request limit under it; no arrow
+        // The hero leads with next month's capacity and the pool total allowance under it; no arrow
         // between two equal limits.
         assert_eq!(view.caption, format!("{month} capacity"));
         assert_eq!(view.before, None);
-        assert_eq!(view.after, Some(Figure::new("5 M", "Up to 2 M per request")));
-        assert_eq!(view.lead, format!("Starts {}. The list, the monthly maximum and the per-request limit carry over.", local_time(form.period_start_ms)));
-        assert_eq!(view.caution, format!("Once {month} is published ahead, this month’s per-request limit and list can’t change any more, and it can’t be withdrawn."));
+        assert_eq!(view.after, Some(Figure::new("5 M", "Up to 2 M in total")));
+        assert_eq!(view.lead, format!("Starts {}. The list, the monthly maximum and the pool total allowance carry over.", local_time(form.period_start_ms)));
+        assert_eq!(view.caution, format!("Once {month} is published ahead, this month’s pool total allowance and list can’t change any more, and it can’t be withdrawn."));
         // The list carries over unchanged: one row that opens in place.
         assert!(view.people_collapsible && !view.people_open);
         assert_eq!(view.people_summary, "1 person");
@@ -3787,7 +3989,7 @@ mod tests {
         let mut raised = draft.clone();
         raised.tokens = "3000000".into();
         let view = preview_view(&Phase::Choose, &raised, Some(&form), None, &[], Disclosure::default());
-        assert_eq!(view.caption, "Per-request limit");
+        assert_eq!(view.caption, "Pool total allowance");
         assert_eq!(view.before, Some(Figure::new("2 M", this)));
         assert_eq!(view.after, Some(Figure::new("3 M", month.clone())));
         assert!(view.lead.starts_with(&format!("{month} capacity is 5 M. Starts ")), "{}", view.lead);
@@ -3797,7 +3999,7 @@ mod tests {
         let live = publication(OwnerGrantPublicationState::ServerObserved, Some("active"));
         assert_eq!(
             proposal_notice(&live, Some(3_000_000), "", true, OCTOBER).unwrap(),
-            format!("Per-request limit: 2 M → 3 M\n{AMENDABLE_NOTE}")
+            format!("Pool total allowance: 2 M → 3 M\n{AMENDABLE_NOTE}")
         );
         let draft = initial_draft(Some(3_000_000), &[]);
         assert!(primary_available(&live, None, &draft, true, true, true, OCTOBER));
@@ -3817,7 +4019,7 @@ mod tests {
             let used = publication(OwnerGrantPublicationState::ServerObserved, Some(server));
             assert_eq!(
                 proposal_notice(&used, Some(3_000_000), "", true, OCTOBER).unwrap(),
-                format!("Per-request limit: Not in effect → 3 M\n{NOT_AMENDABLE_NOTE}")
+                format!("Pool total allowance: Not in effect → 3 M\n{NOT_AMENDABLE_NOTE}")
             );
             assert!(!primary_available(&used, None, &draft, true, true, true, OCTOBER));
         }
@@ -3839,7 +4041,7 @@ mod tests {
         assert_eq!(live_grant_tokens(&scheduled, OCTOBER), None);
         assert_eq!(
             proposal_notice(&scheduled, Some(3_000_000), "", true, OCTOBER).unwrap(),
-            format!("Per-request limit: Not in effect → 3 M\n{SCHEDULED_NOTE}")
+            format!("Pool total allowance: Not in effect → 3 M\n{SCHEDULED_NOTE}")
         );
         let draft = initial_draft(Some(3_000_000), &[]);
         assert!(!primary_available(&scheduled, None, &draft, true, true, true, OCTOBER));
@@ -3958,7 +4160,7 @@ mod tests {
         // The unchanged limit is a row, never a slider and never "2 M → 2 M".
         let open = preview_view(&Phase::Choose, &draft, Some(&form), None, &applicants, Disclosure { sharing: true, ..Disclosure::default() });
         assert!(!view.quota_visible && !open.quota_visible && open.sharing_visible && open.sharing_open && !view.sharing_open);
-        assert_eq!(facts(&view), [("Per-request limit".to_owned(), "2 M (unchanged)".to_owned())]);
+        assert_eq!(facts(&view), [("Pool total allowance".to_owned(), "2 M (unchanged)".to_owned())]);
         // Someone already on the list: nothing to confirm.
         let already = ["@manager:test".to_owned()];
         let mut same = initial_draft(Some(2_000_000), &already);
@@ -4044,7 +4246,7 @@ mod tests {
             add_people: false,
         }
     }
-    /// The owner's pool on 30 October: a per-request limit of 9 M, and one
+    /// The owner's pool on 30 October: a pool total allowance of 9 M, and one
     /// running Agent holding all 9 M this month can give out.
     fn held_pool() -> OwnerGrantSuccessionForm {
         let mut form = successor_form(OwnerGrantSuccessionKind::Amendment);
@@ -4070,12 +4272,13 @@ mod tests {
         // One possible amount: no slider, the reason and the way forward in the hero.
         assert!(!view.quota_visible);
         assert_eq!(view.after, Some(Figure::new("9 M", "Now")));
-        assert_eq!(view.lead, "You chose 5 M on the pool’s page, but running Agents hold all 9 M this month can give out, so the per-request limit can only be 9 M now. To give more, raise the monthly maximum on the pool’s page.");
+        assert_eq!(view.lead, "You chose 5 M on the pool’s page, but running Agents hold all 9 M this month can give out, so the pool total allowance can only be 9 M now. To give more, raise the monthly maximum on the pool’s page.");
         let inputs = GrantInputs::of(&state, now);
         assert_eq!((inputs.minimum, inputs.maximum, inputs.tokens.as_str()), (9_000_000, Some(9_000_000), "9000000"));
         // Typed below the floor in the window: the button keeps its plain name, disabled, beside the reason.
         let mut typed = draft.clone();
         typed.tokens = "5000000".into();
+        typed.per_request = "5000000".into();
         let view = grant_view(&proposal_state(&typed, &form, Some(5_000_000)), now);
         assert_eq!(view.primary, "Confirm Changes");
         assert!(!view.primary_enabled);
@@ -4337,8 +4540,8 @@ mod tests {
         assert_eq!(proposal.tone, SheetTone::Proposal);
         assert_eq!(failed.tone, SheetTone::Failed);
         assert_ne!(proposal.title, failed.title);
-        assert_eq!(failed.title, "Per-Request Limit Not Saved");
-        assert_eq!(failed.caption, "The per-request limit must be at least");
+        assert_eq!(failed.title, "Pool Limits Not Saved");
+        assert_eq!(failed.caption, "The pool total allowance must be at least");
         assert_eq!(failed.after, Some(Figure::new("0.6 M", "Held by running Agents")));
         assert_eq!(failed.lead, "You chose 0.5 M, which is less than the 0.6 M held by running Agents. Choose 0.6 M or more.");
         assert_eq!(failed.status, "Nothing was changed.");
@@ -4375,7 +4578,7 @@ mod tests {
         });
         let view = finished(&done, Some(&form), None);
         assert_eq!(view.tone, SheetTone::Done);
-        assert_eq!(view.title, "Per-Request Limit Saved");
+        assert_eq!(view.title, "Pool Limits Saved");
         assert_eq!((view.before.clone().unwrap().value, view.after.clone().unwrap().value), ("2 M".into(), "0.8 M".into()));
         assert!(view.lead.starts_with("New requests now get up to 0.8 M."), "{}", view.lead);
         assert!(facts(&view).contains(&("Held by running Agents".to_owned(), "0.6 M · 2 Agents".to_owned())));
@@ -4492,10 +4695,10 @@ mod tests {
         // The window titles and the two hold words use the tab's own terms.
         for (english, chinese) in [
             ("Publish {month}", "发布 {month}额度"),
-            ("Change Per-Request Limit", "修改每次申请上限"),
+            ("Change Pool Limits", "修改资源池额度"),
             ("Add People Who Can Request", "添加可以申请的人"),
             ("Publish {month} Ahead", "提前发布 {month}额度"),
-            ("Per-request limit", "每次申请上限"),
+            ("Pool total allowance", "资源池总额度"),
             ("Change the Monthly Maximum", "修改每月上限"),
             ("Held by running Agents", "正在运行的 Agent 已拿到"),
             ("Used and given out this month", "本月已用和已分出"),
@@ -4505,7 +4708,7 @@ mod tests {
             // The time ends with its zone,「11 月 1 日 08:00（北京时间）」, so 前 follows the bracket.
             ("Before {when}", "{when}前"),
             ("Monthly Maximum Saved", "已保存每月上限"),
-            ("Per-Request Limit Not Saved", "没有保存每次申请上限"),
+            ("Pool Limits Not Saved", "资源池额度未保存"),
             // One verb commits a new value in both windows and on the page; one saving line; one
             // section name; the page's own name for the list of people.
             ("Change to {amount}", "改成 {amount}"),
@@ -4519,7 +4722,7 @@ mod tests {
         // Every term and verb the windows share with the pool's page is the page's own text.
         let page = include_str!("../../apps/hagency/bundle/main.splash");
         for english in [
-            "Monthly maximum", "Per-request limit", "Held by running Agents", "Used and given out this month",
+            "Monthly maximum", "Held by running Agents", "Used and given out this month",
             "This month’s list only grows: people already on it can’t be removed.", "People who can request",
             "Add People Who Can Request", "Add to This Month’s List", "This pool", "Choose Again", "Publish Ahead",
             "Account limit", "Change to {amount}",
@@ -4584,9 +4787,9 @@ mod layout_tests {
         GrantView {
             tone: if choosing { SheetTone::Proposal } else { SheetTone::Done },
             glyph: SheetGlyph::Change,
-            title: text("Change Per-Request Limit", "修改每次申请上限"),
+            title: text("Change Pool Limits", "修改资源池额度"),
             pool: "Research · coding-model".into(),
-            caption: text("Per-request limit", "每次申请上限"),
+            caption: text("Pool total allowance", "资源池总额度"),
             before: Some(Figure::new("0.2 M", text("Now", "现在"))),
             after: Some(Figure::new("0.25 M", text("After you confirm", "确认后"))),
             lead: text("Applies this month as soon as you confirm. What running Agents hold stays as it is.", "确认后本月立即生效；正在运行的 Agent 已拿到的额度不变。").repeat(3),
@@ -4626,7 +4829,7 @@ mod layout_tests {
     #[test]
     fn sharing_period_taps_reach_the_window() {
         let view = long_view(false, true);
-        let inputs = GrantInputs { tokens: "250000".into(), minimum: 100_000, maximum: Some(800_000), presets: [true, true, true], selected: [false, false, true] };
+        let inputs = GrantInputs { per_request: "200000".into(), tokens: "250000".into(), minimum: 100_000, maximum: Some(800_000), presets: [true, true, true], selected: [false, false, true] };
         let (mut cx, panel) = draw_sheet(840.0, 700.0, &view, Some(&inputs), id!(grant_confirmation));
         for (path, days) in [
             (ids!(grant_confirmation.scroll.sharing.period.expiry_presets.day), Some(1)),
@@ -4658,7 +4861,7 @@ mod layout_tests {
                 for choosing in [true, false] {
                     for root in [id!(grant_confirmation), id!(ceiling_confirmation)] {
                         let view = long_view(cn, choosing);
-                        let inputs = GrantInputs { tokens: "250000".into(), minimum: 100_000, maximum: Some(800_000), presets: [true, false, true], selected: [false, false, true] };
+                        let inputs = GrantInputs { per_request: "200000".into(), tokens: "250000".into(), minimum: 100_000, maximum: Some(800_000), presets: [true, false, true], selected: [false, false, true] };
                         let (cx, panel) = draw_sheet(width, height, &view, Some(&inputs), root);
                         let at = |rest: &[LiveId]| super::super::sheet_ui::sheet_path(root, rest);
                         let cancel = panel.view.widget(&cx, &at(&[id!(buttons), id!(cancel)])).area().rect(&cx);
@@ -4677,7 +4880,7 @@ mod layout_tests {
                     if choosing {
                         // The value box sits beside the slider, as on the new-pool sheet.
                         let short = GrantView { facts: Vec::new(), caution: String::new(), lead: String::new(), people: Vec::new(), ..long_view(cn, true) };
-                        let inputs = GrantInputs { tokens: "250000".into(), minimum: 100_000, maximum: Some(800_000), presets: [true, false, true], selected: [false, false, true] };
+                        let inputs = GrantInputs { per_request: "200000".into(), tokens: "250000".into(), minimum: 100_000, maximum: Some(800_000), presets: [true, false, true], selected: [false, false, true] };
                         let (cx, panel) = draw_sheet(width, height, &short, Some(&inputs), id!(grant_confirmation));
                         let slider = panel.view.widget(&cx, ids!(grant_confirmation.scroll.quota.tokens.slider_wrap.amount_slider)).area().rect(&cx);
                         let input = panel.view.widget(&cx, ids!(grant_confirmation.scroll.quota.tokens.input)).area().rect(&cx);
