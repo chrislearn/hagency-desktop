@@ -120,7 +120,9 @@ impl HandoverStore {
             return Err(io::Error::new(io::ErrorKind::Unsupported, "local handover requires Unix"));
         }
         private_entry(root, true)?;
-        Ok(Self { root: fs::canonicalize(root)? })
+        let store = Self { root: fs::canonicalize(root)? };
+        store.cleanup_orphan_claims()?;
+        Ok(store)
     }
 
     pub fn offer(
@@ -211,7 +213,10 @@ impl HandoverStore {
         if unsafe { libc::flock(claim.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        // A previous claimant can finish between validation and locking.
+        // A sender can cancel, or a previous claimant can finish, between
+        // validation and locking. Revalidate before exposing any navigation.
+        let current: Envelope = read_private(&self.request_path(id))?;
+        if current != envelope { return Err(invalid("handover changed while claiming")); }
         if self.ack_path(id).try_exists()? { return Err(io::Error::new(io::ErrorKind::AlreadyExists, "handover already restored")); }
         Ok(Received { envelope, _claim: std::sync::Arc::new(claim) })
     }
@@ -263,14 +268,49 @@ impl HandoverStore {
         if current != ticket.envelope {
             return Err(invalid("handover changed before removal"));
         }
-        for path in [self.ack_path(&ticket.envelope.id), self.root.join(format!("{}.claim", ticket.envelope.id)), ticket.path.clone()] {
+        // Remove the request first. No new receiver may enter while its ack
+        // and claim are cleaned. A live receiver keeps its original lock inode.
+        for path in [ticket.path.clone(), self.ack_path(&ticket.envelope.id)] {
             match fs::remove_file(path) {
                 Ok(()) => (),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => (),
                 Err(e) => return Err(e),
             }
         }
+        self.remove_orphan_claim(&ticket.envelope.id)
+    }
+
+    fn cleanup_orphan_claims(&self) -> io::Result<()> {
+        for entry in fs::read_dir(&self.root)?.filter_map(Result::ok).take(128) {
+            let path = entry.path();
+            let Some(id) = path.file_name().and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".claim")).filter(|id| valid_id(id)) else { continue };
+            self.remove_orphan_claim(id)?;
+        }
         Ok(())
+    }
+
+    fn remove_orphan_claim(&self, id: &str) -> io::Result<()> {
+        if self.request_path(id).try_exists()? { return Ok(()); }
+        let path = self.root.join(format!("{id}.claim"));
+        if !path.try_exists()? { return Ok(()); }
+        private_entry(&path, false)?;
+        use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+        let claim = match OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOFOLLOW).open(&path) {
+            Ok(claim) => claim,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if unsafe { libc::flock(claim.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let error = io::Error::last_os_error();
+            return if error.kind() == io::ErrorKind::WouldBlock { Ok(()) } else { Err(error) };
+        }
+        if self.request_path(id).try_exists()? { return Ok(()); }
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     fn request_path(&self, id: &str) -> PathBuf {
@@ -433,6 +473,24 @@ mod tests {
         let recovered = f.1.receive(ticket.path(), "@owner:example.test", Host::Standalone, 1003).unwrap();
         f.1.acknowledge(&recovered, "@owner:example.test", 1004).unwrap();
         assert_eq!(f.1.poll(&ticket, "@owner:example.test", 1005).unwrap(), Status::Acknowledged);
+    }
+
+    #[test]
+    fn cancelled_handover_keeps_a_live_claim_then_cleans_it_after_release() {
+        let f = Fixture::new();
+        let ticket = f.offer();
+        let received = f.1.receive(ticket.path(), "@owner:example.test", Host::Standalone, 1001).unwrap();
+        let claim = f.0.join(format!("{}.claim", ticket.envelope.id));
+        f.1.remove(&ticket).unwrap();
+        assert!(!ticket.path().exists());
+        assert!(claim.exists(), "never unlink an inode locked by a live receiver");
+        HandoverStore::open(&f.0).unwrap();
+        assert!(claim.exists());
+        assert!(f.1.acknowledge(&received, "@owner:example.test", 1002).is_err());
+        drop(received);
+        HandoverStore::open(&f.0).unwrap();
+        assert!(!claim.exists(), "orphan claims are reclaimed on the next poll/open");
+        assert_eq!(fs::read_dir(&f.0).unwrap().count(), 0);
     }
 
     #[test]
