@@ -14,7 +14,7 @@
 //! [`DaemonConnector`] runs one worker thread so UI threads never block. It
 //! coalesces queued snapshot reads, keeps the original request ID when
 //! looking up an uncertain command, and reports results as [`ConnectorEvent`]s.
-use crate::model::{CommandKind, CommandResult, CommandTicket, ConnectionStatus, CommandPhase, PendingCommand};
+use crate::model::{CommandKind, CommandResult, CommandTicket, ConnectionStatus, CommandPhase, PendingCommand, rejection_settles_original};
 use hagency_metering::dashboard::{DashboardSnapshot, HostingState, UsageFilter, period::UsagePeriod};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -614,7 +614,7 @@ impl Worker {
         let request = Request {
             version: API_VERSION,
             request_id: new_request_id("ods"),
-            owner_id: Some(owner_id),
+            owner_id: Some(owner_id.clone()),
             expected_revision: None,
             command: Command::Snapshot { period: period.and_then(|period| {
                 let clock = crate::Clock::system();
@@ -626,7 +626,10 @@ impl Worker {
             Err(e) => self.emit(ConnectorEvent::Connection(status_for_transport(&e))),
             Ok(reply) => match reply.snapshot() {
                 Ok(snapshot) => {
-                    if let Some(owner) = &snapshot.owner {
+                    if snapshot.owner.as_ref().is_none_or(|owner| owner.user_id != owner_id) {
+                        return self.emit(ConnectorEvent::Connection(ConnectionStatus::OwnerMismatch));
+                    }
+                    if let Some(owner) = snapshot.owner.as_ref().filter(|_| snapshot.is_compatible()) {
                         if let Ok(store) = crate::command_store::CommandStore::open(&self.endpoint.home, &owner.user_id) {
                             if let Ok(Some(mut command)) = store.load() {
                                 command.observe(&snapshot);
@@ -704,12 +707,20 @@ impl Worker {
             }
             Err(TransportError::Uncertain | TransportError::Protocol) => CommandResult::Uncertain { message: String::new() },
         };
+        let result = match result {
+            CommandResult::Rejected { ref code, .. } if previous.is_some() && !rejection_settles_original(code) =>
+                CommandResult::Uncertain { message: code.clone() },
+            CommandResult::NotSubmitted { ref code, .. } if previous.is_some() =>
+                CommandResult::Uncertain { message: code.clone() },
+            other => other,
+        };
         // A failed lookup is not evidence that an earlier submission failed.
         // Keep accepted commands until an authoritative later state settles.
         match &result {
             CommandResult::Accepted => { saved.phase = CommandPhase::Accepted; let _ = store.save(&saved); },
             CommandResult::Completed | CommandResult::Unchanged => { let _ = store.clear(); },
-            CommandResult::Rejected { .. } | CommandResult::NotSubmitted { .. } if previous.is_none() => { let _ = store.clear(); },
+            CommandResult::Rejected { code, .. } if previous.is_none() || rejection_settles_original(code) => { let _ = store.clear(); },
+            CommandResult::NotSubmitted { .. } if previous.is_none() => { let _ = store.clear(); },
             _ => {},
         }
         self.emit(ConnectorEvent::CommandResult { request_id, result });

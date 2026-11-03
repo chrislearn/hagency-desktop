@@ -123,6 +123,13 @@ pub enum CommandResult {
     Uncertain { message: String },
 }
 
+/// These failures are produced only after the daemon's durable receipt lookup
+/// under its mutation lock. Unlike busy/scope/transport refusals, they prove
+/// the original hosting command has no applied receipt and did not execute.
+pub(crate) fn rejection_settles_original(code: &str) -> bool {
+    matches!(code, "revision_conflict" | "hosting_stopped")
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CommandPhase {
     Submitting,
@@ -391,7 +398,8 @@ impl DashboardState {
     }
 
     pub fn recover_command(&mut self, mut command: PendingCommand) {
-        if self.command.as_ref().is_some_and(|current| current.in_flight()) { return; }
+        if self.command.as_ref().is_some_and(|current| current.in_flight()
+            && !(current.ticket == command.ticket && current.kind == command.kind && command.phase == CommandPhase::Accepted)) { return; }
         if matches!(command.phase, CommandPhase::Submitting | CommandPhase::Checking) {
             command.phase = CommandPhase::Uncertain;
         }
@@ -492,8 +500,9 @@ impl DashboardState {
         command.phase = match result {
             // A refusal of the lookup/replay attempt (busy, scope/version
             // failure, etc.) is not proof that the original never executed.
-            CommandResult::Rejected { .. }
-                if matches!(command.phase, CommandPhase::Checking | CommandPhase::Uncertain) => CommandPhase::Uncertain,
+            CommandResult::Rejected { ref code, .. }
+                if matches!(command.phase, CommandPhase::Checking | CommandPhase::Uncertain)
+                    && !rejection_settles_original(code) => CommandPhase::Uncertain,
             CommandResult::NotSubmitted { .. }
                 if !matches!(command.phase, CommandPhase::Submitting) => CommandPhase::Uncertain,
             CommandResult::NotSubmitted { code, retryable } => {

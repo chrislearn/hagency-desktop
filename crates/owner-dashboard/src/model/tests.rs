@@ -546,3 +546,21 @@ fn stale_and_wrong_owner_refresh_replies_stop_the_spinner() {
     assert_eq!(state.apply_snapshot(snapshot, None), SnapshotOutcome::WrongOwner);
     assert!(!state.refreshing);
 }
+
+#[test]
+fn original_refusal_settles_recovered_ticket_and_acceptance_can_arrive_from_another_host() {
+    let mut state = fixtures::scenario("uncertain").unwrap();
+    state.check_command().unwrap();
+    state.command_result("fixture-1", CommandResult::Rejected { code: "revision_conflict".into(), message: String::new(), retryable: true }, FIXTURE_NOW_MS);
+    assert!(matches!(state.command.as_ref().unwrap().phase, CommandPhase::Rejected { .. }));
+    assert!(state.retry_rejected(FIXTURE_NOW_MS).is_some());
+
+    let mut state = fixtures::scenario("uncertain").unwrap();
+    let mut accepted = state.command.as_ref().unwrap().clone();
+    accepted.phase = CommandPhase::Accepted;
+    state.recover_command(accepted);
+    let mut paused = ordinary(HostingState::Paused);
+    paused.revision = 43;
+    state.apply_snapshot(paused, None);
+    assert!(matches!(state.command.as_ref().unwrap().phase, CommandPhase::Confirmed { .. }));
+}

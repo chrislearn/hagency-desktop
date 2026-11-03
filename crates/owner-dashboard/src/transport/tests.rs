@@ -362,3 +362,88 @@ fn command_is_not_sent_when_its_durable_record_cannot_be_saved() {
     assert!(matches!(events.last(), Some(ConnectorEvent::CommandResult { result: CommandResult::NotSubmitted { code, .. }, .. }) if code == "command_recovery_unavailable"), "{events:?}");
     assert!(seen.lock().unwrap().iter().all(|request| request["command"]["type"] == "hello"));
 }
+
+#[test]
+fn recovered_definitive_refusal_allows_a_fresh_command() {
+    let home = TempHome::new();
+    let mut first = true;
+    let seen = fake_daemon(&home.0, Box::new(move |request| match request["command"]["type"].as_str().unwrap() {
+        "hello" => Some(ok(&request, hello(Some(OWNER)))),
+        "snapshot" => Some(ok(&request, serde_json::to_value(ordinary(HostingState::Running)).unwrap())),
+        "pauseHosting" if first => { first = false; None },
+        "pauseHosting" if request["requestId"] == "old-rejected" => Some(err(&request, "revision_conflict", true)),
+        "pauseHosting" => Some(ok(&request, json!({"state":"completed","hosting":"paused","revision":43}))),
+        _ => None,
+    }));
+    let ticket = CommandTicket { request_id: "old-rejected".into(), expected_revision: Some(1) };
+    let connector = DaemonConnector::spawn(DaemonEndpoint::new(&home.0), OwnerScope::Fixed(OWNER.into()), || {});
+    connector.submit(Job::Command { kind: CommandKind::Pause, ticket: ticket.clone() });
+    assert!(matches!(wait_events(&connector, 2).last(), Some(ConnectorEvent::CommandResult { result: CommandResult::Uncertain { .. }, .. })));
+    drop(connector);
+    let connector = DaemonConnector::spawn(DaemonEndpoint::new(&home.0), OwnerScope::Fixed(OWNER.into()), || {});
+    connector.submit(Job::Snapshot { period: None, usage_filter: None });
+    assert!(wait_events(&connector, 3).iter().any(|event| matches!(event, ConnectorEvent::PendingCommand(_))));
+    connector.submit(Job::Command { kind: CommandKind::Pause, ticket });
+    assert!(matches!(wait_events(&connector, 2).last(), Some(ConnectorEvent::CommandResult { result: CommandResult::Rejected { code, .. }, .. }) if code == "revision_conflict"));
+    connector.submit(Job::Command { kind: CommandKind::Pause, ticket: CommandTicket { request_id: "new-after-refusal".into(), expected_revision: Some(42) } });
+    assert!(matches!(wait_events(&connector, 2).last(), Some(ConnectorEvent::CommandResult { result: CommandResult::Completed, .. })));
+    assert!(seen.lock().unwrap().iter().any(|request| request["requestId"] == "new-after-refusal"));
+}
+
+#[test]
+fn foreign_snapshot_cannot_remove_another_owners_pending_record() {
+    let home = TempHome::new();
+    let foreign = "@other:example.test";
+    let store = crate::command_store::CommandStore::open(&home.0, foreign).unwrap();
+    let saved = PendingCommand { kind: CommandKind::Pause, ticket: CommandTicket { request_id: "foreign-pending".into(), expected_revision: Some(41) }, phase: CommandPhase::Accepted };
+    store.save(&saved).unwrap();
+    drop(store);
+    fake_daemon(&home.0, Box::new(move |request| Some(match request["command"]["type"].as_str().unwrap() {
+        "hello" => ok(&request, hello(Some(OWNER))),
+        _ => {
+            let mut snapshot = ordinary(HostingState::Paused);
+            snapshot.owner.as_mut().unwrap().user_id = foreign.into();
+            ok(&request, serde_json::to_value(snapshot).unwrap())
+        }
+    })));
+    let connector = DaemonConnector::spawn(DaemonEndpoint::new(&home.0), OwnerScope::Fixed(OWNER.into()), || {});
+    connector.submit(Job::Snapshot { period: None, usage_filter: None });
+    assert!(matches!(wait_events(&connector, 2).last(), Some(ConnectorEvent::Connection(ConnectionStatus::OwnerMismatch))));
+    assert_eq!(crate::command_store::CommandStore::open(&home.0, foreign).unwrap().load().unwrap(), Some(saved));
+}
+
+#[test]
+fn restarted_check_busy_keeps_the_original_ticket_and_disables_new_retry() {
+    let home = TempHome::new();
+    let mut first = true;
+    fake_daemon(&home.0, Box::new(move |request| match request["command"]["type"].as_str().unwrap() {
+        "hello" => Some(ok(&request, hello(Some(OWNER)))),
+        "snapshot" => Some(ok(&request, serde_json::to_value(ordinary(HostingState::Running)).unwrap())),
+        "pauseHosting" if first => { first = false; None },
+        "pauseHosting" => Some(err(&request, "busy", true)),
+        _ => None,
+    }));
+    let ticket = CommandTicket { request_id: "lost-accepted".into(), expected_revision: Some(42) };
+    let connector = DaemonConnector::spawn(DaemonEndpoint::new(&home.0), OwnerScope::Fixed(OWNER.into()), || {});
+    connector.submit(Job::Command { kind: CommandKind::Pause, ticket: ticket.clone() });
+    assert!(matches!(wait_events(&connector, 2).last(), Some(ConnectorEvent::CommandResult { result: CommandResult::Uncertain { .. }, .. })));
+    drop(connector);
+    let connector = DaemonConnector::spawn(DaemonEndpoint::new(&home.0), OwnerScope::Fixed(OWNER.into()), || {});
+    connector.submit(Job::Snapshot { period: None, usage_filter: None });
+    let mut state = crate::fixtures::scenario("running").unwrap();
+    for event in wait_events(&connector, 3) {
+        if let ConnectorEvent::PendingCommand(command) = event { state.recover_command(command); }
+    }
+    assert!(state.check_command().is_some());
+    connector.submit(Job::Command { kind: CommandKind::Pause, ticket: ticket.clone() });
+    for event in wait_events(&connector, 2) {
+        if let ConnectorEvent::CommandResult { request_id, result } = event {
+            assert!(matches!(result, CommandResult::Uncertain { .. }));
+            state.command_result(&request_id, result, crate::fixtures::FIXTURE_NOW_MS);
+        }
+    }
+    assert_eq!(state.command.as_ref().unwrap().phase, CommandPhase::Uncertain);
+    assert_eq!(state.command.as_ref().unwrap().ticket, ticket);
+    assert!(state.retry_rejected(crate::fixtures::FIXTURE_NOW_MS).is_none());
+    assert_eq!(crate::command_store::CommandStore::open(&home.0, OWNER).unwrap().load().unwrap().unwrap().ticket, ticket);
+}
