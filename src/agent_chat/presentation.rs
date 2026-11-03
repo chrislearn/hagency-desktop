@@ -14,7 +14,9 @@ use matrix_sdk::ruma::{events::room::message::FormattedBody, UserId};
 use super::agents::{is_agent_localpart, AgentRole};
 
 pub(crate) fn markdown_body(body: &str) -> Option<FormattedBody> {
-    FormattedBody::markdown(body).map(|mut formatted| {
+    let source = rinx_answer_export::cjk_markdown::CjkMarkdown::new(body);
+    FormattedBody::markdown(source.source()).map(|mut formatted| {
+        formatted.body = source.clean(&formatted.body);
         formatted.sanitize_html(
             matrix_sdk::ruma::html::HtmlSanitizerMode::Strict,
             matrix_sdk::ruma::html::RemoveReplyFallback::No,
@@ -176,7 +178,20 @@ impl AgentMessagePresentation {
                     body,
                 }),
             }
-        }).or_else(|| {
+        });
+        // Older/current senders use CommonMark's punctuation flanking rules.
+        // Repair only HTML generated from this exact Markdown source. An
+        // intentionally different formatted body is still authoritative.
+        let formatted = if rinx_answer_export::cjk_markdown::CjkMarkdown::new(&body).changed()
+            && formatted.as_ref().is_none_or(|f| {
+                FormattedBody::markdown(&body).is_some_and(|mut expected| {
+                    expected.sanitize_html(matrix_sdk::ruma::html::HtmlSanitizerMode::Strict,
+                        matrix_sdk::ruma::html::RemoveReplyFallback::No);
+                    expected.body == f.body
+                })
+            })
+        { markdown_body(&body).map(Cow::Owned) } else { formatted };
+        let formatted = formatted.or_else(|| {
             // Older Agent senders omitted Matrix's rich-text fields. Render their
             // original Markdown locally; ordinary human /plain messages never
             // enter this Agent-only presentation path. No event is edited/sent.
@@ -259,5 +274,24 @@ mod tests {
         let existing = FormattedBody::html("<p>Already formatted</p>");
         assert_eq!(p.present(source, Some(&existing)).1.unwrap().body, existing.body);
         assert!(AgentMessagePresentation::for_sender(&OwnedUserId::try_from("@edward:example.org").unwrap()).is_none());
+    }
+
+    #[test]
+    fn chinese_bold_is_repaired_in_existing_agent_html_and_preserves_source() {
+        let sender = OwnedUserId::try_from("@_hagency_agt_chinese:example.org").unwrap();
+        let mut p = AgentMessagePresentation::for_sender(&sender).unwrap();
+        let source = "## 最新判断\n\n**时间点很重要：**截至美国得州中部时间 **2026 年 11 月 3 日下午约 2 点**\n\n- **民主党：**得州州众议员\n\n| 调查 | 结果 |\n|---|---|\n| 民调 | **领先：**2.6% |\n\n[来源](https://example.org)\n\n`**代码：**截至`";
+        let existing = FormattedBody::markdown(source).unwrap();
+        assert!(existing.body.contains("**时间点很重要：**"));
+        for rich in [None, Some(&existing)] {
+            let (body, fixed) = p.present(source, rich);
+            assert_eq!(body, source);
+            let fixed = fixed.unwrap();
+            for text in ["<strong>时间点很重要：</strong>截至", "<strong>民主党：</strong>", "<table>", "<code>**代码：**截至</code>"] {
+                assert!(fixed.body.contains(text), "missing {text}: {}", fixed.body);
+            }
+        }
+        let custom = FormattedBody::html("<p>Explicit HTML</p>");
+        assert_eq!(p.present(source, Some(&custom)).1.unwrap().body, custom.body);
     }
 }

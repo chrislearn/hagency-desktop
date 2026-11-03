@@ -30,6 +30,17 @@ mod usage_preview_tests {
         // Presentation does not change the SDK message used for copy/forward.
         assert_eq!(message.body(),body);
     }
+    #[test]
+    fn chinese_agent_markdown_preview_matches_answer_and_human_plain_stays_literal() {
+        let body = "**时间点很重要：**截至\n\n**投票仍在进行**";
+        let rich = MessageType::text_markdown(body);
+        let preview = text_preview_of_message(&rich, matrix_sdk::ruma::user_id!("@_hagency_agt_chinese:test"), "Agent").format_with("Agent", true);
+        assert!(preview.contains("<strong>时间点很重要：</strong>截至"));
+        let plain = MessageType::text_plain(body);
+        let human = text_preview_of_message(&plain, matrix_sdk::ruma::user_id!("@alice:test"), "Alice").format_with("Alice", true);
+        assert!(human.contains("**时间点很重要：**截至"));
+        assert_eq!(rich.body(), body);
+    }
 }
 
 /// What should be displayed before the text preview of an event.
@@ -275,7 +286,12 @@ fn text_preview_of_message(
         MessageType::Text(text) => {
             let usage=crate::shared::agent_usage::parse_usage(sender_user_id.localpart(),&text.body,text.formatted.is_some());
             let visible_body=usage.as_ref().map_or(text.body.as_str(),|u|u.answer);
-            text.formatted
+            let presented = crate::agent_chat::presentation::AgentMessagePresentation::for_sender(sender_user_id)
+                .filter(|_| text.formatted.is_some() || rinx_answer_export::cjk_markdown::CjkMarkdown::new(visible_body).changed())
+                .map(|mut agent| agent.present(visible_body, text.formatted.as_ref()));
+            let visible_body = presented.as_ref().map_or(visible_body, |(body, _)| body.as_ref());
+            let formatted = presented.as_ref().map_or(text.formatted.as_ref(), |(_, rich)| rich.as_deref());
+            formatted
                 .as_ref()
                 .and_then(|fb|
                     (fb.format == MessageFormat::Html).then(|| {

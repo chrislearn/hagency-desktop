@@ -1,4 +1,5 @@
 //! Local-only Markdown answer export. Never fetches images, links, or fonts.
+pub mod cjk_markdown;
 use std::{collections::HashMap, ops::Range, sync::Arc};
 use krilla::{
     Document,
@@ -46,6 +47,7 @@ enum Part {
 }
 
 fn blocks(body: &str) -> Vec<Part> {
+    let markdown = cjk_markdown::CjkMarkdown::new(body);
     let mut out = Vec::new();
     let mut b = Block::default();
     let mut row = Vec::new();
@@ -60,7 +62,7 @@ fn blocks(body: &str) -> Vec<Part> {
         }
     };
     for event in Parser::new_ext(
-        body,
+        markdown.source(),
         Options::ENABLE_TABLES
             | Options::ENABLE_STRIKETHROUGH
             | Options::ENABLE_TASKLISTS
@@ -156,7 +158,7 @@ fn blocks(body: &str) -> Vec<Part> {
             | Event::Html(text)
             | Event::InlineHtml(text)
             | Event::InlineMath(text)
-            | Event::DisplayMath(text) => b.text.push_str(&text),
+            | Event::DisplayMath(text) => b.text.push_str(&markdown.clean(&text)),
             Event::SoftBreak => b.text.push(' '),
             Event::HardBreak => b.text.push('\n'),
             Event::TaskListMarker(done) => b.text.push_str(if done { "[x] " } else { "[ ] " }),
@@ -497,6 +499,17 @@ mod tests {
     fn markdown_retains_complete_utf8_source() {
         let source = format!("## 中文\n\n{}\n\nEND\n", "long answer 👩‍💻\n".repeat(500));
         assert_eq!(markdown(&source), source.as_bytes());
+    }
+    #[test]
+    fn pdf_bold_ranges_follow_chinese_display_without_changing_markdown_export() {
+        let source = "**时间点很重要：**截至\n\n`**代码：**截至`";
+        assert_eq!(markdown(source), source.as_bytes());
+        let parts = blocks(source);
+        let Part::Text(first) = &parts[0] else { panic!("paragraph expected") };
+        assert_eq!(first.text, "时间点很重要：截至");
+        assert_eq!(first.bold, vec![0.."时间点很重要：".len()]);
+        let Part::Text(second) = &parts[1] else { panic!("code paragraph expected") };
+        assert_eq!(second.text, "**代码：**截至");
     }
     #[test]
     fn pdf_paginates_and_embeds_fonts_and_source_links() {
