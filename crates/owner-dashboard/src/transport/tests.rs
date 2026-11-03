@@ -168,11 +168,12 @@ fn missing_or_public_socket_is_refused_before_sending() {
 #[test]
 fn connector_discovers_owner_reads_snapshot_and_sends_commands() {
     let home = TempHome::new();
-    let seen = fake_daemon(&home.0, Box::new(|request| {
+    let mut paused = false;
+    let seen = fake_daemon(&home.0, Box::new(move |request| {
         Some(match request["command"]["type"].as_str().unwrap() {
             "hello" => ok(&request, hello(Some(OWNER))),
-            "snapshot" => ok(&request, serde_json::to_value(ordinary(HostingState::Running)).unwrap()),
-            "pauseHosting" => ok(&request, json!({"state":"accepted","hosting":"draining","revision":8})),
+            "snapshot" => ok(&request, serde_json::to_value(ordinary(if paused { HostingState::Paused } else { HostingState::Running })).unwrap()),
+            "pauseHosting" => { paused = true; ok(&request, json!({"state":"accepted","hosting":"draining","revision":8})) },
             "stopHosting" => err(&request, "revision_conflict", false),
             _ => err(&request, "not_supported", false),
         })
@@ -189,6 +190,8 @@ fn connector_discovers_owner_reads_snapshot_and_sends_commands() {
     connector.submit(Job::Command { kind: CommandKind::Pause, ticket: ticket.clone() });
     let events = wait_events(&connector, 2);
     assert_eq!(events[1], ConnectorEvent::CommandResult { request_id: "cmd-1".into(), result: CommandResult::Accepted });
+    connector.submit(Job::Snapshot { period: None, usage_filter: None });
+    assert!(matches!(wait_events(&connector, 2).last(), Some(ConnectorEvent::Snapshot { .. })));
     connector.submit(Job::Command { kind: CommandKind::Stop, ticket: CommandTicket { request_id: "cmd-2".into(), expected_revision: Some(1) } });
     let events = wait_events(&connector, 2);
     assert!(matches!(&events[1], ConnectorEvent::CommandResult { result: CommandResult::Rejected { code, retryable: false, .. }, .. } if code == "revision_conflict"));
@@ -212,6 +215,7 @@ fn lost_reply_is_uncertain_and_lookup_reuses_the_request_id() {
     let seen = fake_daemon(&home.0, Box::new(move |request| {
         match request["command"]["type"].as_str().unwrap() {
             "hello" => Some(ok(&request, hello(Some(OWNER)))),
+            "snapshot" => Some(ok(&request, serde_json::to_value(ordinary(HostingState::Running)).unwrap())),
             "pauseHosting" if drop_first_pause => {
                 drop_first_pause = false;
                 None
@@ -225,6 +229,11 @@ fn lost_reply_is_uncertain_and_lookup_reuses_the_request_id() {
     connector.submit(Job::Command { kind: CommandKind::Pause, ticket: ticket.clone() });
     let events = wait_events(&connector, 2);
     assert!(matches!(events.last(), Some(ConnectorEvent::CommandResult { result: CommandResult::Uncertain { .. }, .. })), "{events:?}");
+    drop(connector);
+    let connector = DaemonConnector::spawn(DaemonEndpoint::new(&home.0), OwnerScope::Discover, || {});
+    connector.submit(Job::Snapshot { period: None, usage_filter: None });
+    let recovered = wait_events(&connector, 3);
+    assert!(recovered.iter().any(|event| matches!(event, ConnectorEvent::PendingCommand(saved) if saved.ticket == ticket && saved.kind == CommandKind::Pause && saved.phase == CommandPhase::Uncertain)), "{recovered:?}");
     connector.submit(Job::Command { kind: CommandKind::Pause, ticket });
     let events = wait_events(&connector, 2);
     assert!(events.iter().any(|e| *e == ConnectorEvent::CommandResult { request_id: "cmd-lost".into(), result: CommandResult::Completed }), "{events:?}");
@@ -340,4 +349,16 @@ fn retiring_after_connect_prevents_an_advisory_or_mutating_write() {
     assert_eq!(connection.call_guarded(&request,Duration::from_secs(1),Some(&retired)),Err(TransportError::Unavailable));
     let mut byte=[0];
     assert_eq!(peer.read(&mut byte).unwrap_err().kind(),std::io::ErrorKind::WouldBlock);
+}
+
+#[test]
+fn command_is_not_sent_when_its_durable_record_cannot_be_saved() {
+    let home = TempHome::new();
+    let seen = fake_daemon(&home.0, Box::new(|request| Some(ok(&request, hello(Some(OWNER))))));
+    std::fs::write(home.0.join("controller-commands"), "not a directory").unwrap();
+    let connector = DaemonConnector::spawn(DaemonEndpoint::new(&home.0), OwnerScope::Fixed(OWNER.into()), || {});
+    connector.submit(Job::Command { kind: CommandKind::Pause, ticket: CommandTicket { request_id: "must-not-send".into(), expected_revision: Some(42) } });
+    let events = wait_events(&connector, 2);
+    assert!(matches!(events.last(), Some(ConnectorEvent::CommandResult { result: CommandResult::NotSubmitted { code, .. }, .. }) if code == "command_recovery_unavailable"), "{events:?}");
+    assert!(seen.lock().unwrap().iter().all(|request| request["command"]["type"] == "hello"));
 }

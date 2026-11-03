@@ -106,20 +106,4 @@ impl Service {
         });
     }
 
-    /// The setup host stages the exact current root before requesting daemon
-    /// enrollment. Cancellation after staging keeps custody assigned remotely.
-    pub async fn stage_daemon_handover(&self) -> Result<PathBuf, String> {
-        self.check()?;
-        let home = crate::hagency::owner_dashboard::endpoint().home;
-        ::hagency::daemon::enrollment::Enrollment::stage_handover(
-            &home,
-            &self.0.origin,
-            &self.0.owner,
-            None,
-            &self.0.state,
-        )
-        .map_err(|e| e.code().to_owned())?;
-        self.remote_client().await?;
-        Ok(self.0.state.clone())
-    }
 }

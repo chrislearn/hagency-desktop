@@ -4,6 +4,18 @@
 use makepad_widgets::*;
 use std::collections::HashSet;
 
+pub fn contains_focus(root: &dyn WidgetNode, cx: &Cx) -> bool {
+    if !root.visible() || !cx.key_focus().is_valid(cx) { return false; }
+    if root.area().is_valid(cx) && root.area() == cx.key_focus() { return true; }
+    let mut found = false;
+    root.children(&mut |_, child| {
+        if !found && child.visible() {
+            found = controls(&child, cx).iter().any(|control| control.area() == cx.key_focus());
+        }
+    });
+    found
+}
+
 pub fn controls(root: &WidgetRef, cx: &Cx) -> Vec<WidgetRef> {
     fn visit(root: &WidgetRef, cx: &Cx, seen: &mut HashSet<WidgetUid>, out: &mut Vec<WidgetRef>) {
         if !root.visible() || !seen.insert(root.widget_uid()) || seen.len() > 8192 { return; }
@@ -96,7 +108,9 @@ pub fn handle(root: &WidgetRef, cx: &mut Cx, key: &KeyEvent, wrap: bool) -> bool
     if !matches!(key.key_code, KeyCode::Tab | KeyCode::ReturnKey | KeyCode::Space | KeyCode::Escape) { return false; }
     let controls = controls(root, cx);
     let current = controls.iter().position(|widget| widget.area() == cx.key_focus());
-    if !wrap && current.is_none() && cx.key_focus().is_valid(cx) { return false; }
+    // Embedded hosts may only handle a scope that already owns focus. Empty
+    // focus belongs to the window, which chooses its own first navigation stop.
+    if !wrap && current.is_none() { return false; }
     if key.key_code == KeyCode::Tab {
         if let Some(index) = next(current, controls.len(), key.modifiers.shift, wrap) {
             focus(cx, controls[index].area());
@@ -127,14 +141,16 @@ pub fn handle(root: &WidgetRef, cx: &mut Cx, key: &KeyEvent, wrap: bool) -> bool
 /// visible dashboard; a hidden Agent tab cannot intercept chat typing.
 pub fn embedded(root: &WidgetRef, cx: &mut Cx, event: &Event) -> bool {
     let Event::KeyDown(key) = event else { return false };
-    fn find(root: &WidgetRef, seen: &mut HashSet<WidgetUid>) -> Option<WidgetRef> {
+    fn find(root: &WidgetRef, cx: &Cx, seen: &mut HashSet<WidgetUid>) -> Option<WidgetRef> {
         if !root.visible() || !seen.insert(root.widget_uid()) || seen.len() > 8192 { return None; }
-        if root.borrow::<crate::widget::OwnerDashboard>().is_some() { return Some(root.clone()); }
+        if root.borrow::<crate::widget::OwnerDashboard>().is_some() {
+            return controls(root, cx).iter().any(|control| control.area() == cx.key_focus()).then(|| root.clone());
+        }
         let mut found = None;
-        root.children(&mut |_, child| { if found.is_none() { found = find(&child, seen); } });
+        root.children(&mut |_, child| { if found.is_none() { found = find(&child, cx, seen); } });
         found
     }
-    find(root, &mut HashSet::new()).is_some_and(|dashboard| handle(&dashboard, cx, key, false))
+    find(root, cx, &mut HashSet::new()).is_some_and(|dashboard| handle(&dashboard, cx, key, false))
 }
 
 #[cfg(test)]

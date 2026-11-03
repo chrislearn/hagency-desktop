@@ -45,3 +45,5 @@ pub fn script_mod(vm: &mut makepad_widgets::ScriptVm) {
     picker::script_mod(vm);
     widget::script_mod(vm);
 }
+
+mod command_store;

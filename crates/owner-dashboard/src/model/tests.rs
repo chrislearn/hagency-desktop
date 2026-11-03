@@ -506,3 +506,39 @@ fn pending_dimension_filter_never_displays_global_usage_as_filtered() {
     assert!(presentation.usage.by_resource.is_empty());
     assert_eq!(presentation.overview_usage.lines, running().present(clock()).overview_usage.lines);
 }
+
+#[test]
+fn accepted_command_settles_after_later_state_change_but_unknown_does_not() {
+    for hosting in [HostingState::Running, HostingState::Stopped, HostingState::Failed, HostingState::Offline] {
+        let mut state = running();
+        state.request(CommandKind::Pause, FIXTURE_NOW_MS).unwrap();
+        state.command_result("fixture-1", CommandResult::Accepted, FIXTURE_NOW_MS);
+        let mut snapshot = ordinary(hosting);
+        snapshot.revision = 43;
+        state.apply_snapshot(snapshot.clone(), None);
+        assert_eq!(state.command.as_ref().unwrap().phase, CommandPhase::Superseded);
+        assert!(state.present(clock()).command.unwrap().can_dismiss);
+        state.dismiss_command();
+        assert!(state.command.is_none());
+        let mut uncertain = fixtures::scenario("uncertain").unwrap();
+        let ticket = uncertain.command.as_ref().unwrap().ticket.clone();
+        uncertain.apply_snapshot(snapshot, None);
+        uncertain.dismiss_command();
+        assert_eq!(uncertain.command.as_ref().unwrap().ticket, ticket);
+        assert!(uncertain.command.as_ref().unwrap().in_flight());
+    }
+}
+
+#[test]
+fn stale_and_wrong_owner_refresh_replies_stop_the_spinner() {
+    let mut state = running();
+    state.begin_refresh();
+    let mut snapshot = ordinary(HostingState::Running);
+    snapshot.revision = 1;
+    assert_eq!(state.apply_snapshot(snapshot.clone(), None), SnapshotOutcome::Stale);
+    assert!(!state.refreshing);
+    state.begin_refresh();
+    snapshot.owner.as_mut().unwrap().user_id = "@other:example.test".into();
+    assert_eq!(state.apply_snapshot(snapshot, None), SnapshotOutcome::WrongOwner);
+    assert!(!state.refreshing);
+}

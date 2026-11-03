@@ -69,6 +69,9 @@ impl Service {
         if self.0.logout_requested.load(Ordering::Acquire) {
             if let Some(home)=self.daemon_assignment()? {
                 let remote=::hagency::daemon::bridge::ControllerClient::new(home,self.0.owner.clone(),self.0.origin.clone(),self.0.epoch+1);
+                // The client persists the owner-scoped revocation fence before
+                // socket IO. Offline delivery may finish later; a persistence
+                // or scope error still prevents unsafe local sign-out.
                 remote.sign_out().await.map_err(|e|e.code)?;
                 remote.retire();
             }
@@ -142,7 +145,10 @@ impl Service {
                 let state=Self::state_for(&origin,&owner)?;
                 if let Some(home)=Self::assignment_for(&origin,&owner,&state)? {
                     let remote=::hagency::daemon::bridge::ControllerClient::new(home,owner,origin,crate::account_session::epoch()+1);
-                    remote.sign_out().await.map_err(|e|e.code)?;remote.retire();
+                    // The client persists the owner-scoped revocation fence before
+                // socket IO. Offline delivery may finish later; a persistence
+                // or scope error still prevents unsafe local sign-out.
+                remote.sign_out().await.map_err(|e|e.code)?;remote.retire();
                 }
             }
         }

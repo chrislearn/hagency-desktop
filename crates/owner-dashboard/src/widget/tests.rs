@@ -145,6 +145,25 @@ fn rows_are_reused_across_refreshes() {
 }
 
 #[test]
+fn duplicate_activity_ids_keep_each_existing_row_on_refresh() {
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    register(&mut cx, false);
+    let widget = instantiate(&mut cx);
+    let dashboard = widget.as_owner_dashboard();
+    dashboard.set_owner_scope(&mut cx, Some(fixtures::OWNER));
+    let mut snapshot = fixtures::refresh_step(0);
+    snapshot.activities.push(snapshot.activities[0].clone());
+    dashboard.set_snapshot(&mut cx, snapshot.clone());
+    let uids = |cx: &Cx| -> Vec<WidgetUid> {
+        widget.od_list(cx, ids!(od_activity)).rows().iter().map(|(_, row)| row.widget_uid()).collect()
+    };
+    let before = uids(&cx);
+    snapshot.revision += 1;
+    dashboard.set_snapshot(&mut cx, snapshot);
+    assert_eq!(uids(&cx), before);
+}
+
+#[test]
 fn command_flow_through_the_widget_api() {
     let mut cx = Cx::new(Box::new(|_, _| {}));
     register(&mut cx, false);

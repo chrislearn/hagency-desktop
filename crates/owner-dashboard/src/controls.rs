@@ -442,11 +442,13 @@ impl Widget for OdList {
 
 impl OdList {
     fn sync(&mut self, cx: &mut Cx, wanted: &[(String, LiveId)]) -> Vec<WidgetRef> {
-        let mut old: HashMap<(String, LiveId), WidgetRef> =
-            self.items.drain(..).map(|i| ((i.key, i.template), i.widget)).collect();
+        let mut old: HashMap<(String, LiveId), std::collections::VecDeque<WidgetRef>> = HashMap::new();
+        for item in self.items.drain(..) {
+            old.entry((item.key, item.template)).or_default().push_back(item.widget);
+        }
         let mut out = Vec::with_capacity(wanted.len());
         for (key, template) in wanted {
-            let widget = match old.remove(&(key.clone(), *template)) {
+            let widget = match old.get_mut(&(key.clone(), *template)).and_then(|items| items.pop_front()) {
                 Some(widget) => widget,
                 None => {
                     let Some(template_ref) = self.templates.get(template) else {

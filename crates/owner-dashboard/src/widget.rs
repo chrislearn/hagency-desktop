@@ -657,7 +657,10 @@ impl Widget for OwnerDashboard {
             self.sync(cx);
         }
         if let Event::KeyDown(ke) = event {
-            self.handle_key(cx, ke);
+            if self.view.visible && self.view.area().is_valid(cx)
+                && (self.state.host == HostMode::Standalone || crate::keyboard::contains_focus(&self.view, cx)) {
+                self.handle_key(cx, ke);
+            }
         }
         if let Event::Actions(actions) = event {
             self.handle_actions(cx, actions);
@@ -1149,7 +1152,7 @@ impl OwnerDashboard {
             && self.state.snapshot.as_ref().is_some_and(|snapshot| !snapshot.inventory_available || !snapshot.inventory_complete);
         let notice_active = self.notice.as_ref().is_some_and(|notice| notice.tone == Tone::Progress);
         let notice_problem = self.notice.as_ref().is_some_and(|notice| matches!(notice.tone, Tone::Critical | Tone::Caution));
-        let command_problem = self.state.command.as_ref().is_some_and(|command| !matches!(command.phase, CommandPhase::Confirmed { .. } | CommandPhase::Unchanged));
+        let command_problem = self.state.command.as_ref().is_some_and(|command| !matches!(command.phase, CommandPhase::Confirmed { .. } | CommandPhase::Unchanged | CommandPhase::Superseded));
         // A completed operation must never mask a later disconnection or stale
         // inventory. The same target drives both the caption and Details.
         let target = if notice_active { HeaderTarget::Notice }
@@ -1687,6 +1690,10 @@ impl OwnerDashboardRef {
 
     pub fn locale(&self) -> Locale {
         self.borrow().map(|d| d.state.locale).unwrap_or_default()
+    }
+
+    pub fn recover_command(&self, cx: &mut Cx, command: crate::model::PendingCommand) {
+        self.with(|d| { d.state.recover_command(command); d.changed(cx); });
     }
 
     /// Scoped UI state for persistence or host handover. No credentials.

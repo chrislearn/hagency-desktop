@@ -123,18 +123,19 @@ pub enum CommandResult {
     Uncertain { message: String },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CommandPhase {
     Submitting,
     Accepted,
     Confirmed { at_ms: u64 },
+    Superseded,
     Unchanged,
     Rejected { code: String, retryable: bool },
     Uncertain,
     Checking,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PendingCommand {
     pub kind: CommandKind,
     pub ticket: CommandTicket,
@@ -142,6 +143,19 @@ pub struct PendingCommand {
 }
 
 impl PendingCommand {
+    /// Only a definitive acceptance can settle from a later authoritative
+    /// snapshot. Unknown outcomes always retain their original request ID.
+    pub fn observe(&mut self, snapshot: &DashboardSnapshot) {
+        if self.phase != CommandPhase::Accepted { return; }
+        if self.kind.reached(snapshot.hosting.state) {
+            self.phase = CommandPhase::Confirmed { at_ms: snapshot.observed_at_ms };
+        } else if self.ticket.expected_revision.is_some_and(|revision| snapshot.revision > revision)
+            && !matches!(snapshot.hosting.state, HostingState::Starting | HostingState::Draining)
+        {
+            self.phase = CommandPhase::Superseded;
+        }
+    }
+
     /// True while the outcome is not definitively known; new hosting
     /// commands are blocked so an uncertain one is never duplicated.
     pub fn in_flight(&self) -> bool {
@@ -321,20 +335,20 @@ impl DashboardState {
         }
         if let (Some(scope), Some(owner)) = (&self.owner_scope, &snapshot.owner) {
             if &owner.user_id != scope {
+                self.refreshing = false;
                 return SnapshotOutcome::WrongOwner;
             }
         }
         if let Some(current) = &self.snapshot {
             let same_owner = current.owner.as_ref().map(|o| &o.user_id) == snapshot.owner.as_ref().map(|o| &o.user_id);
             if same_owner && snapshot.revision < current.revision {
+                self.refreshing = false;
                 return SnapshotOutcome::Stale;
             }
         }
         let state = snapshot.hosting.state;
         if let Some(command) = self.command.as_mut() {
-            if matches!(command.phase, CommandPhase::Accepted) && command.kind.reached(state) {
-                command.phase = CommandPhase::Confirmed { at_ms: snapshot.observed_at_ms };
-            }
+            command.observe(&snapshot);
         }
         if self.confirm_stop && !self.can(CommandKind::Stop, Some(state)) {
             self.confirm_stop = false;
@@ -374,6 +388,15 @@ impl DashboardState {
         self.connection = ConnectionStatus::Connecting;
         self.view = ViewState { version: 1, owner_id: self.owner_scope.clone(), tab: keep_tab, ..Default::default() };
         true
+    }
+
+    pub fn recover_command(&mut self, mut command: PendingCommand) {
+        if self.command.as_ref().is_some_and(|current| current.in_flight()) { return; }
+        if matches!(command.phase, CommandPhase::Submitting | CommandPhase::Checking) {
+            command.phase = CommandPhase::Uncertain;
+        }
+        if let Some(snapshot) = &self.snapshot { command.observe(snapshot); }
+        self.command = Some(command);
     }
 
     pub fn begin_refresh(&mut self) -> DashboardAction {
@@ -988,6 +1011,9 @@ fn command_line(state: &DashboardState, clock: Clock, locale: Locale) -> Option<
             Status::new(Tone::Positive, Glyph::Check, phrase::confirmed(locale, action, &format::local_time(clock, *at_ms, locale))),
             false, false, true,
         ),
+        CommandPhase::Superseded => (Status::new(Tone::Neutral, Glyph::Info,
+            if locale == Locale::ZhHans { "命令已接受；托管状态随后发生变化。请查看当前状态。" }
+            else { "Command accepted; hosting changed afterward. Review the current status." }), false, false, true),
         CommandPhase::Unchanged => (Status::new(Tone::Neutral, Glyph::Info, phrase::unchanged(locale, action)), false, false, true),
         CommandPhase::Rejected { code, retryable } => (
             Status::new(Tone::Critical, Glyph::Cross, phrase::rejected(locale, action, rejection_reason(code, locale), code)),
@@ -1009,6 +1035,14 @@ fn command_line(state: &DashboardState, clock: Clock, locale: Locale) -> Option<
 /// Localized reason for engine-defined error codes. Unknown codes get a
 /// generic reason; the code itself is still shown.
 pub fn rejection_reason(code: &str, locale: Locale) -> &'static str {
+    if code == "command_recovery_unavailable" {
+        return if locale == Locale::ZhHans { "无法保存或读取原命令记录，本次操作未发送。请检查数据目录权限后重试。" }
+        else { "The command record could not be saved or read. This attempt was not sent. Check data-folder access and retry." };
+    }
+    if code == "pending_command_exists" {
+        return if locale == Locale::ZhHans { "另一个已保存的托管命令尚待确认，请先检查原命令状态。" }
+        else { "Another saved hosting command needs confirmation. Check that original command first." };
+    }
     tr(locale, match code {
         "revision_conflict" => Msg::ReasonRevisionConflict,
         "owner_scope_mismatch" | "owner_not_adopted" | "peer_rejected" => Msg::ReasonOwnerScope,

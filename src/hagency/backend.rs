@@ -302,7 +302,7 @@ impl Service {
         let original=crate::app_data_dir().join("native-owner").join(blake3::hash(&identity).to_hex().as_str());
         let home=crate::hagency::owner_dashboard::endpoint().home;
         if let Some(enrolled)=::hagency::daemon::enrollment::Enrollment::load(&home).map_err(|e|e.code().to_owned())? {
-            if enrolled.owner==owner && enrolled.origin==origin && !original.exists(){return Ok(enrolled.owner_root)}
+            if enrolled.owner==owner && enrolled.origin.trim_end_matches('/')==origin.trim_end_matches('/') && !original.exists(){return Ok(enrolled.owner_root)}
         }
         Ok(original)
     }

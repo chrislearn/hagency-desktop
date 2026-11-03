@@ -52,6 +52,9 @@ impl Ticket {
 #[derive(Clone, Debug)]
 pub struct Received {
     envelope: Envelope,
+    // A process-held claim is released on crash; a second controller can
+    // recover the ticket, but cannot restore it concurrently.
+    _claim: std::sync::Arc<File>,
 }
 impl Received {
     pub fn expired(&self, now_ms: u64) -> bool {
@@ -200,7 +203,17 @@ impl HandoverStore {
         if self.ack_path(id).try_exists()? {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, "handover already restored"));
         }
-        Ok(Received { envelope })
+        use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+        let claim_path = self.root.join(format!("{id}.claim"));
+        let claim = OpenOptions::new().create(true).truncate(false).read(true).write(true)
+            .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&claim_path)?;
+        private_entry(&claim_path, false)?;
+        if unsafe { libc::flock(claim.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // A previous claimant can finish between validation and locking.
+        if self.ack_path(id).try_exists()? { return Err(io::Error::new(io::ErrorKind::AlreadyExists, "handover already restored")); }
+        Ok(Received { envelope, _claim: std::sync::Arc::new(claim) })
     }
 
     /// Invoke only after successful view restoration and a fresh account check.
@@ -250,7 +263,7 @@ impl HandoverStore {
         if current != ticket.envelope {
             return Err(invalid("handover changed before removal"));
         }
-        for path in [self.ack_path(&ticket.envelope.id), ticket.path.clone()] {
+        for path in [self.ack_path(&ticket.envelope.id), self.root.join(format!("{}.claim", ticket.envelope.id)), ticket.path.clone()] {
             match fs::remove_file(path) {
                 Ok(()) => (),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => (),
@@ -313,7 +326,7 @@ fn random_id() -> io::Result<String> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "local handover requires Unix"))
 }
 
-fn private_entry(path: &Path, directory: bool) -> io::Result<()> {
+pub(crate) fn private_entry(path: &Path, directory: bool) -> io::Result<()> {
     let meta = fs::symlink_metadata(path)?;
     if meta.file_type().is_symlink()
         || (directory && !meta.is_dir())
@@ -335,7 +348,7 @@ fn private_entry(path: &Path, directory: bool) -> io::Result<()> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "local handover requires Unix"))
 }
 
-fn read_private<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<T> {
+pub(crate) fn read_private<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<T> {
     private_entry(path, false)?;
     let mut options = OpenOptions::new();
     options.read(true);
@@ -368,7 +381,7 @@ fn read_private<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<T> {
     serde_json::from_slice(&bytes).map_err(|_| invalid("invalid handover data"))
 }
 
-fn write_new(path: &Path, value: &impl Serialize) -> io::Result<()> {
+pub(crate) fn write_new(path: &Path, value: &impl Serialize) -> io::Result<()> {
     let bytes = serde_json::to_vec(value).map_err(|_| invalid("invalid handover data"))?;
     if bytes.len() as u64 > MAX_BYTES {
         return Err(invalid("handover exceeds the size limit"));
@@ -408,6 +421,18 @@ mod tests {
     }
     impl Drop for Fixture {
         fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn only_one_controller_claims_a_handover_and_crash_releases_claim() {
+        let f = Fixture::new();
+        let ticket = f.offer();
+        let first = f.1.receive(ticket.path(), "@owner:example.test", Host::Standalone, 1001).unwrap();
+        assert!(f.1.receive(ticket.path(), "@owner:example.test", Host::Standalone, 1002).is_err());
+        drop(first);
+        let recovered = f.1.receive(ticket.path(), "@owner:example.test", Host::Standalone, 1003).unwrap();
+        f.1.acknowledge(&recovered, "@owner:example.test", 1004).unwrap();
+        assert_eq!(f.1.poll(&ticket, "@owner:example.test", 1005).unwrap(), Status::Acknowledged);
     }
 
     #[test]

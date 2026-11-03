@@ -271,7 +271,6 @@ impl Builder<'_> {
             node.add_action(ax::Action::ScrollIntoView);
             self.targets.insert(id, Target { widget: widget.clone(), selection: None, activate: custom_activate });
         }
-        if area == self.cx.key_focus() && interactive { self.focus = id; }
         if valid_rect(bounds) { node.set_bounds(rect(bounds)); }
         let mut children = Vec::new();
         if !leaf {
@@ -307,6 +306,7 @@ impl Builder<'_> {
             for (extra, _) in &extra_nodes { self.targets.remove(extra); }
             return None;
         }
+        if interactive && area.is_valid(self.cx) && area == self.cx.key_focus() { self.focus = id; }
         self.nodes.extend(extra_nodes);
         self.nodes.push((id, node));
         Some(id)

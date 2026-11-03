@@ -1300,6 +1300,28 @@ mod mini_apps_side_tests {
         deliver(cx, home, state, clicked);
     }
 
+    #[cfg(feature = "onboarding-test-support")]
+    #[test]
+    fn closed_agent_tab_restores_before_the_next_draw() {
+        use crate::hagency::owner_dashboard::EmbeddedAction;
+        let (mut cx, mut home, mut state) = home(1440.0);
+        frame(&mut cx, &mut home, &mut state, 1440.0);
+        let region = side(&mut cx, &home);
+        region.close_all(&mut cx);
+        frame(&mut cx, &mut home, &mut state, 1440.0);
+        // Match production ordering: OpenAgent, then the queued Restore,
+        // with no layout/prepare/draw in between.
+        region.open(&mut cx, &MiniAppsAction::OpenAgent);
+        let surface = region.surface(&mut cx, region.selected().unwrap());
+        surface.owner_fixture(&mut cx, owner_dashboard::fixtures::scenario("running").unwrap());
+        let view = owner_dashboard::ViewState { version: 1, owner_id: Some(owner_dashboard::fixtures::OWNER.into()), tab: owner_dashboard::Tab::Usage, ..Default::default() };
+        let actions = cx.capture_actions(|cx| cx.action(EmbeddedAction::Restore { id: 17, view }));
+        let emitted = cx.capture_actions(|cx| home.handle_event(cx, &Event::Actions(actions), &mut Scope::with_data(&mut state)));
+        assert!(emitted.iter().any(|action| matches!(action.downcast_ref::<EmbeddedAction>(), Some(EmbeddedAction::Restored { id: 17, accepted: true, .. }))));
+        assert_eq!(surface.owner_fixture_view(&mut cx).unwrap().tab, owner_dashboard::Tab::Usage);
+        region.close_all(&mut cx);
+    }
+
     #[test]
     fn agent_sidebar_opens_hagency_and_reselects_its_retained_management_page() {
         let width = 1440.0;

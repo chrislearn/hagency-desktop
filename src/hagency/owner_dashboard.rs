@@ -150,14 +150,19 @@ fn message(code: &str) -> String {
 }
 
 fn open_setup() {
-    let source = crate::hagency::backend::Service::for_current()
-        .and_then(|service| service.daemon_handover_source());
-    let Ok((origin, owner, root)) = source else {
-        Cx::post_action(EmbeddedAction::Notice(message("sign_in_required")));
-        return;
-    };
-    let home = endpoint().home;
+    static OPENING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if OPENING.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
     let launched = std::thread::Builder::new().name("owner-dashboard-setup".into()).spawn(move || {
+        struct Reset;
+        impl Drop for Reset { fn drop(&mut self) { OPENING.store(false, std::sync::atomic::Ordering::Release); } }
+        let _reset = Reset;
+        let source = crate::hagency::backend::Service::for_current()
+            .and_then(|service| service.daemon_handover_source());
+        let Ok((origin, owner, root)) = source else {
+            Cx::post_action(EmbeddedAction::Notice(message("sign_in_required")));
+            return;
+        };
+        let home = endpoint().home;
         #[cfg(target_os = "macos")]
         let success = (|| -> std::io::Result<bool> {
             use owner_dashboard::{handover::Status, setup_launch::SetupLaunch};
@@ -168,7 +173,7 @@ fn open_setup() {
                 .stderr(std::process::Stdio::null()).status()?;
             if !status.success() { return Ok(false); }
             let start = std::time::Instant::now();
-            while start.elapsed() < std::time::Duration::from_secs(30) {
+            while start.elapsed() < std::time::Duration::from_secs(115) {
                 match launch.status(now())? {
                     Status::Acknowledged => return Ok(true),
                     Status::Expired => return Ok(false),
@@ -181,7 +186,10 @@ fn open_setup() {
         let success = { let _ = (origin, home, root); false };
         Cx::post_action(EmbeddedAction::SetupResult { owner, message: message(if success { "setup" } else { "destination_unavailable" }) });
     });
-    if launched.is_err() { Cx::post_action(EmbeddedAction::Notice(message("handover_busy"))); }
+    if launched.is_err() {
+        OPENING.store(false, std::sync::atomic::Ordering::Release);
+        Cx::post_action(EmbeddedAction::Notice(message("handover_busy")));
+    }
 }
 
 #[derive(Script, ScriptHook, Widget)]
@@ -256,6 +264,7 @@ impl OwnerDashboardHost {
             match event {
                 ConnectorEvent::Owner(owner) if owner != self.owner => dashboard.set_connection(cx, ConnectionStatus::OwnerMismatch),
                 ConnectorEvent::Connection(status) => dashboard.set_connection(cx, status),
+                ConnectorEvent::PendingCommand(command) => dashboard.recover_command(cx, command),
                 ConnectorEvent::Snapshot { snapshot, period } => { dashboard.set_snapshot_for_period(cx, snapshot, period); },
                 ConnectorEvent::CommandResult { request_id, result } => dashboard.command_result(cx, &request_id, result),
                 _ => {},

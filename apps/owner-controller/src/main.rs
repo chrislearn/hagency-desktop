@@ -196,6 +196,7 @@ impl App {
                     }
                 }
                 ConnectorEvent::Connection(status) => dashboard.set_connection(cx, status),
+                ConnectorEvent::PendingCommand(command) => dashboard.recover_command(cx, command),
                 ConnectorEvent::Snapshot { snapshot, period } => {
                     if self.setup_waiting_since.is_some_and(|since| snapshot.observed_at_ms >= since)
                         && snapshot.owner.as_ref().is_some_and(|owner|
@@ -238,7 +239,7 @@ impl App {
     fn lock_setup_fields(&self, cx: &mut Cx) {
         let locked = self.setup_job.is_some() || self.setup_install_only || options().adopt_root.is_some();
         self.ui.text_input(cx, ids!(setup_server)).set_is_read_only(cx, locked);
-        self.ui.text_input(cx, ids!(setup_owner)).set_is_read_only(cx, locked);
+        self.ui.text_input(cx, ids!(setup_owner)).set_is_read_only(cx, locked || options().owner.is_some());
     }
 
     fn localize_setup(&mut self, cx: &mut Cx) {
@@ -302,6 +303,7 @@ impl App {
         for event in events {
             let text = match event {
                 setup::Progress::SigningIn => if zh { "请在浏览器中完成登录…" } else { "Complete sign-in in your browser…" },
+                setup::Progress::FinishingCancellation => if zh { "设置已超时，正在安全结束原操作。完成后即可重试…" } else { "Setup timed out. Finishing the original operation safely before retry is available…" },
                 setup::Progress::Enabling => if zh { "正在启用后台服务…" } else { "Enabling background hosting…" },
                 setup::Progress::Installed => {
                     self.setup_job = None;
@@ -325,8 +327,7 @@ impl App {
                         ("helper_missing", false) => "The background service is missing. Reinstall Hagency Hosting.",
                         ("service_start_failed", true) => "已登录，但尚未确认服务启动结果。请检查系统设置中的登录项或重试。",
                         ("service_start_failed", false) => "Signed in, but service startup was not confirmed. Check Login Items in System Settings or retry.",
-                        (_, true) => "登录未完成。请检查服务器和账号，然后重试。",
-                        (_, false) => "Sign-in did not complete. Check the server and account, then retry.",
+                        (_, zh) => setup::failure_message(code, zh),
                     }
                 }
             };

@@ -616,6 +616,9 @@ impl MiniAppsSideRegion {
         self.selected = Some(id);
         self.deck(cx).set_front(cx, Some(id));
         self.dismissed = false;
+        // Routing actions can be dispatched before the next layout/draw.
+        // Make the selected surface active before its queued Restore arrives.
+        self.view.visible = true;
         self.publish_front(cx);
     }
 

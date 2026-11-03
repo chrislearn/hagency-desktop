@@ -245,7 +245,7 @@ pub fn tokens_or_unknown(value: Option<u64>, locale: Locale) -> String {
 
 /// Bounded single-line text for daemon-provided strings shown in the UI.
 pub fn bounded(text: &str, max_chars: usize) -> String {
-    let clean: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let clean: String = text.chars().map(|c| if c.is_control() || matches!(c, '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}') { ' ' } else { c }).collect();
     let clean = clean.trim();
     if clean.chars().count() <= max_chars {
         clean.to_owned()
@@ -362,6 +362,7 @@ mod tests {
     #[test]
     fn bounded_strips_control_characters() {
         assert_eq!(bounded("a\nb\tc", 10), "a b c");
+        assert_eq!(bounded("safe\u{202e}txt\u{2066}", 20), "safe txt");
         assert_eq!(bounded("abcdefghijk", 5), "abcd…");
     }
 }

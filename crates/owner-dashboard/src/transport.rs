@@ -14,7 +14,7 @@
 //! [`DaemonConnector`] runs one worker thread so UI threads never block. It
 //! coalesces queued snapshot reads, keeps the original request ID when
 //! looking up an uncertain command, and reports results as [`ConnectorEvent`]s.
-use crate::model::{CommandKind, CommandResult, CommandTicket, ConnectionStatus};
+use crate::model::{CommandKind, CommandResult, CommandTicket, ConnectionStatus, CommandPhase, PendingCommand};
 use hagency_metering::dashboard::{DashboardSnapshot, HostingState, UsageFilter, period::UsagePeriod};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -429,6 +429,7 @@ pub enum ConnectorEvent {
     Connection(ConnectionStatus),
     Snapshot { snapshot: DashboardSnapshot, period: Option<UsagePeriod> },
     CommandResult { request_id: String, result: CommandResult },
+    PendingCommand(PendingCommand),
 }
 
 /// Nonblocking handle. Submit jobs; drain events after `notify` fires.
@@ -603,6 +604,13 @@ impl Worker {
                 .unwrap_or(0);
             return self.emit(ConnectorEvent::Snapshot { snapshot: DashboardSnapshot::unconfigured(now), period: None });
         };
+        if let Ok(store) = crate::command_store::CommandStore::open(&self.endpoint.home, &owner_id) {
+            match store.load() {
+                Ok(Some(command)) => self.emit(ConnectorEvent::PendingCommand(command)),
+                Ok(None) => {},
+                Err(_) => return self.emit(ConnectorEvent::Connection(ConnectionStatus::Failed { message: "command_recovery_unavailable".into() })),
+            }
+        }
         let request = Request {
             version: API_VERSION,
             request_id: new_request_id("ods"),
@@ -618,6 +626,14 @@ impl Worker {
             Err(e) => self.emit(ConnectorEvent::Connection(status_for_transport(&e))),
             Ok(reply) => match reply.snapshot() {
                 Ok(snapshot) => {
+                    if let Some(owner) = &snapshot.owner {
+                        if let Ok(store) = crate::command_store::CommandStore::open(&self.endpoint.home, &owner.user_id) {
+                            if let Ok(Some(mut command)) = store.load() {
+                                command.observe(&snapshot);
+                                if !command.in_flight() { let _ = store.clear(); }
+                            }
+                        }
+                    }
                     let period = period.filter(|p| Period::from_usage(*p).is_some());
                     self.emit(ConnectorEvent::Snapshot { snapshot, period })
                 }
@@ -647,6 +663,27 @@ impl Worker {
                 return self.emit(ConnectorEvent::Connection(status));
             }
         };
+        let Some(owner_id) = owner.as_deref() else {
+            return self.emit(ConnectorEvent::CommandResult { request_id, result: CommandResult::NotSubmitted { code: "not_connected".into(), retryable: true } });
+        };
+        let store = match crate::command_store::CommandStore::open(&self.endpoint.home, owner_id) {
+            Ok(store) => store,
+            Err(_) => return self.emit(ConnectorEvent::CommandResult { request_id, result: CommandResult::NotSubmitted { code: "command_recovery_unavailable".into(), retryable: true } }),
+        };
+        let previous = match store.load() {
+            Ok(previous) => previous,
+            Err(_) => return self.emit(ConnectorEvent::CommandResult { request_id, result: CommandResult::NotSubmitted { code: "command_recovery_unavailable".into(), retryable: false } }),
+        };
+        if let Some(saved) = &previous {
+            if saved.ticket != ticket || saved.kind != kind {
+                self.emit(ConnectorEvent::CommandResult { request_id, result: CommandResult::NotSubmitted { code: "pending_command_exists".into(), retryable: false } });
+                return self.emit(ConnectorEvent::PendingCommand(saved.clone()));
+            }
+        }
+        let mut saved = previous.clone().unwrap_or(PendingCommand { kind, ticket: ticket.clone(), phase: CommandPhase::Uncertain });
+        if store.save(&saved).is_err() {
+            return self.emit(ConnectorEvent::CommandResult { request_id, result: CommandResult::NotSubmitted { code: "command_recovery_unavailable".into(), retryable: true } });
+        }
         let request = Request {
             version: API_VERSION,
             request_id: ticket.request_id,
@@ -667,6 +704,14 @@ impl Worker {
             }
             Err(TransportError::Uncertain | TransportError::Protocol) => CommandResult::Uncertain { message: String::new() },
         };
+        // A failed lookup is not evidence that an earlier submission failed.
+        // Keep accepted commands until an authoritative later state settles.
+        match &result {
+            CommandResult::Accepted => { saved.phase = CommandPhase::Accepted; let _ = store.save(&saved); },
+            CommandResult::Completed | CommandResult::Unchanged => { let _ = store.clear(); },
+            CommandResult::Rejected { .. } | CommandResult::NotSubmitted { .. } if previous.is_none() => { let _ = store.clear(); },
+            _ => {},
+        }
         self.emit(ConnectorEvent::CommandResult { request_id, result });
     }
 }
