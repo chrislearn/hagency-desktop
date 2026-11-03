@@ -520,6 +520,10 @@ fn accepted_command_settles_after_later_state_change_but_unknown_does_not() {
         assert!(state.present(clock()).command.unwrap().can_dismiss);
         state.dismiss_command();
         assert!(state.command.is_none());
+        if matches!(hosting, HostingState::Failed | HostingState::Offline | HostingState::Stopped) {
+            assert!(state.can(CommandKind::Resume, None));
+            assert!(state.present(clock()).hosting.unwrap().show_resume);
+        }
         let mut uncertain = fixtures::scenario("uncertain").unwrap();
         let ticket = uncertain.command.as_ref().unwrap().ticket.clone();
         uncertain.apply_snapshot(snapshot, None);

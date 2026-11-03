@@ -417,7 +417,7 @@ impl DashboardState {
         }
         match kind {
             CommandKind::Pause => matches!(state, HostingState::Running | HostingState::Starting),
-            CommandKind::Resume => matches!(state, HostingState::Paused | HostingState::Draining | HostingState::Stopped),
+            CommandKind::Resume => matches!(state, HostingState::Paused | HostingState::Draining | HostingState::Stopped | HostingState::Failed | HostingState::Offline),
             CommandKind::Stop => matches!(
                 state,
                 HostingState::Running | HostingState::Starting | HostingState::Paused | HostingState::Draining
@@ -1203,7 +1203,7 @@ fn present(state: &DashboardState, clock: Clock) -> Presentation {
             can_resume: state.can(CommandKind::Resume, None),
             can_stop: state.can(CommandKind::Stop, None),
             show_pause: matches!(st, HostingState::Running | HostingState::Starting),
-            show_resume: matches!(st, HostingState::Paused | HostingState::Draining | HostingState::Stopped),
+            show_resume: matches!(st, HostingState::Paused | HostingState::Draining | HostingState::Stopped | HostingState::Failed | HostingState::Offline),
             show_stop: matches!(st, HostingState::Running | HostingState::Starting | HostingState::Paused | HostingState::Draining),
             show_setup: matches!(st, HostingState::Unconfigured | HostingState::Failed),
         }
