@@ -14,8 +14,8 @@ version = "0.5.0"
 metadata.makepad-auto-version = "zqpv-Yj-K7WNVK2I8h5Okhho46Q="
 
 [dependencies]
-hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "fcbd247b17bae376e9dec98895e43980bc16d193" }
-hagency-core = { git = "https://github.com/hagency-org/hagency-client.git", rev = "fcbd247b17bae376e9dec98895e43980bc16d193" }
+hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "31bc823b9e076b4c468da2a292a04e42ab1f95c4" }
+hagency-core = { git = "https://github.com/hagency-org/hagency-client.git", rev = "31bc823b9e076b4c468da2a292a04e42ab1f95c4" }
 hagency-owner-dashboard = { path = "crates/owner-dashboard" }
 octosense-theme-contract = { path = "crates/theme-contract", version = "0.1.0" }
 rinx-system-apps = { path = "crates/system-apps" }
@@ -152,7 +152,7 @@ reqwest = { version = "0.12", default-features = false, optional = true, feature
 
 [dev-dependencies]
 # Native writer fixtures must never acquire the user's installation authority.
-hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "fcbd247b17bae376e9dec98895e43980bc16d193", features = ["test-support"] }
+hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "31bc823b9e076b4c468da2a292a04e42ab1f95c4", features = ["test-support"] }
 
 [[example]]
 name = "article_editor_review"

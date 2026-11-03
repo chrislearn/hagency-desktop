@@ -125,6 +125,8 @@ def main():
     run("owner-controller", ["cargo", "test", "--locked", "--manifest-path", "apps/owner-controller/Cargo.toml", "--bin", "hagency-owner-controller"], rust_tests=True)
     run("owner-controller-build", ["cargo", "build", "--locked", "--manifest-path", "apps/owner-controller/Cargo.toml", "--bin", "hagency-owner-controller"])
     if args.client:
+        run("native-server-management", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "server_management", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
+        run("native-server-journal", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "server_journal", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-confirmation-deadlines", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "daemon::bridge::reviews::deadline_tests"], cwd=args.client.resolve(), rust_tests=True)
         run("native-recurring-quota", ["cargo", "test", "--locked", "-p", "hagency-core", "--lib", "recurring_quota"], cwd=args.client.resolve(), rust_tests=True)
         run("native-pool-wire", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "split_pool_limits_tests"], cwd=args.client.resolve(), rust_tests=True)
