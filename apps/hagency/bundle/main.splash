@@ -6442,14 +6442,15 @@ A.pool_device_state=fn(board,load){
     let s={key:"loading" text:A.t("Checking…","正在检查…") tone:"" detail:A.t("Checking whether this computer can publish pools.","正在检查这台电脑能否发布资源池。") open:0 fix:false}
     if load=="error" {s.key="error" s.text=A.t("Unavailable","无法读取") s.detail=A.t("This computer’s status couldn’t be read. Try again.","暂时无法读取这台电脑的状态，请重试。") return s}
     if load!="ready" || board==nil {return s}
-    let {state=nil,grantReviewAvailable=false,grantIntents=[],canReview=false,reason=nil}=board
+    let {state=nil,setupKind=nil,grantReviewAvailable=false,grantIntents=[],canReview=false,reason=nil}=board
     s.open=grantIntents.len()
     if state=="active" && grantReviewAvailable==true {s.key="ready" s.text=A.t("Ready","已就绪") s.tone="running" s.detail=A.t("This computer can publish pools.","这台电脑可以发布资源池。") return s}
     s.key="attention" s.tone="waiting"
     s.fix=canReview==true && state!="active"
     s.text=if s.fix {A.t("Not set up","还没设置完")} else {A.t("Can’t publish","不能发布")}
     s.detail=A.t("This computer can’t publish pools right now. Quit and reopen Hagency, then check again; if it still can’t, publish from the computer that published before.","这台电脑现在不能发布资源池。退出并重新打开 Hagency 后再看一次；还不行，就在原来发布的电脑上操作。")
-    if state=="legacy" {s.detail=A.t("This computer still has data from an older version. Set it up once to publish pools; your pools and records are kept.","这台电脑上还有旧版本的数据，设置一次后才能发布资源池。资源池和记录都会保留。")}
+    if state=="legacy" && setupKind=="empty_device" {s.detail=A.t("Set up resource management for this account before connecting a coding tool and creating a pool.","先为当前账号完成资源管理初始化，再接入编码工具、创建资源池。")}
+    if state=="legacy" && setupKind!="empty_device" {s.detail=A.t("This computer still has data from an older version. Set it up once to publish pools; your pools and records are kept.","这台电脑上还有旧版本的数据，设置一次后才能发布资源池。资源池和记录都会保留。")}
     if state=="recovery_required" {s.detail=A.t("The last setup didn’t finish. Continue it to publish pools; it picks up where it stopped.","上次的设置没有完成。继续设置后才能发布资源池，会从停下的地方接着做。")}
     if state=="unavailable" {s.detail=A.t("This version can’t set up pools on this computer. Existing pools stay as they are.","此版本还不能在这台电脑上设置资源池。已有资源池保持不变。")}
     if reason=="source_adoption_inventory_unsupported" {s.detail=A.t("This computer’s older data can’t be brought into this version yet, so it can’t publish pools. Nothing was changed.","这台电脑上的旧数据还不能转到这个版本，所以暂时不能在这里发布资源池。没有改动任何东西。")}
@@ -6531,15 +6532,17 @@ A.dev_setup=fn(origin){
         if !s.fix {if origin=="hub" {say("waiting",s.detail)} else {A.dev_open("pool_device",origin)} return}
         A.pool_call("hagency.onboarding.review",{},fn(g){
             if !g.is_ok {say("attention",A.dev_setup_error(g.error)) return}
-            let {state=nil}=g.data
+            let {state=nil,reason=nil}=g.data
             if state=="active" {say("running",A.t("Set up. This computer can publish pools now.","设置完成。这台电脑现在可以发布资源池。")) return}
             if state=="review_closed" {say("waiting",A.t("The confirmation window was closed; nothing changed.","已关闭确认窗口，没有改动任何东西。")) return}
+            if state=="outcome_unknown" && reason!=nil {say("attention",A.dev_setup_error(reason)) return}
             if state=="outcome_unknown" {say("waiting",A.t("It isn’t known yet whether setup finished. Tap Continue Setting Up again in a moment; it won’t run twice.","暂时不知道设置是否完成。稍后再点「继续设置这台电脑」查看，不会重复设置。")) return}
             say("waiting",A.t("Setup isn’t finished yet. Tap Continue Setting Up to go on.","设置还没完成，点「继续设置这台电脑」接着做。"))
         })
     })
 }
 A.dev_setup_error=fn(code){
+    if code=="source_installation_busy" {return A.t("Another Hagency instance is using this computer’s resources. Quit the other Hagency windows, then continue setup here.","另一个 Hagency 实例正在占用这台电脑的资源。请退出其他 Hagency 窗口，再在这里继续设置。")}
     if code=="management_scope_changed" || code=="management_access_required" {return A.t("Your account changed. Reopen Hagency from your account, then try again.","账号已变化。请从你的账号重新打开 Hagency 后再试。")}
     if code=="onboarding_unavailable" {return A.t("This version can’t set up pools on this computer.","此版本还不能在这台电脑上设置资源池。")}
     return A.read_error(code)
@@ -13902,7 +13905,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                         if s.published>0 && s.unpublished<=0 {mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_SUCCESS_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.check draw_icon.color:mod.widgets.RINX_SUCCESS_FG}}}
                         if !(s.published>0 && s.unpublished<=0) {mod.widgets.HagencyRowIcon{mod.widgets.HagencyListValue{text:"4" draw_text.color:mod.widgets.RINX_ACCENT}}}
                         mod.widgets.HagencyListText{
-                            mod.widgets.HagencyWrapTitle{text:A.t("Publish this month’s capacity","发布本月额度")}
+                            mod.widgets.HagencyWrapTitle{text:A.t("Publish period capacity","发布本期额度")}
                             mod.widgets.HagencyWrapSubtitle{text:A.dev_publish_text(s)}
                             if s.unpublished>0 && mod.widgets.RINX_TEXT_SCALE>1.2 {mod.widgets.HagencyPill{padding:Inset{left:8 right:8 top:2 bottom:2} draw_bg.color:A.local_tone_bg("waiting") mod.widgets.HagencyPillText{text:A.t(""+s.unpublished+" to publish",""+s.unpublished+" 个未发布") draw_text.color:A.local_tone_fg("waiting")}}}
                         }
@@ -13912,7 +13915,7 @@ View{width:Fill height:Fit flow:Down spacing:(12 * mod.widgets.RINX_SPACING)    
                     pool_device_step_publish := mod.widgets.HagencyRowCover{enabled:!H.busy on_click:||A.return_list("resources")}
                 }
             }
-            mod.widgets.HagencyListNote{text:A.t("A server administrator approves each pool once. After that you publish each month on the pool’s page.","每个资源池只需要服务器管理员批准一次；之后每个月在资源池页面发布额度。")}
+            mod.widgets.HagencyListNote{text:A.t("A server administrator approves each pool once. Manage capacity on the pool page using its selected daily, weekly or monthly period.","每个资源池只需要服务器管理员批准一次；之后按所选的天、周或月周期，在资源池页面管理额度。")}
             if H.dev.result!=nil {View{width:Fill height:Fit padding:Inset{top:4} mod.widgets.HagencyStatus{draw_bg.color:A.local_tone_bg(H.dev.result.tone)
                 mod.widgets.HagencyCopy{text:H.dev.result.text draw_text.color:A.local_tone_fg(H.dev.result.tone)}
             }}}
