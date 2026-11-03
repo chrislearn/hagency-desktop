@@ -50,6 +50,9 @@ impl AppMain for App {
                 let mut preferences = rinx::theme::packages::current(cx).unwrap(); preferences.package = Some(package);
                 rinx::theme::packages::apply(cx, preferences).unwrap();
             }
+            if let Some(scenario) = command.strip_prefix("manage:") {
+                self.ui.space_management_panel(cx, ids!(wizard)).review_manage(cx, scenario);
+            }
             let parts = command.split(':').collect::<Vec<_>>();
             if parts.len() == 4 && parts[0] == "wizard" {
                 self.ui.space_management_panel(cx, ids!(wizard)).review(

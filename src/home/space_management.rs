@@ -1,7 +1,7 @@
 //! Native room/space creation and space membership management.
 //! The parent link is authoritative; a failed advisory backlink is reported
 //! separately so a successful creation is never retried as a second room.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use anyhow::{Result, anyhow, ensure};
 use makepad_widgets::*;
 use matrix_sdk::{Client, Room, RoomState};
@@ -254,6 +254,84 @@ async fn link(client: &Client, parent: &RoomId, child: &RoomId, add: bool) -> Re
     .into())
 }
 
+// Only a current, successful project listing distinguishes ordinary spaces from
+// Agent spaces. A failed lookup must never silently skip room registration.
+fn project_for_space(projects: &serde_json::Value, parent: &RoomId) -> Result<Option<String>> {
+    let rows = projects["projects"].as_array().ok_or_else(|| anyhow!(crate::i18n::tr("Space types could not be checked. Refresh before adding a room.")))?;
+    let mut selected = None;
+    for row in rows.iter().filter(|row| row["spaceId"] == parent.as_str()) {
+        let active = row["active"].as_bool().ok_or_else(|| anyhow!(crate::i18n::tr("The Project registration is unavailable.")))?;
+        let id = row["id"].as_str().filter(|id| !id.is_empty()).ok_or_else(|| anyhow!(crate::i18n::tr("The Project registration is unavailable.")))?;
+        if active {
+            ensure!(selected.is_none(), "{}", crate::i18n::tr("The space has conflicting Project registrations."));
+            selected = Some(id.to_owned());
+        }
+    }
+    Ok(selected)
+}
+
+fn registered_rooms(value: &serde_json::Value, project: &str) -> Result<HashMap<OwnedRoomId, bool>> {
+    let rows = value["rooms"].as_array().ok_or_else(|| anyhow!(crate::i18n::tr("Room setup could not be checked. Refresh to retry.")))?;
+    let mut result = HashMap::new();
+    for row in rows {
+        ensure!(row["projectId"] == project, "{}", crate::i18n::tr("The room registration belongs to another Project."));
+        let id: OwnedRoomId = row["roomId"].as_str().and_then(|id| id.try_into().ok()).ok_or_else(|| anyhow!(crate::i18n::tr("Invalid room registration.")))?;
+        let active = row["active"].as_bool().ok_or_else(|| anyhow!(crate::i18n::tr("Invalid room registration.")))?;
+        ensure!(result.insert(id, active).is_none_or(|previous| previous == active), "{}", crate::i18n::tr("The room has conflicting registration states."));
+    }
+    Ok(result)
+}
+
+const ROOM_SETUP_INCOMPLETE: &str = "Room linked, but Agent setup is incomplete. Use Finish setup for this room to retry.";
+const ROOM_SETUP_COMPLETE: &str = "Room added to Agent space. You can now add Agents.";
+const ROOM_SETUP_INACTIVE: &str = "This room's Agent registration is inactive. It cannot be reactivated here.";
+
+// The closures keep the two effects ordered and make recovery testable without
+// ever creating a Matrix room. A retry always carries the original two IDs.
+async fn finish_existing_room_link<L, LF, A, AF>(
+    parent: &RoomId, child: &RoomId, projects: &serde_json::Value, link: L, adopt: A,
+) -> Result<String>
+where
+    L: FnOnce() -> LF, LF: std::future::Future<Output = Result<String>>,
+    A: FnOnce(crate::hagency::model::Command) -> AF,
+    AF: std::future::Future<Output = std::result::Result<serde_json::Value, String>>,
+{
+    let project = project_for_space(projects, parent)?;
+    let linked = link().await?;
+    let Some(project_id) = project else { return Ok(linked) };
+    let result = adopt(crate::hagency::model::Command::AdoptRoom {
+        project_id: project_id.clone(), room_id: child.to_string(),
+    }).await;
+    let message = match result {
+        Ok(value) if value["room"]["projectId"] == project_id && value["room"]["roomId"] == child.as_str() => {
+            if value["room"]["active"] == true { crate::i18n::tr(ROOM_SETUP_COMPLETE).to_owned() }
+            else if value["room"]["active"] == false { crate::i18n::tr(ROOM_SETUP_INACTIVE).to_owned() }
+            else { crate::i18n::tr(ROOM_SETUP_INCOMPLETE).to_owned() }
+        }
+        Ok(_) => crate::i18n::tr(ROOM_SETUP_INCOMPLETE).to_owned(),
+        Err(error) => format!("{}: {error}", crate::i18n::tr(ROOM_SETUP_INCOMPLETE)),
+    };
+    // A successful parent link can carry an advisory backlink warning. Keep it
+    // visible even when the independent Project registration also succeeds.
+    Ok(if linked == "Room added to space." { message } else { format!("{message}\n{linked}") })
+}
+
+async fn add_existing_room(client: &Client, parent: &RoomId, child: &RoomId) -> Result<String> {
+    matrix_context::ensure_current(client)?;
+    let service = crate::hagency::backend::Service::for_current().map_err(|e| anyhow!(e))?;
+    let projects = service.execute(crate::hagency::model::Command::Projects).await.map_err(|e| anyhow!(e))?;
+    matrix_context::ensure_current(client)?;
+    let message = finish_existing_room_link(parent, child, &projects,
+        || link(client, parent, child, true),
+        |command| async {
+            matrix_context::ensure_current(client).map_err(|e| e.to_string())?;
+            service.execute(command).await
+        },
+    ).await?;
+    matrix_context::ensure_current(client)?;
+    Ok(message)
+}
+
 async fn finish_creation(
     client: &Client,
     name: RoomNameId,
@@ -317,6 +395,7 @@ struct Snapshot {
     spaces: Vec<SpaceChoice>,
     rooms: Vec<RoomNameId>,
     children: HashSet<OwnedRoomId>,
+    registered_rooms: Option<HashMap<OwnedRoomId, bool>>,
 }
 
 async fn snapshot(client: &Client, parent: Option<&OwnedRoomId>) -> Result<Snapshot> {
@@ -376,6 +455,13 @@ async fn snapshot(client: &Client, parent: Option<&OwnedRoomId>) -> Result<Snaps
                 matrix_sdk::RoomDisplayName::Named(id.to_string()),
                 id.clone(),
             ));
+        }
+    }
+    if let Some(project) = data.spaces.iter().find(|space| parent == Some(space.name.room_id())).and_then(|space| space.project_id.as_deref()) {
+        if let Ok(service) = crate::hagency::backend::Service::for_current() {
+            if let Ok(value) = service.execute(crate::hagency::model::Command::ProjectRooms { project_id: project.into() }).await {
+                data.registered_rooms = registered_rooms(&value, project).ok();
+            }
         }
     }
     data.spaces
@@ -627,6 +713,8 @@ script_mod! {
                     Row := View {width: Fill height: Fit flow: Down padding: 8 spacing: 4
                         name := Text {}
                         id := Hint {}
+                        registration := Hint {visible: false}
+                        finish_registration := Action {visible: false width: Fill text: #(crate::i18n::tr("Finish setup")) i18n_text: "Finish setup"}
                         toggle := Action {width: Fill}
                     }
                 }
@@ -673,6 +761,9 @@ pub struct SpaceManagementPanel {
     setup_agent_space: bool,
     #[rust]
     setup_project: Option<String>,
+    #[cfg(feature = "onboarding-test-support")]
+    #[rust]
+    review_room_registration: bool,
 }
 
 fn next_request() -> u64 {
@@ -694,8 +785,8 @@ impl SpaceManagementPanel {
             .set_text(cx, crate::i18n::tr(status));
         let theme = crate::theme::snapshot(cx);
         let state = if status == "Saving…" { "info" }
-            else if status.starts_with("Created, but") { "warning" }
-            else if status == "Created. Continue with the next step below." || status.ends_with("saved.") { "success" }
+            else if status.starts_with("Created, but") || status.starts_with(crate::i18n::tr(ROOM_SETUP_INCOMPLETE)) || status == crate::i18n::tr(ROOM_SETUP_INACTIVE) { "warning" }
+            else if status == "Created. Continue with the next step below." || status.ends_with("saved.") || status == crate::i18n::tr(ROOM_SETUP_COMPLETE) || status == "Room added to space." { "success" }
             else { "danger" };
         let bg = theme.role(&format!("color.status.{state}.background"));
         let fg = theme.role(&format!("color.status.{state}.foreground"));
@@ -711,6 +802,21 @@ impl SpaceManagementPanel {
             .spaces
             .iter()
             .find(|space| Some(space.name.room_id()) == self.parent.as_ref())
+    }
+    fn room_registration(&self, room: &RoomId) -> Option<&'static str> {
+        if self.parent.is_none() { return None }
+        if !self.data.projects_known { return Some("Space types could not be checked. Refresh before adding a room.") }
+        if !self.data.children.contains(room) { return None }
+        if self.choice().and_then(|space| space.project_id.as_ref()).is_none() { return None }
+        match self.data.registered_rooms.as_ref().map(|rooms| rooms.get(room)) {
+            None => Some("Room setup could not be checked. Refresh to retry."),
+            Some(None) => Some("Room is linked. Finish setup to enable Agents."),
+            Some(Some(false)) => Some(ROOM_SETUP_INACTIVE),
+            Some(Some(true)) => None,
+        }
+    }
+    fn needs_room_registration(&self, room: &RoomId) -> bool {
+        self.room_registration(room) == Some("Room is linked. Finish setup to enable Agents.")
     }
     fn sync(&mut self, cx: &mut Cx) {
         let theme = crate::theme::snapshot(cx);
@@ -886,6 +992,29 @@ impl SpaceManagementPanel {
 
 impl Widget for SpaceManagementPanel {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        // Window owns Tab navigation. The pinned Button handles pointer input
+        // only, so activate a focused, enabled room action explicitly.
+        if self.active && self.manage && self.owner == current_user_id() && self.view.visible()
+            && let Event::KeyDown(key) = event
+            && !key.is_repeat && !key.modifiers.is_primary() && !key.modifiers.alt
+            && matches!(key.key_code, KeyCode::ReturnKey | KeyCode::Space)
+        {
+            let rooms = self.view.widget(cx, ids!(rooms));
+            let mut selected = None;
+            rooms.children(&mut |_, row| {
+                if let Some(button) = owner_dashboard::keyboard::controls(&row, cx).into_iter()
+                    .find(|control| control.area() == cx.key_focus() && control.borrow::<Button>().is_some())
+                { selected = Some((row.widget_uid(), button.widget_uid())); }
+            });
+            if let Some((row, button)) = selected {
+                // PortalList routes its row actions by group; keyboard and
+                // pointer activation must carry the same row identity.
+                cx.group_widget_actions(rooms.widget_uid(), row, |cx| {
+                    cx.widget_action(button, ButtonAction::Clicked(key.modifiers));
+                });
+                return;
+            }
+        }
         self.view.handle_event(cx, event, scope);
         if !self.active {
             return;
@@ -1051,6 +1180,7 @@ impl Widget for SpaceManagementPanel {
                 .and_then(|i| self.data.spaces.get(i))
                 .map(|s| s.name.room_id().clone());
             self.data.children.clear();
+            self.data.registered_rooms = None;
             self.load(cx);
         }
         if self.view.check_box(cx, ids!(public)).changed(actions) == Some(true) {
@@ -1096,6 +1226,24 @@ impl Widget for SpaceManagementPanel {
                     destination_room: crate::room::BasicRoomDetails::RoomId(room),
                 });
             }
+        }
+        #[cfg(feature = "onboarding-test-support")]
+        if self.review_room_registration {
+            let list = self.view.portal_list(cx, ids!(rooms));
+            for (index, item) in list.items_with_actions(actions) {
+                if let Some(room) = self.filtered.get(index) {
+                    let finish = item.button(cx, ids!(finish_registration)).clicked(actions) && self.needs_room_registration(room.room_id());
+                    let add = item.button(cx, ids!(toggle)).clicked(actions) && !self.data.children.contains(room.room_id());
+                    if (finish || add) && self.data.projects_known && self.choice().is_some_and(|space| space.can_link) {
+                        log!("space-registration-review {}", serde_json::json!({"parent":self.parent,"room":room.room_id(),"project":self.choice().and_then(|space|space.project_id.as_deref()),"retry":finish}));
+                        self.busy = true;
+                        self.status(cx, "Saving…");
+                        self.sync(cx);
+                        break;
+                    }
+                }
+            }
+            return;
         }
         let Some(client) = get_client() else { return };
         if self.view.button(cx, ids!(create)).clicked(actions) && self.created.is_none() {
@@ -1185,14 +1333,20 @@ impl Widget for SpaceManagementPanel {
         {
             let list = self.view.portal_list(cx, ids!(rooms));
             for (index, item) in list.items_with_actions(actions) {
-                if item.button(cx, ids!(toggle)).clicked(actions)
+                let finish = item.button(cx, ids!(finish_registration)).clicked(actions);
+                if (item.button(cx, ids!(toggle)).clicked(actions) || finish)
                     && let Some(room) = self.filtered.get(index).cloned()
                 {
                     let add = !self.data.children.contains(room.room_id());
                     let child = room.room_id().clone();
-                    if add {
+                    if add || finish {
+                        if !self.data.projects_known || !self.choice().is_some_and(|space| space.can_link)
+                            || (finish && !self.needs_room_registration(&child)) {
+                            self.status(cx, "Space types could not be checked. Refresh before adding a room.");
+                            return;
+                        }
                         self.run(cx, async move {
-                            Ok((link(&client, &parent, &child, true).await?, None, false))
+                            Ok((add_existing_room(&client, &parent, &child).await?, None, false))
                         });
                     } else {
                         // The confirmation callback carries the exact account/space/room,
@@ -1280,8 +1434,13 @@ impl Widget for SpaceManagementPanel {
                             "Add to space"
                         }),
                     );
-                    item.button(cx, ids!(toggle))
-                        .set_enabled(cx, !self.busy && self.choice().is_some_and(|c| c.can_link));
+                    let registration = self.room_registration(room.room_id());
+                    item.label(cx, ids!(registration)).set_text(cx, crate::i18n::tr(registration.unwrap_or_default()));
+                    item.label(cx, ids!(registration)).set_visible(cx, registration.is_some());
+                    let writable = !self.busy && self.choice().is_some_and(|c| c.can_link);
+                    item.button(cx, ids!(finish_registration)).set_visible(cx, self.needs_room_registration(room.room_id()));
+                    item.button(cx, ids!(finish_registration)).set_enabled(cx, writable);
+                    item.button(cx, ids!(toggle)).set_enabled(cx, writable && (self.data.children.contains(room.room_id()) || self.data.projects_known));
                     item.draw_all(cx, scope);
                 }
             }
@@ -1358,6 +1517,32 @@ impl SpaceManagementPanelRef {
         panel.sync(cx);
     }
 
+    /// Isolated presentation/submission fixture; completions come from explicit
+    /// test events. Production link/AdoptRoom ordering is covered separately.
+    #[cfg(feature = "onboarding-test-support")]
+    pub fn review_manage(&self, cx: &mut Cx, scenario: &str) {
+        if scenario == "focus-finish" {
+            let Some(panel) = self.borrow() else { return };
+            assert!(panel.review_room_registration && get_client().is_none());
+            let item = panel.view.portal_list(cx, ids!(rooms)).item(cx, 0, id!(Row));
+            let area = item.button(cx, ids!(finish_registration)).area();
+            if area.is_valid(cx) { cx.set_key_focus(area); }
+            return;
+        }
+        self.review(cx, 2, 0, false);
+        let Some(mut panel) = self.borrow_mut() else { return };
+        panel.review_room_registration = true;
+        panel.manage = true;
+        panel.data.projects_known = scenario != "unknown";
+        let room: OwnedRoomId = "!existing-room:example.invalid".try_into().unwrap();
+        panel.data.rooms = vec![RoomNameId::new(matrix_sdk::RoomDisplayName::Named("Existing team room".into()), room.clone())];
+        if !matches!(scenario, "unlinked" | "unknown") { panel.data.children.insert(room.clone()); }
+        panel.data.registered_rooms = Some(HashMap::new());
+        if matches!(scenario, "success" | "inactive") { panel.data.registered_rooms.as_mut().unwrap().insert(room, scenario == "success"); }
+        panel.status(cx, match scenario { "failure" => ROOM_SETUP_INCOMPLETE, "success" => ROOM_SETUP_COMPLETE, "inactive" => ROOM_SETUP_INACTIVE, _ => "" });
+        panel.sync(cx);
+    }
+
     pub fn action(&self, cx: &mut Cx, modal: ModalRef, action: &SpaceManagementAction) {
         let Some(mut inner) = self.borrow_mut() else {
             return;
@@ -1366,6 +1551,8 @@ impl SpaceManagementPanelRef {
         match action {
             SpaceManagementAction::Open { parent } => {
                 inner.active = true;
+                #[cfg(feature = "onboarding-test-support")]
+                { inner.review_room_registration = false; }
                 inner.parent = parent.as_ref().map(|p| p.room_id().clone());
                 inner.manage = parent.is_some();
                 inner.created = None;
@@ -1436,6 +1623,67 @@ mod tests {
             topic: String::new(),
             project_id: project.map(str::to_owned),
         }
+    }
+    #[tokio::test]
+    async fn existing_agent_room_link_retries_the_same_registration_after_lost_reply() {
+        use std::cell::RefCell;
+        let parent = RoomId::parse("!space:test").unwrap();
+        let child = RoomId::parse("!existing:test").unwrap();
+        let projects = serde_json::json!({"projects":[{"id":"project","spaceId":parent,"active":true}]});
+        let effects = RefCell::new(Vec::new());
+        for fail in [true, false] {
+            let message = finish_existing_room_link(&parent, &child, &projects,
+                || async { effects.borrow_mut().push(("link",parent.to_string(),child.to_string())); Ok("Room added to space.".into()) },
+                |command| async {
+                    let crate::hagency::model::Command::AdoptRoom {project_id,room_id} = command else { panic!("only register existing room") };
+                    effects.borrow_mut().push(("adopt",project_id.clone(),room_id.clone()));
+                    if fail { Err("owner_daemon_unavailable".into()) }
+                    else { Ok(serde_json::json!({"room":{"projectId":project_id,"roomId":room_id,"active":true}})) }
+                }).await.unwrap();
+            assert!(message.starts_with(crate::i18n::tr(if fail {ROOM_SETUP_INCOMPLETE} else {ROOM_SETUP_COMPLETE})));
+        }
+        assert_eq!(*effects.borrow(), vec![("link","!space:test".into(),"!existing:test".into()),("adopt","project".into(),"!existing:test".into()),("link","!space:test".into(),"!existing:test".into()),("adopt","project".into(),"!existing:test".into())]);
+    }
+    #[tokio::test]
+    async fn existing_room_registration_never_runs_before_a_verified_link() {
+        let parent = RoomId::parse("!space:test").unwrap();let child = RoomId::parse("!existing:test").unwrap();
+        let ordinary = serde_json::json!({"projects":[]});
+        let message = finish_existing_room_link(&parent,&child,&ordinary,|| async {Ok("linked".into())},|_| async {panic!("ordinary spaces do not register Agent rooms")}).await.unwrap();
+        assert_eq!(message,"linked");
+        let unknown = serde_json::json!({});
+        assert!(finish_existing_room_link(&parent,&child,&unknown,|| async {panic!("unknown project type must not link")},|_| async {panic!("unknown project type must not adopt")}).await.is_err());
+        let agent = serde_json::json!({"projects":[{"id":"p","spaceId":parent,"active":true}]});
+        assert!(finish_existing_room_link(&parent,&child,&agent,|| async {Err(anyhow!("permission denied"))},|_| async {panic!("failed link must not adopt")}).await.is_err());
+        let inactive = finish_existing_room_link(&parent,&child,&agent,|| async {Ok("Room added to space.".into())},|_| async {Ok(serde_json::json!({"room":{"projectId":"p","roomId":child,"active":false}}))}).await.unwrap();
+        assert_eq!(inactive,crate::i18n::tr(ROOM_SETUP_INACTIVE));
+        let wrong = finish_existing_room_link(&parent,&child,&agent,|| async {Ok("Room added to space.".into())},|_| async {Ok(serde_json::json!({"room":{"projectId":"p","roomId":"!other:test","active":true}}))}).await.unwrap();
+        assert_eq!(wrong,crate::i18n::tr(ROOM_SETUP_INCOMPLETE));
+    }
+    #[test]
+    fn manage_space_reconstructs_incomplete_registration_from_server_state() {
+        let (_,mut panel)=panel();let candidate=space("!space:test",Some("p"),true);
+        panel.parent=Some(candidate.name.room_id().clone());panel.data.spaces=vec![candidate];panel.data.projects_known=true;
+        let room:OwnedRoomId="!existing:test".try_into().unwrap();panel.data.children.insert(room.clone());
+        assert!(!panel.needs_room_registration(&room),"unknown registration is not assumed absent");
+        panel.data.registered_rooms=Some(registered_rooms(&serde_json::json!({"rooms":[]}),"p").unwrap());
+        assert!(panel.needs_room_registration(&room),"reopening derives retry from linked room plus missing registration");
+        for active in [false,true] {
+            panel.data.registered_rooms=Some(registered_rooms(&serde_json::json!({"rooms":[{"projectId":"p","roomId":room,"active":active}]}),"p").unwrap());
+            assert!(!panel.needs_room_registration(&room));
+            assert_eq!(panel.room_registration(&room),if active {None}else{Some(ROOM_SETUP_INACTIVE)});
+        }
+        assert!(registered_rooms(&serde_json::json!({"rooms":[{"projectId":"foreign","roomId":room,"active":true}]}),"p").is_err());
+    }
+    #[test]
+    fn malformed_project_or_conflicting_room_state_never_looks_ordinary_or_ready() {
+        let parent = RoomId::parse("!space:test").unwrap();
+        for row in [serde_json::json!({"spaceId":parent,"id":"p"}),serde_json::json!({"spaceId":parent,"id":"p","active":"yes"}),serde_json::json!({"spaceId":parent,"active":true})] {
+            assert!(project_for_space(&serde_json::json!({"projects":[row]}),&parent).is_err());
+        }
+        let row=serde_json::json!({"spaceId":parent,"id":"p","active":true});
+        assert!(project_for_space(&serde_json::json!({"projects":[row.clone(),row]}),&parent).is_err());
+        let rows=serde_json::json!({"rooms":[{"projectId":"p","roomId":"!r:test","active":true},{"projectId":"p","roomId":"!r:test","active":false}]});
+        assert!(registered_rooms(&rows,"p").is_err());
     }
     #[test]
     fn creation_wizard_explains_three_paths_and_requires_a_known_writable_space() {

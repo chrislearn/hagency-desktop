@@ -2714,5 +2714,16 @@
   "Change Pool Limits": "修改资源池额度",
   "Pool Limits Not Saved": "资源池额度未保存",
   "Pool Limits Saved": "已保存资源池额度",
-  "Not applied yet. Tap Change Pool Limits to continue; what running Agents hold stays as it is.": "还没生效。点「修改资源池额度」继续；正在运行的 Agent 已拿到的额度不变。"
+  "Not applied yet. Tap Change Pool Limits to continue; what running Agents hold stays as it is.": "还没生效。点「修改资源池额度」继续；正在运行的 Agent 已拿到的额度不变。",
+  "Space types could not be checked. Refresh before adding a room.": "暂时无法确认空间类型。请刷新后再添加房间。",
+  "Room setup could not be checked. Refresh to retry.": "暂时无法确认房间设置。请刷新重试。",
+  "Room linked, but Agent setup is incomplete. Use Finish setup for this room to retry.": "房间已加入空间，但 Agent 设置尚未完成。请点击此房间的“继续完成设置”重试。",
+  "Room added to Agent space. You can now add Agents.": "房间已加入 Agent 空间，现在可以添加 Agent。",
+  "This room's Agent registration is inactive. It cannot be reactivated here.": "此房间的 Agent 注册已停用，无法在此重新启用。",
+  "Room is linked. Finish setup to enable Agents.": "房间已加入空间。请继续完成设置以启用 Agent。",
+  "The Project registration is unavailable.": "暂时无法确认 Project 注册。",
+  "The space has conflicting Project registrations.": "此空间存在相互冲突的 Project 注册。",
+  "The room registration belongs to another Project.": "此房间已注册到另一个 Project。",
+  "Invalid room registration.": "房间注册信息无效。",
+  "The room has conflicting registration states.": "此房间存在相互冲突的注册状态。"
 }

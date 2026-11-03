@@ -2597,5 +2597,16 @@
   "Change Pool Limits": "Change Pool Limits",
   "Pool Limits Not Saved": "Pool Limits Not Saved",
   "Pool Limits Saved": "Pool Limits Saved",
-  "Not applied yet. Tap Change Pool Limits to continue; what running Agents hold stays as it is.": "Not applied yet. Tap Change Pool Limits to continue; what running Agents hold stays as it is."
+  "Not applied yet. Tap Change Pool Limits to continue; what running Agents hold stays as it is.": "Not applied yet. Tap Change Pool Limits to continue; what running Agents hold stays as it is.",
+  "Space types could not be checked. Refresh before adding a room.": "Space types could not be checked. Refresh before adding a room.",
+  "Room setup could not be checked. Refresh to retry.": "Room setup could not be checked. Refresh to retry.",
+  "Room linked, but Agent setup is incomplete. Use Finish setup for this room to retry.": "Room linked, but Agent setup is incomplete. Use Finish setup for this room to retry.",
+  "Room added to Agent space. You can now add Agents.": "Room added to Agent space. You can now add Agents.",
+  "This room's Agent registration is inactive. It cannot be reactivated here.": "This room's Agent registration is inactive. It cannot be reactivated here.",
+  "Room is linked. Finish setup to enable Agents.": "Room is linked. Finish setup to enable Agents.",
+  "The Project registration is unavailable.": "The Project registration is unavailable.",
+  "The space has conflicting Project registrations.": "The space has conflicting Project registrations.",
+  "The room registration belongs to another Project.": "The room registration belongs to another Project.",
+  "Invalid room registration.": "Invalid room registration.",
+  "The room has conflicting registration states.": "The room has conflicting registration states."
 }

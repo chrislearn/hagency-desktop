@@ -94,6 +94,7 @@ def main():
         ("recurring-period-display", "host::hagency::pools::recurring_display_tests"),
         ("whitelist-accounts", "host::hagency::grant_people"),
         ("friend-search", "home::mobile::new_chat_tests"),
+        ("space-management", "home::space_management::tests"),
         ("publication-ui", "grant_ui::"),
         ("resource-ceiling-ui", "resource_edit_ui::tests"),
         ("agent-chat", "agent_chat"),
@@ -126,6 +127,7 @@ def main():
     run("owner-controller-build", ["cargo", "build", "--locked", "--manifest-path", "apps/owner-controller/Cargo.toml", "--bin", "hagency-owner-controller"])
     if args.client:
         run("native-server-management", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "server_management", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
+        run("native-adopted-server-administration", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "server_administration", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-server-journal", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "server_journal", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-owner-daemon", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "daemon::", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-owner-telemetry", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "console::native::telemetry::", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
