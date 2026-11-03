@@ -205,14 +205,8 @@ impl HandoverStore {
         if self.ack_path(id).try_exists()? {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, "handover already restored"));
         }
-        use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
         let claim_path = self.root.join(format!("{id}.claim"));
-        let claim = OpenOptions::new().create(true).truncate(false).read(true).write(true)
-            .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&claim_path)?;
-        private_entry(&claim_path, false)?;
-        if unsafe { libc::flock(claim.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let claim = lock_private(&claim_path, true)?;
         // A sender can cancel, or a previous claimant can finish, between
         // validation and locking. Revalidate before exposing any navigation.
         let current: Envelope = read_private(&self.request_path(id))?;
@@ -295,16 +289,11 @@ impl HandoverStore {
         let path = self.root.join(format!("{id}.claim"));
         if !path.try_exists()? { return Ok(()); }
         private_entry(&path, false)?;
-        use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
-        let claim = match OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOFOLLOW).open(&path) {
+        let _claim = match lock_private(&path, false) {
             Ok(claim) => claim,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::WouldBlock) => return Ok(()),
             Err(error) => return Err(error),
         };
-        if unsafe { libc::flock(claim.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            let error = io::Error::last_os_error();
-            return if error.kind() == io::ErrorKind::WouldBlock { Ok(()) } else { Err(error) };
-        }
         if self.request_path(id).try_exists()? { return Ok(()); }
         match fs::remove_file(&path) {
             Ok(()) => Ok(()),
@@ -353,6 +342,24 @@ fn invalid(message: &'static str) -> io::Error {
 }
 fn denied(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
+}
+
+/// Keep a private, nonblocking exclusive claim until the returned file closes.
+#[cfg(unix)]
+pub(crate) fn lock_private(path: &Path, create: bool) -> io::Result<File> {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    let file = OpenOptions::new().create(create).truncate(false).read(true).write(true)
+        .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    private_entry(path, false)?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn lock_private(_path: &Path, _create: bool) -> io::Result<File> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "private controller locking requires Unix"))
 }
 
 fn random_id() -> io::Result<String> {

@@ -1,9 +1,9 @@
 //! Durable, owner-scoped command identity, shared by both controller hosts.
 //! The exclusive lock spans submission; quitting releases the lock, never the
 //! saved ticket. A reconnect offers that exact ticket for an explicit check.
-use crate::{handover::{HandoverStore, private_entry, read_private, write_new}, model::PendingCommand};
+use crate::{handover::{HandoverStore, lock_private, read_private, write_new}, model::PendingCommand};
 use serde::{Deserialize, Serialize};
-use std::{fs::{self, File, OpenOptions}, io, os::fd::AsRawFd, os::unix::fs::OpenOptionsExt, path::{Path, PathBuf}};
+use std::{fs::{self, File}, io, path::{Path, PathBuf}};
 
 #[derive(Serialize, Deserialize)]
 struct Saved { owner: String, command: PendingCommand }
@@ -17,10 +17,7 @@ impl CommandStore {
         let hash = owner.bytes().fold(0xcbf29ce484222325u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3));
         let path = root.join(format!("{hash:016x}.json"));
         let lock_path = root.join(format!("{hash:016x}.lock"));
-        let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true)
-            .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&lock_path)?;
-        private_entry(&lock_path, false)?;
-        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 { return Err(io::Error::last_os_error()); }
+        let lock = lock_private(&lock_path, true)?;
         Ok(Self { root, path, owner: owner.into(), _lock: lock })
     }
     pub fn load(&self) -> io::Result<Option<PendingCommand>> {
@@ -43,7 +40,7 @@ impl CommandStore {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::model::{CommandKind, CommandPhase, CommandTicket};
