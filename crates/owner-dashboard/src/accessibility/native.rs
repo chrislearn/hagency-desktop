@@ -510,6 +510,32 @@ mod tests {
         assert_eq!((0..=4).map(|i| byte_at_grapheme(text, i)).collect::<Vec<_>>(), vec![0, 1, 4, 7, text.len()]);
         assert_eq!(byte_at_grapheme(text, 999), text.len());
     }
+
+    #[test]
+    fn undrawn_controls_cannot_name_an_absent_focus_node() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let widgets = cx.with_vm(|vm| {
+            vm.bx.captured_errors = Some(Vec::new());
+            makepad_widgets::script_mod(vm);
+            let button = script_eval!(vm, { mod.widgets.Button { text: "Pause hosting" } });
+            let button = WidgetRef::script_from_value(vm, button);
+            let input = script_eval!(vm, { mod.widgets.TextInput { text: "Owner" } });
+            let input = WidgetRef::script_from_value(vm, input);
+            assert!(vm.take_errors().is_empty());
+            [button, input]
+        });
+        // Allocate an in-memory window slot; no platform event loop is run.
+        let window = WindowHandle::new(&mut cx);
+        assert!(cx.key_focus().is_empty());
+        for widget in widgets {
+            assert!(widget.area().is_empty());
+            let (tree, targets) = build(&widget, &cx, window.window_id(), 1, &[]);
+            assert_eq!(tree.focus, root_id(window.window_id()));
+            assert_eq!(tree.nodes.len(), 1, "undrawn leaves have no valid bounds");
+            assert!(tree.nodes.iter().any(|(id, _)| *id == tree.focus));
+            assert!(targets.is_empty(), "discarded leaves cannot receive AX actions");
+        }
+    }
 }
 
 #[cfg(all(feature = "fixtures", target_os = "macos"))]
