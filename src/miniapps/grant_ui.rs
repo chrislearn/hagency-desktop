@@ -3472,9 +3472,9 @@ impl MiniAppsPanel {
         let now = GRANT_PREVIEW.with(|cell| cell.borrow().as_ref().map(|p| p.now)).unwrap_or_else(now_ms);
         let calendar = GRANT_PREVIEW.with(|cell| cell.borrow().as_ref().and_then(|p| p.draft.calendar.as_ref().and_then(|c| self.calendar_input(cx, actions, c))));
         let calendar_typing=self.view.text_input(cx, ids!(grant_confirmation.scroll.calendar.zone)).changed(actions).is_some();
-        let renewal = if self.view.button(cx, ids!(grant_confirmation.scroll.pool_renewal.choices.automatic)).clicked(actions) {
+        let renewal = if crate::miniapps::design::key_button_clicked(&self.view.widget(cx, ids!(grant_confirmation.scroll.pool_renewal.choices.automatic)), actions) {
             Some(RenewalMode::Automatic)
-        } else if self.view.button(cx, ids!(grant_confirmation.scroll.pool_renewal.choices.manual)).clicked(actions) {
+        } else if crate::miniapps::design::key_button_clicked(&self.view.widget(cx, ids!(grant_confirmation.scroll.pool_renewal.choices.manual)), actions) {
             Some(RenewalMode::Owner)
         } else { None };
         let (changed, refill) = GRANT_PREVIEW.with(|cell| {
