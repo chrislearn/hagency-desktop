@@ -98,6 +98,7 @@ def main():
         ("publication-ui", "grant_ui::"),
         ("resource-ceiling-ui", "resource_edit_ui::tests"),
         ("agent-chat", "agent_chat"),
+        ("chat-mermaid", "shared::chat_mermaid::tests"),
         ("link-preview", "link_preview"),
         ("linkify", "linkify"),
         ("activity", "shared_permission_notice"),
@@ -165,6 +166,7 @@ def main():
         run("native-thread-context-http", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution", "--lib", "native_shared_context_", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-first-turn-permissions", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_owner_policy_applies_before_the_first_model_call", "--", "--ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-interrupted-calls", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_interrupted_call", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
+        run("native-admitted-call-cleanup", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution", "--lib", "shared_successor_call_failed_start", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-codex-control", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--features", "shared-context", "--test", "session", "native_codex_control", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-encrypted-execution", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution", "--lib", "native_shared_encrypted_", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-demand-promotion-recovery", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution", "--lib", "native_demand_recovered_promotion", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)

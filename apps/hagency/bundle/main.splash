@@ -1954,7 +1954,7 @@ A.reqs_ask=fn(q,kind){
 A.reqs_stoppable=fn(q){let {canStopSupply=false,resourceOwnerMxid=nil}=q return canStopSupply==true && H.entry_role=="owner" && H.session!=nil && resourceOwnerMxid==H.session.account}
 A.reqs_using=fn(rows){let out=[] for q in rows {if A.reqs_stoppable(q) {out.push(q)}} return out}
 A.reqs_stopped_rows=fn(rows){let out=[] for q in rows {let {state=nil,resourceOwnerMxid=nil}=q if state=="revoked" && H.session!=nil && resourceOwnerMxid==H.session.account {out.push(q)}} return out}
-A.reqs_given_line=fn(q){return A.t("Holds "+A.tokens(q.requestedTokens)+" · from "+A.sub_person(q.managerMxid),"已拿到 "+A.tokens(q.requestedTokens)+" · 来自 "+A.sub_person(q.managerMxid))}
+A.reqs_given_line=fn(q){return A.t("Authorized "+A.tokens(q.requestedTokens)+" · requested by "+A.sub_person(q.managerMxid),"已授权 "+A.tokens(q.requestedTokens)+" · "+A.sub_person(q.managerMxid)+" 申请")}
 // Whether the pool the stop view is about is over its monthly maximum now (from its live figures).
 A.reqs_pool_over=fn(){
     let rid=A.recipient_optional(H.reqs,"rid")
@@ -9068,7 +9068,7 @@ A.render_page = fn(){
                         }}
                     }}
                 }}
-                mod.widgets.HagencyListLabel{text:if A.reqs_using_view() {A.t("RUNNING NOW","正在运行")} else {A.t("AGENTS USING THIS POOL","使用中的 Agent")}}
+                mod.widgets.HagencyListLabel{text:A.t("AUTHORIZED TO USE THIS POOL","已授权使用")}
                 if using.len()==0 {mod.widgets.HagencyList{mod.widgets.HagencySwitchRow{
                     mod.widgets.HagencyRowIcon{draw_bg.color:mod.widgets.RINX_SUCCESS_BG mod.widgets.HagencyRowGlyph{draw_icon.svg:mod.rinx_icons.check draw_icon.color:mod.widgets.RINX_SUCCESS_FG}}
                     mod.widgets.HagencyWrapTitle{text:A.t("No Agent is using this pool right now","现在没有 Agent 在用这个资源池")}
@@ -9081,12 +9081,12 @@ A.render_page = fn(){
                             mod.widgets.HagencyListTitle{max_lines:1 text_overflow:TextOverflow.Ellipsis text:q.definition.name}
                             mod.widgets.HagencyWrapSubtitle{text:A.reqs_given_line(q)}
                         }
-                        request_stop := mod.widgets.HagencyPillDanger{width:Fit padding:Inset{left:16 right:16} text:A.t("Stop","停止") enabled:can on_click: || A.reqs_ask_stop(q)}
+                        request_stop := mod.widgets.HagencyPillDanger{width:Fit padding:Inset{left:16 right:16} text:A.t("Stop supply…","停止供给…") enabled:can on_click: || A.reqs_ask_stop(q)}
                     }
                 }}}}
-                if using.len()>0 {mod.widgets.HagencyListNote{text:A.t("A stopped Agent takes no new work from this pool. Work it already finished stays.","停止后，它不再从这个资源池接新任务；已经完成的工作不受影响。")}}
+                if using.len()>0 {mod.widgets.HagencyListNote{text:A.t("Stopping supply ends this Agent’s access to the pool for new tasks. Completed work stays.","停止供给后，此 Agent 不再使用该资源池接新任务；已经完成的工作不受影响。")}}
                 if stopped.len()>0 {View{width:Fill height:Fit flow:Down spacing:6
-                    mod.widgets.HagencyListLabel{text:A.t("STOPPED","已停止")}
+                    mod.widgets.HagencyListLabel{text:A.t("SUPPLY STOPPED","已停止供给")}
                     mod.widgets.HagencyList{for index item in stopped {let q=item View{width:Fill height:Fit flow:Down
                         if index>0 {mod.widgets.HagencyListDivider{margin:Inset{left:64}}}
                         mod.widgets.HagencyListFit{

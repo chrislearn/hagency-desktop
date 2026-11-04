@@ -17,8 +17,13 @@ fn execution_busy(value:&Value,room:&str,thread:&str)->bool {
 fn execution_notice(value:&Value,room:&str,thread:&str)->Option<&'static str> {
     let row=execution_row(value,room,thread)?;
     if row["reason"]=="budget_blocked" {
-        return Some("This message was blocked by the budget limit. After the resource owner adds capacity, send a new message.");
+        return Some(match row["budgetState"].as_str() {
+            Some("usage_unresolved") => "The previous call has not been settled. Its reserved allowance is unavailable until usage is confirmed.",
+            Some("exhausted") => "The Agent's allowance has been used. Check its next renewal period with the resource owner.",
+            _ => "No allowance is currently available for this message. Check the Agent's allowance and unsettled calls.",
+        });
     }
+    if row["reason"]=="usage_unrepresentable" {return Some("The previous call has not been settled. Its reserved allowance is unavailable until usage is confirmed.");}
     match row["state"].as_str()? {
         "started"=>Some("Agent is working…"),
         "pending"|"queued"|"acknowledged"|"bound"=>Some("Message queued; waiting for Agent."),
@@ -177,11 +182,16 @@ mod tests {
             {"roomId":"!room","threadRoot":"$old","state":"unknown"},
             {"roomId":"!room","threadRoot":"$done","state":"replied"}
         ]});
-        assert!(execution_notice(&v,"!room","").unwrap().contains("budget limit"));
+        assert!(execution_notice(&v,"!room","").unwrap().contains("unsettled calls"));
         assert!(execution_notice(&v,"!room","$old").unwrap().contains("interrupted"));
         assert!(execution_notice(&v,"!room","$done").is_none());
         assert!(execution_notice(&v,"!room","$foreign").is_none());
         assert!(execution_notice(&v,"!foreign","").is_none());
+        for (state, expected) in [("usage_unresolved","previous call"),("exhausted","used")] {
+            let v=json!({"executions":[{"roomId":"!room","state":"blocked","reason":"budget_blocked","budgetState":state}]});
+            assert!(execution_notice(&v,"!room","").unwrap().contains(expected));
+            assert!(!execution_busy(&v,"!room",""));
+        }
     }
 
     #[test]
