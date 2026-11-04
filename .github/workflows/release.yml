@@ -263,6 +263,19 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: python3 packaging/owner-controller/build.py --release --client .release/client --output dist/hosting --dmg
+      - name: Preserve macOS candidates before Hosting checks
+        if: runner.os == 'macOS'
+        env:
+          ARCH: ${{ matrix.arch }}
+          HOSTING: ${{ needs.plan.outputs.hosting }}
+        run: python3 tools/release-assets.py collect --platform macos --arch "$ARCH" --hosting "$HOSTING"
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'macOS'
+        with:
+          name: candidate-installers-macos-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
       - name: Verify packaged controller and daemon lifecycle
         if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
         run: python3 tools/owner-controller-bundle-smoke.py --bundle 'dist/hosting/Hagency Hosting.app' --output .run/release-hosting-smoke

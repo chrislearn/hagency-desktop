@@ -156,7 +156,7 @@ both. macOS RC builds are ad-hoc signed unless Developer ID signing is
 configured; Hosting is ad-hoc signed. Windows installers remain unsigned.
 
 For this RC, Makepad is pinned to
-`0151137e13bd28936bfadb63a56c16b3ab397e77` in `OctoSense-org/makepad`. It includes
+`ebec2e5c866eae3c791e2f24d59db543cad97a05` in `OctoSense-org/makepad`. It includes
 PR #132 and a fix for software adapters that reject video acceleration.
 All Makepad crates, standalone tools, dashboard and
 controller workspaces resolve to that commit. The tracked accessibility

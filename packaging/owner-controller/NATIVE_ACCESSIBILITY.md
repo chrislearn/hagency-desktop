@@ -12,7 +12,7 @@ python3 tools/prepare-owner-accessibility.py --output-config .run/owner-daemon/n
 ```
 
 This creates an isolated Makepad checkout at
-`0151137e13bd28936bfadb63a56c16b3ab397e77`, applies the tracked
+`ebec2e5c866eae3c791e2f24d59db543cad97a05`, applies the tracked
 `makepad-accessibility.patch`, and writes a Cargo configuration with absolute
 paths. The directory name includes the patch SHA-256. Reuse verifies HEAD and
 all changed file hashes and rejects unexpected edits. User Makepad checkouts and
