@@ -48,14 +48,22 @@ def software_renderer(binary, output):
         # (supported by d3dconfig) so long/short path expansion cannot defeat it.
         # This mode is limited to a disposable CI host, with one installed app.
         run(config, 'apps', '--add', binary.name)
+        run(config, 'apps', '--add', Path(sys.executable).name)
         try:
             run(config, 'device', 'force-warp=true')
-            run(config, 'debug-layer', 'debug-layer-mode=force-off')
+            run(config, 'debug-layer', 'debug-layer-mode=force-on')
             run(config, 'apps')
             run(config, 'device')
+            from release_windows_graphics import device_probe
+            diagnostics = device_probe()
+            log.write(diagnostics+'\n')
+            log.flush()
+            print(diagnostics, flush=True)
             yield
         finally:
             run(config, 'device', 'force-warp=false', check=False)
+            run(config, 'debug-layer', 'debug-layer-mode=app-controlled', check=False)
+            run(config, 'apps', '--remove', Path(sys.executable).name, check=False)
             run(config, 'apps', '--remove', binary.name, check=False)
 
 parser = argparse.ArgumentParser(description=__doc__)
