@@ -57,6 +57,15 @@ assert(A.tokens(123456)=="0.123456 M" && A.tokens(1000001)=="1.000001 M")
 assert(A.tokens(9007199254740991)=="9007199254.740991 M")
 assert(A.tokens(nil)==A.t("Unknown","未知") && A.amount(1000000)=="1,000,000")
 ''',
+'allowance_summaries_are_compact_without_hiding_small_positive_usage': '''
+assert(A.token_summary(39994936)=="39.99 M" && A.token_summary(40000000)=="40 M")
+assert(A.token_summary(1235000)=="1.24 M" && A.token_summary(1250000)=="1.25 M")
+assert(A.token_summary(1500000)=="1.5 M" && A.token_summary(999999)=="1 M")
+assert(A.token_summary(0)=="0 M" && A.token_summary(1)=="<0.01 M" && A.token_summary(9999)=="<0.01 M")
+assert(A.token_summary(10000)=="0.01 M" && A.token_summary(nil)==A.t("Unknown","未知"))
+assert(A.tokens(39994936)=="39.994936 M" && A.amount(39994936)=="39,994,936")
+assert(H.calls.len()==0)
+''',
 
 'creation_continuation_keeps_exact_unsent_values': '''
 H.enrollment_draft={account:{accountId:"login_a" expectedRevision:"original"} model:{model:"chosen"} tokens:"445678" reasoning:"high"}

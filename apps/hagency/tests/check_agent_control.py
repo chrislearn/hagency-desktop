@@ -109,6 +109,14 @@ H.page="agent_control" H.command={service:"original" args:{commandId:"saved"}}
 let tree=View{'''+section+'''} visit(tree)
 assert(find("control_run")==nil && find("control_pause")==nil && calls.len()==0)
 '''
+ CASES['pooled_response_settings_return_to_the_same_agent']='''
+H.page="agent_control" H.pool_detail={id:"pool_request_original" assignmentId:"mas_original" state:"approved_waiting_executor" reservationState:"reserved" runtimeState:"qualified" membershipState:"matrix_verified" blockingReason:nil}
+A.open_pool_agent=fn(id){calls.push({openedAgent:id})}
+let tree=View{'''+section+'''} visit(tree)
+assert(find("control_back").text=="Original agent")
+find("control_back").on_click()
+assert(calls.len()==1 && calls[0].openedAgent=="pool_request_original")
+'''
  results=[]
  for lang in ['en','zh-CN']:
   for name,test in CASES.items():
