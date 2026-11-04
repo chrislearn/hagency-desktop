@@ -23,8 +23,25 @@ output.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
     temporary = Path(temporary)
     if sys.platform == 'darwin':
-        app = temporary/package.name
-        shutil.copytree(package, app)
+        if package.suffix.lower() == '.dmg':
+            mount = temporary/'image'
+            mount.mkdir()
+            # cargo-packager removes its intermediate .app after creating a
+            # DMG. Exercise the distributable itself, including its contents.
+            # The EULA is our own bundled application license.
+            subprocess.run(['hdiutil', 'attach', '-readonly', '-nobrowse',
+                            '-mountpoint', str(mount), str(package)],
+                           input='Y\n', text=True, check=True, timeout=120)
+            try:
+                candidates = list(mount.glob('*.app'))
+                assert len(candidates) == 1, 'Disk image must contain one Desktop app'
+                app = temporary/candidates[0].name
+                shutil.copytree(candidates[0], app)
+            finally:
+                subprocess.run(['hdiutil', 'detach', str(mount)], check=True, timeout=30)
+        else:
+            app = temporary/package.name
+            shutil.copytree(package, app)
         binary = app/'Contents/MacOS/rinx'
         kernel = app/'Contents/MacOS/octos'
         subprocess.run(['codesign','--verify','--deep','--strict',str(app)], check=True)
