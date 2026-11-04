@@ -182,6 +182,18 @@ jobs:
           python3 tools/wechat-ux/check_i18n.py
           cargo test --locked -p octosense-app-contract --lib
           cargo test --locked --features agent_chat --lib
+      - name: Verify Windows graphics startup and recreation
+        if: runner.os == 'Windows'
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          result = subprocess.run(['cargo', 'test', '--locked', '-p', 'makepad-platform',
+              '--lib', 'device_tier_starts_on_software_adapter', '--', '--nocapture'],
+              text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+          print(result.stdout)
+          result.check_returncode()
+          assert '1 passed; 0 failed' in result.stdout, 'Device startup regression must execute'
+          PY
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -219,6 +231,16 @@ jobs:
         # An absolute output directory avoids cargo-packager 0.10.1 resolving
         # generated scripts twice when it changes the working directory.
         run: cargo packager --manifest-path Cargo.toml --verbose --release --out-dir "$PWD/dist" --formats "$FORMATS"
+      - name: Preserve Windows candidate before installer checks
+        if: runner.os == 'Windows'
+        run: python3 tools/release-assets.py collect --platform windows --arch amd64 --hosting false
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Windows'
+        with:
+          name: candidate-installers-windows-amd64
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
       - name: Start the packaged Desktop on macOS
         if: runner.os == 'macOS'
         run: |
@@ -228,7 +250,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           package=$(find dist -maxdepth 1 -name '*.exe' -print -quit)
-          python3 tools/release-desktop-smoke.py --package "$package" --output .run/release-desktop-smoke --software-rendering
+          python3 tools/release-desktop-smoke.py --package "$package" --output .run/release-desktop-smoke
       - uses: actions/checkout@v7
         if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
         with:

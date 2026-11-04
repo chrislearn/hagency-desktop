@@ -37,9 +37,7 @@ env:
 jobs:
   # Match the release job ID and cache key to reuse its optimized dependencies.
   package:
-    # Reused Windows installers can be tested on the current graphics runtime
-    # without rebuilding them or changing their Windows deployment target.
-    runs-on: ${{ inputs.platform == 'macos-arm64' && 'macos-14' || (inputs.artifact_run_id != '' && 'windows-2025' || 'windows-2022') }}
+    runs-on: ${{ inputs.platform == 'macos-arm64' && 'macos-14' || 'windows-2022' }}
     timeout-minutes: 150
     defaults:
       run:
@@ -121,14 +119,12 @@ jobs:
           python3 .release/validation/tools/test-release-image-check.py
       - name: Install and render the candidate
         run: |
-          extra=()
           if [[ "$PLATFORM" == windows-amd64 ]]; then
             package=release-assets/hagency-desktop-windows-amd64.exe
-            extra+=(--software-rendering)
           else
             package=release-assets/hagency-desktop-macos-arm64.dmg
           fi
-          python3 .release/validation/tools/release-desktop-smoke.py --source-root "$PWD" --package "$package" --output .run/verified-installer "${extra[@]}"
+          python3 .release/validation/tools/release-desktop-smoke.py --source-root "$PWD" --package "$package" --output .run/verified-installer
           python3 - <<'PY'
           import json, os
           from pathlib import Path

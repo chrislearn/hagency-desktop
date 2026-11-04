@@ -155,8 +155,9 @@ The regression gate and packaging run concurrently, but publication requires
 both. macOS RC builds are ad-hoc signed unless Developer ID signing is
 configured; Hosting is ad-hoc signed. Windows installers remain unsigned.
 
-For this RC, Makepad is pinned to PR #132's published author commit
-`4ec079b02bca9747acde3216cfc370cd558e40f4` in `csheargm/makepad`, while the
-upstream PR is open. All Makepad crates, standalone tools, dashboard and
+For this RC, Makepad is pinned to
+`0151137e13bd28936bfadb63a56c16b3ab397e77` in `OctoSense-org/makepad`. It includes
+PR #132 and a fix for software adapters that reject video acceleration.
+All Makepad crates, standalone tools, dashboard and
 controller workspaces resolve to that commit. The tracked accessibility
 patch is applied to an isolated checkout of the same revision.

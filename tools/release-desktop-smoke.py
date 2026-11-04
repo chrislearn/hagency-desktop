@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Install/relocate a packaged Desktop and render sign-in with fresh app data."""
 import argparse
-from contextlib import contextmanager, ExitStack
 import json
 import os
 from pathlib import Path
@@ -16,79 +15,16 @@ from urllib.error import HTTPError, URLError
 from release_image_check import image_readiness
 
 
-@contextmanager
-def software_renderer(binary, output):
-    """Select WARP for this temporary executable on GPU-less Windows CI hosts.
-
-    This is the per-application DirectX Control Panel override; it does not
-    change the distributed executable or the machine's global GPU selection.
-    """
-    # Use Microsoft's configuration utility: partial hand-written registry
-    # entries are not enough to register an application on every Windows SDK.
-    # Device settings affect registered apps, so restrict this to disposable CI.
-    assert os.environ.get('GITHUB_ACTIONS') == 'true', 'WARP setup requires an isolated CI host'
-    system = Path(os.environ['SystemRoot'])/'System32'
-    config = system/'d3dconfig.exe'
-    with (output/'graphics-config.log').open('w') as log:
-        def run(*command, timeout=30, check=True):
-            result = subprocess.run(list(map(str, command)), text=True,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    timeout=timeout)
-            log.write(result.stdout)
-            log.flush()
-            print(result.stdout, flush=True)
-            if check:
-                result.check_returncode()
-            return result
-        if not config.is_file():
-            run(system/'dism.exe', '/online', '/add-capability',
-                '/capabilityname:tools.graphics.directx~~~~0.0.1.0', '/norestart', timeout=240)
-        assert config.is_file(), 'DirectX Graphics Tools did not install d3dconfig.exe'
-        # The hosted runner's TEMP uses an 8.3 username. Register the image name
-        # (supported by d3dconfig) so long/short path expansion cannot defeat it.
-        # This mode is limited to a disposable CI host, with one installed app.
-        run(config, 'apps', '--add', binary.name)
-        run(config, 'apps', '--add', Path(sys.executable).name)
-        try:
-            run(config, 'device', 'force-warp=true')
-            run(config, 'debug-layer', 'debug-layer-mode=force-on')
-            run(config, 'apps')
-            run(config, 'device')
-            probe = Path(__file__).with_name('release_windows_graphics.py')
-            diagnostics = json.loads(run(sys.executable, probe).stdout)
-            video_supported = any(item.get('driver') == 'adapter0'
-                and item.get('flags') == '820' and item.get('status') == '00000000'
-                for item in diagnostics)
-            # The older software adapter cannot create a video-enabled D3D11
-            # device. Exercise the same installer through Microsoft's supported
-            # D3D11-on-D3D12 software path when that adapter limitation applies.
-            if not video_supported:
-                run(config, 'device', 'force-d3d11on12=true')
-                diagnostics = json.loads(run(sys.executable, probe).stdout)
-            yield dict(backend='WARP' if video_supported else 'D3D11On12/WARP',
-                       deviceProbes=diagnostics)
-        finally:
-            run(config, 'device', 'force-d3d11on12=false', check=False)
-            run(config, 'device', 'force-warp=false', check=False)
-            run(config, 'debug-layer', 'debug-layer-mode=app-controlled', check=False)
-            run(config, 'apps', '--remove', Path(sys.executable).name, check=False)
-            run(config, 'apps', '--remove', binary.name, check=False)
-
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--package', type=Path, required=True)
 parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--source-root', type=Path, default=Path(__file__).resolve().parents[1],
                     help='Source checkout that produced the installer (for its kernel pin)')
-parser.add_argument('--software-rendering', action='store_true',
-                    help='Use the per-application WARP override on an isolated Windows test host')
 args = parser.parse_args()
-if args.software_rendering and sys.platform != 'win32':
-    parser.error('--software-rendering is only available on Windows')
 package, output = args.package.resolve(), args.output.resolve()
 output.mkdir(parents=True, exist_ok=True)
-renderer_configuration = None
 
-with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary, ExitStack() as cleanup:
+with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
     temporary = Path(temporary)
     if sys.platform == 'darwin':
         if package.suffix.lower() == '.dmg':
@@ -126,8 +62,6 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary, 
              '@{product=$v.ProductName;company=$v.CompanyName}|ConvertTo-Json -Compress'],
             env=dict(os.environ, HAGENCY_SMOKE_BINARY=str(binary)), text=True, timeout=20))
         assert version_info == {'product': 'Hagency Desktop', 'company': 'Hagency'}, version_info
-        if args.software_rendering:
-            renderer_configuration = cleanup.enter_context(software_renderer(binary, output))
     else:
         raise SystemExit('This smoke check covers macOS and Windows installers')
     kernel_version = subprocess.check_output([str(kernel),'--version'], text=True, timeout=20).strip()
@@ -181,7 +115,7 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary, 
         (output/'report.json').write_text(json.dumps(dict(passed=True, platform=sys.platform,
             package=str(package), isolatedProfile=True, kernelVersion=kernel_version,
             signInRendered=True, nonBlankScreenshot=pixels, framesChecked=frames,
-            softwareRendering=args.software_rendering, rendererConfiguration=renderer_configuration,
+            rendererOverride=False,
             resourceErrors=errors), indent=2)+'\n')
         print('Packaged Desktop started and rendered sign-in with bundled resources')
     finally:
