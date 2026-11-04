@@ -1,0 +1,95 @@
+name: Repack temporary Windows WebView test build
+
+on:
+  push:
+    branches: [codex/windows-webview-test-repack-20261104]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  repack:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hagency-desktop-webview-test-windows-x64
+          path: bundle
+          run-id: 41925532444
+          github-token: ${{ github.token }}
+
+      - name: Prepare the isolated-profile launcher
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          @echo off
+          setlocal
+          set "HAGENCY_DESKTOP_DATA_DIR=%LOCALAPPDATA%\HagencyDesktop-WebView-Test"
+          if not exist "%HAGENCY_DESKTOP_DATA_DIR%" mkdir "%HAGENCY_DESKTOP_DATA_DIR%"
+          start "" "%~dp0rinx.exe"
+          '@ | Set-Content -Encoding ascii bundle/Start-WebView-Test.cmd
+          $expected = 'CB68B52D1667FD9FF0C3FC1654609C0858E9834956B1E8F3A8EB569A949F61A6'
+          if ((Get-FileHash bundle/rinx.exe -Algorithm SHA256).Hash -ne $expected) { throw 'Unexpected Desktop executable' }
+          if (-not (Test-Path bundle/octos.exe)) { throw 'Missing local agent runtime' }
+          if (-not (Test-Path bundle/makepad_widgets/resources/Inter.ttf)) { throw 'Missing Makepad resources' }
+          if (-not (Test-Path bundle/rinx/resources/icon_256.png)) { throw 'Missing Desktop resources' }
+
+      - name: Verify the isolated-profile launch and UI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'bundle/rinx.exe'
+          $stdout = Join-Path $env:RUNNER_TEMP 'desktop-test.stdout'
+          $stderr = Join-Path $env:RUNNER_TEMP 'desktop-test.stderr'
+          $env:HAGENCY_DESKTOP_DATA_DIR = Join-Path $env:RUNNER_TEMP 'desktop-test-profile'
+          New-Item -ItemType Directory -Force -Path $env:HAGENCY_DESKTOP_DATA_DIR | Out-Null
+          $env:MAKEPAD_NO_FOCUS = '1'
+          $process = Start-Process -FilePath $exe -ArgumentList '--remote' -WorkingDirectory $env:RUNNER_TEMP -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          $port = $null
+          try {
+            $end = [DateTime]::UtcNow.AddSeconds(120)
+            while ([DateTime]::UtcNow -lt $end -and -not $process.HasExited) {
+              if ((Test-Path $stdout) -and ((Get-Content $stdout -Raw) -match 'listening on 127\.0\.0\.1:(\d+)')) { $port = $Matches[1]; break }
+              Start-Sleep -Seconds 2
+              $process.Refresh()
+            }
+            if (-not $port) { throw 'Desktop did not start the remote endpoint' }
+            $window = $null
+            while ([DateTime]::UtcNow -lt $end -and -not $process.HasExited) {
+              try {
+                $status = Invoke-RestMethod -TimeoutSec 10 "http://127.0.0.1:$port/s"
+                if ($status.w.Count -gt 0) { $window = $status.w[0].i; break }
+              } catch { }
+              Start-Sleep -Seconds 2
+              $process.Refresh()
+            }
+            if ($null -eq $window) { throw 'Desktop window did not become ready' }
+            $ui = $null
+            while ([DateTime]::UtcNow -lt $end -and -not $process.HasExited) {
+              try {
+                $ui = Invoke-RestMethod -TimeoutSec 10 "http://127.0.0.1:$port/snap?w=$window"
+                if ($ui.s.Count -gt 0) { break }
+              } catch { }
+              Start-Sleep -Seconds 2
+              $process.Refresh()
+            }
+            if (-not $ui -or $ui.s.Count -eq 0) { throw 'Desktop widget tree did not become ready' }
+            Write-Output "DESKTOP_UI_PASS window=$window widgets=$($ui.s.Count)"
+          } finally {
+            if ($port) { try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 "http://127.0.0.1:$port/quit" | Out-Null } catch { Write-Output "Graceful quit failed: $_" } }
+            if (-not $process.WaitForExit(5000)) { Stop-Process -Id $process.Id -Force }
+            if (Test-Path $stdout) { Get-Content $stdout }
+            if (Test-Path $stderr) { Get-Content $stderr }
+          }
+          $logs = (Get-Content $stdout -Raw) + (Get-Content $stderr -Raw)
+          if ($logs -match 'Could not load resource|panicked at|Failed to save window state') { throw 'Desktop reported a startup or profile error' }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hagency-desktop-webview-test-windows-x64
+          path: bundle/
+          if-no-files-found: error
+          retention-days: 7
