@@ -57,3 +57,7 @@ def device_probe():
         release(adapter)
         release(factory)
     return json.dumps(results, indent=2)
+
+
+if __name__ == '__main__':
+    print(device_probe())

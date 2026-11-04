@@ -54,13 +54,21 @@ def software_renderer(binary, output):
             run(config, 'debug-layer', 'debug-layer-mode=force-on')
             run(config, 'apps')
             run(config, 'device')
-            from release_windows_graphics import device_probe
-            diagnostics = device_probe()
-            log.write(diagnostics+'\n')
-            log.flush()
-            print(diagnostics, flush=True)
-            yield
+            probe = Path(__file__).with_name('release_windows_graphics.py')
+            diagnostics = json.loads(run(sys.executable, probe).stdout)
+            video_supported = any(item.get('driver') == 'adapter0'
+                and item.get('flags') == '820' and item.get('status') == '00000000'
+                for item in diagnostics)
+            # The older software adapter cannot create a video-enabled D3D11
+            # device. Exercise the same installer through Microsoft's supported
+            # D3D11-on-D3D12 software path when that adapter limitation applies.
+            if not video_supported:
+                run(config, 'device', 'force-d3d11on12=true')
+                diagnostics = json.loads(run(sys.executable, probe).stdout)
+            yield dict(backend='WARP' if video_supported else 'D3D11On12/WARP',
+                       deviceProbes=diagnostics)
         finally:
+            run(config, 'device', 'force-d3d11on12=false', check=False)
             run(config, 'device', 'force-warp=false', check=False)
             run(config, 'debug-layer', 'debug-layer-mode=app-controlled', check=False)
             run(config, 'apps', '--remove', Path(sys.executable).name, check=False)
@@ -78,6 +86,7 @@ if args.software_rendering and sys.platform != 'win32':
     parser.error('--software-rendering is only available on Windows')
 package, output = args.package.resolve(), args.output.resolve()
 output.mkdir(parents=True, exist_ok=True)
+renderer_configuration = None
 
 with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary, ExitStack() as cleanup:
     temporary = Path(temporary)
@@ -118,7 +127,7 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary, 
             env=dict(os.environ, HAGENCY_SMOKE_BINARY=str(binary)), text=True, timeout=20))
         assert version_info == {'product': 'Hagency Desktop', 'company': 'Hagency'}, version_info
         if args.software_rendering:
-            cleanup.enter_context(software_renderer(binary, output))
+            renderer_configuration = cleanup.enter_context(software_renderer(binary, output))
     else:
         raise SystemExit('This smoke check covers macOS and Windows installers')
     kernel_version = subprocess.check_output([str(kernel),'--version'], text=True, timeout=20).strip()
@@ -172,7 +181,8 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary, 
         (output/'report.json').write_text(json.dumps(dict(passed=True, platform=sys.platform,
             package=str(package), isolatedProfile=True, kernelVersion=kernel_version,
             signInRendered=True, nonBlankScreenshot=pixels, framesChecked=frames,
-            softwareRendering=args.software_rendering, resourceErrors=errors), indent=2)+'\n')
+            softwareRendering=args.software_rendering, rendererConfiguration=renderer_configuration,
+            resourceErrors=errors), indent=2)+'\n')
         print('Packaged Desktop started and rendered sign-in with bundled resources')
     finally:
         if process.poll() is None:
