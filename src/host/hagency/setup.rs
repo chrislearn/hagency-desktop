@@ -291,7 +291,10 @@ mod tests {
             .filter_map(Value::as_str)
             .filter(|service| !permissions(service).is_empty())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(actual, expected);
+        // Project setup remains a separately authorized host API; the pool
+        // mini app no longer requests these unused grants.
+        assert!(actual.is_empty(), "unused setup grants: {actual:?}");
+        assert!(expected.iter().all(|service| !permissions(service).is_empty()));
         for service in octosense_app_contract::hagency::SERVICES {
             if !permissions(service).is_empty() {
                 assert!(octosense_app_contract::hagency::words(service).is_some());

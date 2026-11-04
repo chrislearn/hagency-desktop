@@ -48,7 +48,7 @@ pub(crate) async fn ensure_ready(
         );
         let client = room.client();
         for user in users {
-            wait_for_device(&client, &user).await?;
+            wait_for_device(&client, &user).await.map_err(|_| ())?;
         }
         Ok::<_, ()>(())
     })
@@ -61,13 +61,12 @@ pub(crate) async fn ensure_ready(
     }
 }
 
-async fn wait_for_device(client: &Client, user: &UserId) -> Result<(), ()> {
+async fn wait_for_device(client: &Client, user: &UserId) -> Result<(), matrix_sdk::Error> {
     loop {
         let devices = client
             .encryption()
             .get_user_devices(user)
-            .await
-            .map_err(|_| ())?;
+            .await?;
         if devices
             .devices()
             .any(|d| !d.is_deleted() && !d.is_blacklisted() && d.curve25519_key().is_some())
@@ -79,13 +78,11 @@ async fn wait_for_device(client: &Client, user: &UserId) -> Result<(), ()> {
         client
             .encryption()
             .request_user_identity(user)
-            .await
-            .map_err(|_| ())?;
+            .await?;
         let devices = client
             .encryption()
             .get_user_devices(user)
-            .await
-            .map_err(|_| ())?;
+            .await?;
         if devices
             .devices()
             .any(|d| !d.is_deleted() && !d.is_blacklisted() && d.curve25519_key().is_some())

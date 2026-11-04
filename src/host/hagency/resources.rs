@@ -144,8 +144,8 @@ mod tests {
         assert!(octosense_app_contract::hagency::SERVICES.contains(&GET));
         assert!(octosense_app_contract::KNOWN_CAPABILITIES.contains(&GET));
         assert!(octosense_app_contract::hagency::words(GET).is_some());
-        // The detail screen uses this exact read grant. It cannot acquire the
-        // broad legacy configuration/publication APIs from the new entrypoint.
+        // Reading a detail grants no mutations. The complete owner app also
+        // declares publication separately for its explicit publish flow.
         let manifest: Value =
             serde_json::from_str(include_str!("../../../apps/hagency/bundle/manifest.json"))
                 .unwrap();
@@ -156,7 +156,7 @@ mod tests {
                 .iter()
                 .any(|value| value == GET)
         );
-        for mutation in ["hagency.resources.configure", "hagency.resources.publish"] {
+        for mutation in ["hagency.resources.configure"] {
             assert!(
                 !manifest["capabilities"]
                     .as_array()

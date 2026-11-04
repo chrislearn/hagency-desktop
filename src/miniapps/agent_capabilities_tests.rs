@@ -2,8 +2,8 @@
 //! separate parents. This checks real widget instances, not screenshot pixels.
 use super::*;
 
-const OLD: &str = "for capability in c.capabilities {agent_capability := mod.widgets.RinxButton{";
-const FIXED: &str = "for capability in c.capabilities {View{width:Fit height:Fit agent_capability := mod.widgets.RinxButton{";
+const OLD: &str = "agent_capability := choice{";
+const FIXED: &str = "View{width:Fit height:Fit agent_capability := choice{";
 const TAIL: &str = "on_click: || A.agent_field(\"capability\",capability)}}";
 const FIXED_TAIL: &str = "on_click: || A.agent_field(\"capability\",capability)}}}";
 const OPEN: &str = r#"

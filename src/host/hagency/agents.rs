@@ -493,20 +493,15 @@ mod tests {
         assert_eq!(
             shipped,
             std::collections::BTreeSet::from([
-                READINESS,
                 LIST,
                 GET,
                 STATUS,
                 WORK,
                 WORK_LIST,
-                REQUEST,
-                DECIDE,
-                CANCEL,
                 SETTLEMENT,
                 SETTLE,
                 REMOVAL,
                 REMOVALS,
-                REVOKE,
                 super::super::interrupted_calls::LIST,
                 super::super::interrupted_calls::RECONCILE,
                 super::super::control::READINESS,
@@ -519,6 +514,10 @@ mod tests {
                 super::super::budget::CANCEL,
             ])
         );
+        // The current pool flow has no legacy project-admission entrypoint.
+        for legacy in [READINESS, REQUEST, DECIDE, CANCEL, REVOKE] {
+            assert!(!shipped.contains(legacy), "unused grant: {legacy}");
+        }
         for service in [
             READINESS,
             LIST,

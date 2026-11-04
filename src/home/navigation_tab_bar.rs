@@ -984,8 +984,8 @@ mod rail_tests {
     use makepad_widgets::makepad_draw::cx_draw::CxDraw;
 
     /// Every rail button below the avatar, top to bottom.
-    const BUTTONS: [&[LiveId; 1]; 6] = [
-        ids!(home_button), ids!(contacts_button), ids!(moments_button), ids!(octoscript_apps_button),
+    const BUTTONS: [&[LiveId; 1]; 7] = [
+        ids!(home_button), ids!(contacts_button), ids!(agent_button), ids!(moments_button), ids!(octoscript_apps_button),
         ids!(file_transfer_button), ids!(account_switcher_button),
     ];
 
@@ -1090,14 +1090,14 @@ mod rail_tests {
         let (mut cx, mut bar) = rail();
         draw(&mut cx, &mut bar);
         // The tools sit 4 points apart, Home to File Transfer.
-        let tools = [BUTTONS[0], BUTTONS[1], BUTTONS[2], BUTTONS[3], BUTTONS[4]].map(|button| rect(&mut cx, &bar, button));
+        let tools = [BUTTONS[0], BUTTONS[1], BUTTONS[2], BUTTONS[3], BUTTONS[4], BUTTONS[5]].map(|button| rect(&mut cx, &bar, button));
         for pair in tools.windows(2) {
             let gap = pair[1].pos.y - (pair[0].pos.y + pair[0].size.y);
             assert!((gap - 4.0).abs() < 0.5, "even steps through the tools: {pair:?}");
         }
         // File Transfer closes the group exactly as far above the upper line as
         // Account sits below the lower one, with no gap for removed shortcuts.
-        let file_transfer = tools[4];
+        let file_transfer = tools[5];
         let top = rect(&mut cx, &bar, ids!(top_separator));
         let bottom = rect(&mut cx, &bar, ids!(bottom_separator));
         let account = rect(&mut cx, &bar, ids!(account_switcher_button));
@@ -1111,7 +1111,7 @@ mod rail_tests {
     fn short_windows_keep_every_rail_button_on_screen_and_at_least_44_points() {
         // A 600-point window still has room for full 64-point buttons; shorter
         // ones share the shortfall evenly instead of pushing Account off the rail.
-        for (height, full) in [(800.0, true), (600.0, true), (560.0, true), (480.0, false)] {
+        for (height, full) in [(800.0, true), (600.0, true), (560.0, false), (480.0, false)] {
             let (mut cx, mut bar) = rail();
             draw_at(&mut cx, &mut bar, height);
             let mut above = 0.0;

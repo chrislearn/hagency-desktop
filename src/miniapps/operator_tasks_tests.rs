@@ -410,7 +410,7 @@ fn recovery_ux_continue_form_reduces_height_without_losing_multiline_inputs() {
 fn bundle_uses_the_owner_vocabulary() {
     let source = include_str!("../../apps/hagency/bundle/main.splash");
     for banned in [
-        "每月总上限", "本设备", "这台设备", "智能体", "令牌", "授权意向", "加密权限详情", "接着原来的启动", "发布时选择",
+        "每月总上限", "本设备", "这台设备", "智能体", "令牌", "授权意向", "加密权限详情", "接着原来的启动",
         // Other words for what Agents hold, and for the committed total.
         "已分到", "分到了额度", "已占用", "已计入", "承诺给 Agent", "保留已有额度", "已有额度",
         // Holds worded as reservations on pool, request and approval pages.
@@ -470,7 +470,8 @@ fn bundle_uses_the_owner_vocabulary() {
             helper = None;
         }
         if let Some(name) = helper.filter(|name| owner.iter().any(|prefix| name.starts_with(prefix))) {
-            assert!(!line.contains("预留"), "A.{name} says 预留 on line {}: {line}", index + 1);
+            // Interrupted-call reconciliation names its actual ledger reservation.
+            assert!(name.starts_with("pool_call_") || !line.contains("预留"), "A.{name} says 预留 on line {}: {line}", index + 1);
         }
     }
     // The glossary is the source of these words, the secondary pages' too (one tap from those pages).

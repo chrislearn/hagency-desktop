@@ -72,6 +72,14 @@ jobs:
           path: .release/client
           persist-credentials: false
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          workspaces: |
+            . -> target
+            tools/hagency-script-review -> target
+            crates/owner-dashboard -> target
+            apps/owner-controller -> target
+            .release/client -> target
       - run: brew install cmake
       - run: python3 tools/check-hagency-regressions.py --output .run/release-regressions --client .release/client
       - uses: actions/upload-artifact@v7
@@ -142,6 +150,7 @@ jobs:
           cargo install robius-packaging-commands --version 0.4.1 --locked
       - name: Test Desktop before packaging
         run: |
+          python3 tools/wechat-ux/check_i18n.py
           cargo test --locked -p octosense-app-contract --lib
           cargo test --locked --features agent_chat --lib
       - name: Import Apple certificate for configured signed releases
@@ -166,7 +175,7 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: 1
         # An absolute output directory avoids cargo-packager 0.10.1 resolving
         # generated scripts twice when it changes the working directory.
-        run: cargo packager --verbose --release --out-dir "$PWD/dist" --formats "$FORMATS"
+        run: cargo packager --manifest-path Cargo.toml --verbose --release --out-dir "$PWD/dist" --formats "$FORMATS"
       - name: Start the packaged Desktop on macOS
         if: runner.os == 'macOS'
         run: python3 tools/release-desktop-smoke.py --package 'dist/Hagency Desktop.app' --output .run/release-desktop-smoke

@@ -602,7 +602,7 @@ mod enabled {
         fn native_execution_budget_keeps_overrun_and_unknown_distinct_without_start_handle() {
             let r = exhausted();
             let text = blocked_details(&r);
-            for actual in ["Original approved agent", "0 / 4096", "4813", "717"] {
+            for actual in ["Original approved agent", "0 M / 0.004096 M", "Known consumed tokens · 0.004813 M", "Known usage above allocation · 0.000717 M"] {
                 assert!(text.contains(actual), "{text}");
             }
             assert!(blocked_copy(&r).contains("exhausted"));
@@ -623,7 +623,7 @@ mod enabled {
             uncertain.remaining_tokens = None;
             uncertain.usage_complete = false;
             assert!(blocked_copy(&uncertain).contains("not fully resolved"));
-            assert!(blocked_details(&uncertain).contains("Unknown / 4096"));
+            assert!(blocked_details(&uncertain).contains("Unknown / 0.004096 M"));
             assert!(!blocked_details(&uncertain).contains("0 / 4096"));
             for key in [
                 blocked_copy(&uncertain),

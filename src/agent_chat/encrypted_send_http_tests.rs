@@ -121,6 +121,10 @@ impl KeysServer {
             })
             .await
             .unwrap();
+        // Restore starts background encryption setup, which can issue its
+        // own HTTP requests. Finish it before measuring device discovery;
+        // unrelated initialization must not consume this fixture's deadline.
+        client.encryption().wait_for_e2ee_initialization_tasks().await;
         client
     }
 }
