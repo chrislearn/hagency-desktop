@@ -116,6 +116,33 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
                 # still fails immediately if the application has exited.
                 pass
             time.sleep(.4)
+        if sys.platform == 'win32':
+            # Save independent OS evidence, including whether the ordinary
+            # launch actually made its HWND visible. Backend grabs alone can
+            # otherwise confuse readback failures with a blank application.
+            import ctypes
+            from ctypes import wintypes
+            from PIL import ImageGrab
+            user32 = ctypes.windll.user32
+            windows = []
+            callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+            user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+            user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+            user32.IsWindowVisible.argtypes = [wintypes.HWND]
+            def inspect_window(hwnd, _):
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value == process.pid:
+                    title, rect = ctypes.create_unicode_buffer(1024), wintypes.RECT()
+                    user32.GetWindowTextW(hwnd, title, len(title))
+                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    windows.append(dict(title=title.value, visible=bool(user32.IsWindowVisible(hwnd)),
+                                        rect=[rect.left, rect.top, rect.right, rect.bottom]))
+                return True
+            user32.EnumWindows(callback_type(inspect_window), 0)
+            (output/'native-windows.json').write_text(json.dumps(windows, indent=2)+'\n')
+            ImageGrab.grab(all_screens=True).save(output/'desktop.png')
         assert ready_frames == 3, 'Packaged app did not render sign-in pixels before the deadline'
         errors = [line for line in log.read_text(errors='replace').splitlines()
                   if re.search(r'panicked at|Bundle[d]? file open failed|failed to load.*(font|resource)',line,re.I)]
