@@ -2490,6 +2490,14 @@ async fn matrix_worker_task(
                         }
                     };
 
+                    #[cfg(feature = "agent_chat")]
+                    if let Err(error) = crate::agent_chat::encrypted_send::ensure_ready(timeline.room(), &message).await {
+                        enqueue_popup_notification(crate::i18n::tr(error).to_string(), PopupKind::Error, None);
+                        let _ = sender.send(TimelineUpdate::SendFailedBeforeBeingQueued { message, replied_to });
+                        SignalToUI::set_ui_signal();
+                        return;
+                    }
+
                     let r_or_m = if replied_to.is_some() { "reply" } else { "message" };
                     let content: AnyMessageLikeEventContent = if let Some(reply) = &replied_to {
                         let reply = Reply {

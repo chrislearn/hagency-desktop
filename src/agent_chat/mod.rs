@@ -30,6 +30,7 @@ use makepad_widgets::*;
 use matrix_sdk::ruma::events::{AnyMessageLikeEventContent, AnySyncTimelineEvent};
 
 pub mod agents;
+pub(crate) mod encrypted_send;
 pub mod approval;
 pub(crate) mod approval_state;
 pub mod approval_runtime;

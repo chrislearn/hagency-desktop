@@ -2611,5 +2611,6 @@
   "The room has conflicting registration states.": "The room has conflicting registration states.",
   "The previous call has not been settled. Its reserved allowance is unavailable until usage is confirmed.": "The previous call has not been settled. Its reserved allowance is unavailable until usage is confirmed.",
   "The Agent's allowance has been used. Check its next renewal period with the resource owner.": "The Agent's allowance has been used. Check its next renewal period with the resource owner.",
-  "No allowance is currently available for this message. Check the Agent's allowance and unsettled calls.": "No allowance is currently available for this message. Check the Agent's allowance and unsettled calls."
+  "No allowance is currently available for this message. Check the Agent's allowance and unsettled calls.": "No allowance is currently available for this message. Check the Agent's allowance and unsettled calls.",
+  "Agent encryption is not ready. Your message was not sent; please try again shortly.": "Agent encryption is not ready. Your message was not sent; please try again shortly."
 }

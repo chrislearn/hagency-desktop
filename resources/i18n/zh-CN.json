@@ -2736,5 +2736,6 @@
   "The pool pauses at period end. Publish the next period to renew all approved Agents together.": "周期结束后暂停；发布下一周期额度后，所有已批准的 Agent 一起续期。",
   "The previous call has not been settled. Its reserved allowance is unavailable until usage is confirmed.": "上一轮调用尚未结清，预留额度仍被占用，需确认用量后释放。",
   "The Agent's allowance has been used. Check its next renewal period with the resource owner.": "Agent 的额度已用完，请与资源 owner 确认下一周期续期。",
-  "No allowance is currently available for this message. Check the Agent's allowance and unsettled calls.": "暂时无法为这条消息预留额度，请查看 Agent 额度和未结清调用。"
+  "No allowance is currently available for this message. Check the Agent's allowance and unsettled calls.": "暂时无法为这条消息预留额度，请查看 Agent 额度和未结清调用。",
+  "Agent encryption is not ready. Your message was not sent; please try again shortly.": "Agent 的加密连接尚未就绪。消息未发送，已保留在输入框中，请稍后重试。"
 }
