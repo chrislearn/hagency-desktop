@@ -1,5 +1,22 @@
 # Desktop 0.5.0 发布
 
+更新：2026-11-04。
+
+## 2026-11-04 RC 发布
+
+用户明确要求更新 Makepad 并发布 macOS / Windows RC，另提供带中英文切换的 resource daemon 控制应用，并排除 Intel Mac。本次发布完成，以下状态取代 10 月 16 日的暂停发布决定；原记录保留在下方。
+
+- [v0.5.0-rc.1](https://github.com/hagency-org/hagency-desktop/releases/tag/v0.5.0-rc.1) 于 2026-11-04 16:56:52 UTC 公开为 prerelease，没有替换 stable latest。Release ID `433792626`。标签和全部二进制源码统一为 Desktop `1827126ede1bec7b83547b871b735625b6c83890`。
+- Client 固定为 `a06e4cc204989bb36e666d59f6510ae7a0489a77`；Makepad 固定为 `ebec2e5c866eae3c791e2f24d59db543cad97a05`，包含 #132 的 Windows 焦点／次级窗口重绘修复，以及软件图形设备回退、静止窗口接收异步 shader 编译结果的修复。Makepad 源码在 OctoSense fork 的 `fix/hagency-windows-software-device` 分支公开。
+- 恰好三个安装包：`hagency-desktop-macos-arm64.dmg`、`hagency-desktop-windows-amd64.exe`、`hagency-hosting-macos-arm64.dmg`。Hosting 包含 controller 和 daemon，支持跟随系统／English／简体中文，即时切换并跨重启保存。没有 Intel macOS 包，也不宣称支持 Windows 原生资源托管。
+- Mac 安装包在隔离 Apple Silicon worktree、macOS 26.6.2 上构建，使用 pinned cargo-packager 0.10.1。Mac CI 未分配到运行器即因容量不足被取消，因此没有宣称整轮跨平台 CI 成功。Windows [job 126660061999](https://github.com/hagency-org/hagency-desktop/actions/runs/41854657931/job/126660061999) 的应用测试、图形设备启动／重建、打包、安装和真实渲染检查全部 success；所属 run 41854657931 总状态为 failure，不能把它写成整轮 green。
+- Mac 760 个 Desktop 单测、10 个 app-contract 单测通过；完整回归 95/95 组、699 次 Rust 测试执行通过（与单测存在重叠，不是合并后的独立测试总数）。翻译检查 2804 条、1596 调用点、172 权限，缺失 0。隔离测试首次因脚本 VM 的 target 路径不匹配而停止，保留失败证据后修正构建路径并从首个未通过检查续跑，没有改动产品源码或跳过检查。
+- 实际两个 Desktop 安装包均以干净 profile 启动，连续三帧登录页非空且资源加载正常；Windows 原生桌面截图与渲染截图一致。实际 Hosting DMG 中的 controller／daemon 哈希与构建记录一致，7 项生命周期检查、8 项语言切换／重启保存检查通过。六张实际截图已人工检查。
+- Release 附有两个 build report、三个 verification report，以及每平台和总 SHA256SUMS；11 个公开附件的哈希和大小逐一匹配。匿名访问 Release 成功，标签确认为上述源码提交，三个安装包下载地址均返回 HTTP 200。
+- Mac 为 ad-hoc 签名、未 notarize；Windows 未签名。发布说明已明确这些限制，保留既有依赖审计的开放事项，没有声称所有上游依赖告警已修复。
+
+## 2026-10-16 历史记录
+
 更新：2026-10-16。
 
 - 用户确认发布目标为 hagency-desktop，要求版本 0.5.0，取代继承的 1.1.2；Cloud 不修改版本。
