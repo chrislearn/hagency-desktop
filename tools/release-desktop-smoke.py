@@ -52,6 +52,12 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
         assert len(candidates) == 1, 'Installer did not install one Desktop executable'
         binary = candidates[0]
         kernel = binary.with_name('octos.exe')
+        version_info = json.loads(subprocess.check_output(
+            ['powershell', '-NoProfile', '-NonInteractive', '-Command',
+             '$v=(Get-Item -LiteralPath $env:HAGENCY_SMOKE_BINARY).VersionInfo; '
+             '@{product=$v.ProductName;company=$v.CompanyName}|ConvertTo-Json -Compress'],
+            env=dict(os.environ, HAGENCY_SMOKE_BINARY=str(binary)), text=True, timeout=20))
+        assert version_info == {'product': 'Hagency Desktop', 'company': 'Hagency'}, version_info
     else:
         raise SystemExit('This smoke check covers macOS and Windows installers')
     kernel_version = subprocess.check_output([str(kernel),'--version'], text=True, timeout=20).strip()
