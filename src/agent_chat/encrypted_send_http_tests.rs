@@ -38,6 +38,10 @@ impl KeysServer {
                     std::thread::sleep(Duration::from_millis(2));
                     continue;
                 };
+                // macOS may inherit O_NONBLOCK from the listening socket.
+                // A partial request must wait for its remaining bytes rather
+                // than being treated as EOF and resetting the HTTP response.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
