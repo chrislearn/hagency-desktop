@@ -11,7 +11,7 @@ on:
         type: string
         default: windows-amd64
       artifact_run_id:
-        description: 'Reuse an existing candidate; leave empty to package Windows from the source commit'
+        description: 'Reuse an existing candidate; leave empty to package the source commit'
         type: string
       artifact_name:
         description: 'Existing artifact name, when reusing a candidate'
@@ -56,8 +56,14 @@ jobs:
           source = os.environ['SOURCE_COMMIT']
           assert re.fullmatch('[0-9a-f]{40}', source), 'Use an exact source commit'
           assert subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip() == source
-          assert os.environ['ARTIFACT_RUN_ID'] or os.environ['PLATFORM'] == 'windows-amd64', 'Mac validation reuses a built installer'
+          assert os.environ['PLATFORM'] in ('windows-amd64', 'macos-arm64')
           PY
+      # Validation may change without changing the already frozen binary source.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: .release/validation
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         if: inputs.artifact_run_id == ''
         with:
@@ -65,23 +71,70 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: inputs.artifact_run_id == ''
         with:
-          shared-key: release-windows-amd64-package
+          key: release-${{ inputs.platform }}
           cache-on-failure: true
       - name: Prepare Windows packager
-        if: inputs.artifact_run_id == ''
+        if: inputs.artifact_run_id == '' && inputs.platform == 'windows-amd64'
         run: |
           choco install nsis --no-progress -y
+      - name: Prepare macOS packaging
+        if: inputs.artifact_run_id == '' && inputs.platform == 'macos-arm64'
+        run: |
+          brew install cmake
+          python3 - <<'PY'
+          import os, plistlib, re
+          from pathlib import Path
+          version = re.search(r'^version\s*=\s*"([^"]+)"', Path('Cargo.toml').read_text(), re.M)[1]
+          p = Path('packaging/macos/Info.plist')
+          data = plistlib.loads(p.read_bytes())
+          data.update(CFBundleIdentifier='org.hagency.desktop', CFBundleName='Hagency Desktop',
+                      CFBundleDisplayName='Hagency Desktop', CFBundleShortVersionString=version.split('-')[0],
+                      HagencyReleaseVersion=version, CFBundleVersion=os.environ['GITHUB_RUN_NUMBER'])
+          data.pop('CFBundleIconFile', None)
+          p.write_bytes(plistlib.dumps(data))
+          PY
+      - name: Prepare pinned packagers
+        if: inputs.artifact_run_id == ''
+        run: |
           cargo install cargo-packager --version 0.10.1 --locked
           cargo install robius-packaging-commands --version 0.4.1 --locked
       - name: Package the unchanged source commit
         if: inputs.artifact_run_id == ''
         run: |
-          cargo packager --manifest-path Cargo.toml --verbose --release --out-dir "$PWD/dist" --formats nsis
-          GITHUB_SHA="$SOURCE_COMMIT" python3 tools/release-assets.py collect --platform windows --arch amd64 --hosting false
+          if [[ "$PLATFORM" == windows-amd64 ]]; then formats=nsis; else formats=dmg; fi
+          cargo packager --manifest-path Cargo.toml --verbose --release --out-dir "$PWD/dist" --formats "$formats"
+      - name: Resolve exact client source
+        if: inputs.artifact_run_id == '' && inputs.platform == 'macos-arm64'
+        id: client
+        run: |
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          pin = re.search(r'^hagency\s*=\s*\{[^\n]*\brev\s*=\s*"([^"]+)"', Path('Cargo.toml').read_text(), re.M)[1]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output: output.write('revision='+pin+'\n')
+          PY
+      - uses: actions/checkout@v7
+        if: inputs.artifact_run_id == '' && inputs.platform == 'macos-arm64'
+        with:
+          repository: hagency-org/hagency-client
+          ref: ${{ steps.client.outputs.revision }}
+          path: .release/client
+          persist-credentials: false
+      - name: Package Hosting and its owner daemon
+        if: inputs.artifact_run_id == '' && inputs.platform == 'macos-arm64'
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: python3 packaging/owner-controller/build.py --release --client .release/client --output dist/hosting --dmg
+      - name: Collect candidate before checks
+        if: inputs.artifact_run_id == ''
+        run: |
+          if [[ "$PLATFORM" == windows-amd64 ]]; then platform=windows; arch=amd64; hosting=false
+          else platform=macos; arch=arm64; hosting=true; fi
+          GITHUB_SHA="$SOURCE_COMMIT" python3 tools/release-assets.py collect --platform "$platform" --arch "$arch" --hosting "$hosting"
       - uses: actions/upload-artifact@v7
         if: inputs.artifact_run_id == ''
         with:
-          name: candidate-installers-windows-amd64
+          name: candidate-installers-${{ inputs.platform }}
           path: release-assets/*
           if-no-files-found: error
           retention-days: 14
@@ -104,12 +157,6 @@ jobs:
               assert Path(name).name == name
               assert hashlib.sha256((root/name).read_bytes()).hexdigest() == expected, name
           PY
-      # Keep validation code separate from the source used by the binaries.
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.sha }}
-          path: .release/validation
-          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -133,11 +180,23 @@ jobs:
               'validationCommit': os.environ['GITHUB_SHA'],
               'runId': os.environ['GITHUB_RUN_ID']}, indent=2) + '\n')
           PY
+      - name: Verify packaged Hosting lifecycle and languages
+        if: inputs.platform == 'macos-arm64'
+        run: |
+          mkdir -p .run/hosting-image
+          hdiutil attach -readonly -nobrowse -mountpoint .run/hosting-image release-assets/hagency-hosting-macos-arm64.dmg
+          trap 'hdiutil detach .run/hosting-image' EXIT
+          ditto '.run/hosting-image/Hagency Hosting.app' '.run/Hagency Hosting.app'
+          python3 .release/validation/tools/owner-controller-bundle-smoke.py --bundle '.run/Hagency Hosting.app' --output .run/release-hosting-smoke
+          python3 .release/validation/tools/owner-hosting-language-smoke.py --binary '.run/Hagency Hosting.app' --output .run/release-hosting-language
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: installer-checks-${{ inputs.platform }}
-          path: .run/verified-installer
+          path: |
+            .run/verified-installer
+            .run/release-hosting-smoke
+            .run/release-hosting-language
           if-no-files-found: ignore
           retention-days: 14
       - uses: actions/upload-artifact@v7

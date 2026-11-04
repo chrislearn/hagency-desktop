@@ -7,6 +7,7 @@ Agent execution; that requires the enrolled runtime integration tests.
 """
 import argparse
 import hashlib
+from http.client import RemoteDisconnected
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ import subprocess
 import tempfile
 import time
 from urllib.request import urlopen
+from urllib.error import URLError
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--bundle', type=Path, required=True)
@@ -105,7 +107,13 @@ try:
             check('closing the last controller window leaves daemon alive',daemon.poll() is None and bool(status()))
             second=launch(home,'reopen');ports.append(second)
             check('Dock relaunch creates a fresh controller process',len(running())==1 and running()[0]['pid']!=apps[0]['pid'])
-            req(second,'/quit')
+            try:
+                req(second,'/quit')
+            except (RemoteDisconnected, URLError, ConnectionResetError):
+                # Quit can stop the HTTP worker before it sends a response.
+                # The process disappearance and live daemon are checked below;
+                # a missing response alone is neither success nor failure.
+                pass
             wait_for(lambda: not running())
             after=status()
             check('quitting reopened controller leaves the same daemon alive',daemon.poll() is None and bool(after))

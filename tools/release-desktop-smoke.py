@@ -69,7 +69,13 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
     revision = re.search(r'\(([0-9a-f]{7,40}) ', kernel_version)
     assert revision and pin.startswith(revision[1]), kernel_version
     env = dict(os.environ, HAGENCY_DESKTOP_DATA_DIR=str(temporary/'profile'),
-               MAKEPAD_HIDE_WINDOWS='1', MAKEPAD_REMOTE='127.0.0.1:0')
+               MAKEPAD_REMOTE='127.0.0.1:0')
+    # Exercise the normal visible Windows launch path on the CI desktop. A
+    # permanently hidden HWND exercises compositor occlusion instead of the
+    # installer behavior a person sees. macOS supports offscreen Metal draws.
+    env.pop('MAKEPAD_HIDE_WINDOWS', None)
+    if sys.platform == 'darwin':
+        env['MAKEPAD_HIDE_WINDOWS'] = '1'
     log = output/'startup.log'
     with log.open('w') as stream:
         process = subprocess.Popen([str(binary)], cwd=temporary, env=env, stdout=stream, stderr=stream)
@@ -91,6 +97,8 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
             try:
                 snapshot = request('snap?w=0&wait=1')
                 image = request('g?w=0&wait=1')
+                (output/'snapshot.json').write_text(json.dumps(snapshot, ensure_ascii=False, indent=2)+'\n')
+                (output/'frame.json').write_text(json.dumps(image, indent=2)+'\n')
                 frames += 1
                 texts = [node.get('t','') for node in snapshot.get('s',[])
                          if node.get('r') and node['r'][2]>0 and node['r'][3]>0]
@@ -116,6 +124,7 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
             package=str(package), isolatedProfile=True, kernelVersion=kernel_version,
             signInRendered=True, nonBlankScreenshot=pixels, framesChecked=frames,
             rendererOverride=False,
+            windowHidden=sys.platform == 'darwin',
             resourceErrors=errors), indent=2)+'\n')
         print('Packaged Desktop started and rendered sign-in with bundled resources')
     finally:
