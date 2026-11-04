@@ -10,7 +10,7 @@ import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = {
-    'macos-arm64': dict(runner='macos-14', platform='macos', arch='arm64', formats='dmg'),
+    'macos-arm64': dict(runner='macos-15', platform='macos', arch='arm64', formats='dmg'),
     'windows-amd64': dict(runner='windows-2022', platform='windows', arch='amd64', formats='nsis'),
     'macos-amd64': dict(runner='macos-15-intel', platform='macos', arch='amd64', formats='dmg'),
     'linux-amd64': dict(runner='ubuntu-22.04', platform='linux', arch='amd64', formats='deb,appimage'),

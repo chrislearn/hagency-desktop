@@ -37,7 +37,7 @@ env:
 jobs:
   # Match the release job ID and cache key to reuse its optimized dependencies.
   package:
-    runs-on: ${{ inputs.platform == 'macos-arm64' && 'macos-14' || 'windows-2022' }}
+    runs-on: ${{ inputs.platform == 'macos-arm64' && 'macos-15' || 'windows-2022' }}
     timeout-minutes: 150
     defaults:
       run:
