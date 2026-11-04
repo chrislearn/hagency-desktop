@@ -1,0 +1,16 @@
+flowchart TD
+    subgraph OS["同一套 GrapheneOS"]
+        A["第三方 App 与 Google 客户端 SDK"]
+        G["原版 Google Play services"]
+        C["GrapheneOS 兼容逻辑"]
+        S["Android 系统服务"]
+        L["GrapheneOS 定位实现"]
+
+        A <-->|Binder IPC| G
+        C -.->|适配部分调用与配置| G
+        G -->|受权限检查约束| S
+        A -->|可选的定位重定向| L
+        L --> S
+    end
+
+    N["Google 云服务"]

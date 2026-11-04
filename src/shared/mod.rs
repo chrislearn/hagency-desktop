@@ -12,6 +12,7 @@ pub mod file_upload_modal;
 pub mod helpers;
 pub mod hover_highlight;
 pub mod html_or_plaintext;
+mod chat_mermaid;
 pub mod icon_button;
 pub mod jump_to_bottom_button;
 pub mod mention_popup;
@@ -59,6 +60,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     avatar::script_mod(vm);
     mobile_details::script_mod(vm);
     text_or_image::script_mod(vm);
+    article_makepad::diagram_view::script_mod(vm);
     html_or_plaintext::script_mod(vm);
     agent_usage::script_mod(vm);
     bouncing_dots::script_mod(vm);

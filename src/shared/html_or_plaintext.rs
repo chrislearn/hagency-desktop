@@ -166,6 +166,9 @@ script_mod! {
         font := mod.widgets.MatrixHtmlSpan { }
         span := mod.widgets.MatrixHtmlSpan { }
         a := mod.widgets.RobrixHtmlLink { }
+        chatdiagram := mod.widgets.MarkdownDiagram {
+            draw_selection +: {color: mod.widgets.RINX_TEXT_SELECTION_BG}
+        }
 
         body: "[<i>HTML message placeholder</i>]",
     }
@@ -887,6 +890,15 @@ impl Widget for HtmlOrPlaintext {
     }
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
+        if self.view(cx, ids!(html_view)).visible() {
+            if let Some(mut html) = self.html(cx, ids!(html_view.html)).borrow_mut() {
+                // Html can reparse after style updates as well as message edits.
+                // Promote its view document just before drawing; body stays exact.
+                if super::chat_mermaid::promote(&mut html.doc) > 0 {
+                    html.text_flow.clear_items();
+                }
+            }
+        }
         // Keep all existing per-message font overrides, including mobile bubble
         // size and notice italics, in sync with the selectable plain-text draw.
         if self.selectable && self.view(cx, ids!(plaintext_view)).visible() {
