@@ -364,19 +364,23 @@ impl Widget for MiniAppsSideHandle {
         // Match Makepad Splitter's native pointer behavior; only the owning
         // pane's resize calculation differs (the right pane grows leftward).
         match event.hits_with_options(cx, self.draw_bg.area(), HitOptions::new()
-            .with_margin(Inset {left: 3.0, right: 3.0, top: 0.0, bottom: 0.0})
+            .with_margin(Inset {left: 6.0, right: 6.0, top: 0.0, bottom: 0.0})
             .with_touch_margin(Inset {left: 8.0, right: 8.0, top: 0.0, bottom: 0.0})) {
             Hit::FingerHoverIn(_) => {
                 cx.set_cursor(MouseCursor::ColResize);
                 self.animator_play(cx, ids!(hover.on));
             }
+            Hit::FingerHoverOver(_) => cx.set_cursor(MouseCursor::ColResize),
             Hit::FingerHoverOut(_) => self.animator_play(cx, ids!(hover.off)),
             Hit::FingerDown(fe) if self.drag.is_none() && fe.is_primary_hit() => {
                 cx.set_cursor(MouseCursor::ColResize);
                 self.animator_play(cx, ids!(hover.drag));
                 self.drag = Some(0.0);
             }
-            Hit::FingerMove(fe) if self.drag.is_some() => self.drag = Some(fe.abs.x - fe.abs_start.x),
+            Hit::FingerMove(fe) if self.drag.is_some() => {
+                cx.set_cursor(MouseCursor::ColResize);
+                self.drag = Some(fe.abs.x - fe.abs_start.x);
+            }
             Hit::FingerUp(fe) if self.drag.is_some() => {
                 self.released = true;
                 self.animator_play(cx, if fe.is_over && fe.device.has_hovers() {ids!(hover.on)} else {ids!(hover.off)});
