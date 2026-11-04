@@ -98,7 +98,6 @@ def main():
         ("publication-ui", "grant_ui::"),
         ("resource-ceiling-ui", "resource_edit_ui::tests"),
         ("agent-chat", "agent_chat"),
-        ("chat-mermaid", "shared::chat_mermaid::tests"),
         ("link-preview", "link_preview"),
         ("linkify", "linkify"),
         ("activity", "shared_permission_notice"),
