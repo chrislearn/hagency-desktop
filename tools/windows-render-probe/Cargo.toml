@@ -1,0 +1,10 @@
+[package]
+name = "hagency-windows-render-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+makepad-widgets = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "0151137e13bd28936bfadb63a56c16b3ab397e77", features = ["serde"] }
