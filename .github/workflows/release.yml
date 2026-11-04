@@ -27,6 +27,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  PYTHONUTF8: 1
+  PYTHONIOENCODING: utf-8
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
@@ -193,6 +195,8 @@ jobs:
           persist-credentials: false
       - name: Package Hosting and its owner daemon
         if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: python3 packaging/owner-controller/build.py --release --client .release/client --output dist/hosting --dmg
       - name: Verify packaged controller and daemon lifecycle
         if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
