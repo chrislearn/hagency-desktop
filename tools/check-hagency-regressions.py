@@ -98,6 +98,7 @@ def main():
         ("publication-ui", "grant_ui::"),
         ("resource-ceiling-ui", "resource_edit_ui::tests"),
         ("agent-chat", "agent_chat"),
+        ("shared-worker", "hagency::backend::shared_worker::tests"),
         ("chat-mermaid", "shared::chat_mermaid::tests"),
         ("link-preview", "link_preview"),
         ("linkify", "linkify"),
@@ -127,6 +128,9 @@ def main():
     run("owner-controller", ["cargo", "test", "--locked", "--manifest-path", "apps/owner-controller/Cargo.toml", "--bin", "hagency-owner-controller"], rust_tests=True)
     run("owner-controller-build", ["cargo", "build", "--locked", "--manifest-path", "apps/owner-controller/Cargo.toml", "--bin", "hagency-owner-controller"])
     if args.client:
+        run("native-room-history", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "room_history", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
+        run("native-key-wakeup", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "shared_work_sync_wakes", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
+        run("native-room-history-protocol", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--features", "shared-context", "--test", "session", "native_room_history", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-server-management", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "server_management", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-adopted-server-administration", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "server_administration", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-server-journal", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "server_journal", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
@@ -162,6 +166,7 @@ def main():
         if len(probes) != 1:
             raise SystemExit("Expected one freshly built offline context probe")
         env["HAGENCY_TEST_RUNTIME_PROBE"] = probes[0]
+        run("native-room-history-input", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution", "--lib", "encrypted_shared_input_is_pinned", "--", "--ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-thread-context", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution", "--lib", "shared_context_", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-thread-context-http", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution", "--lib", "native_shared_context_", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-first-turn-permissions", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_owner_policy_applies_before_the_first_model_call", "--", "--ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)

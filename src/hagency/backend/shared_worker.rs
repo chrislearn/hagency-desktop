@@ -26,6 +26,7 @@ pub(super) struct Worker {
 impl Worker {
     pub(super) fn retire(&self) {
         self.control.retired.store(true, Ordering::Release);
+        self.control.wake.notify_waiters();
         self.control.wake.notify_one();
     }
 
@@ -77,6 +78,85 @@ async fn run(
     selection: AdoptedManagementSelection,
     control: Arc<Control>,
 ) {
+    // Keep both futures inside the original retained task: retiring/draining
+    // still waits for every in-flight receipt. Housekeeping cannot delay a
+    // new encrypted message or a room key that just became available.
+    #[cfg(feature = "shared-budget-execution")]
+    tokio::join!(
+        run_budget(
+            weak.clone(),
+            owner.clone(),
+            selection.clone(),
+            control.clone()
+        ),
+        run_maintenance(weak, owner, selection, control),
+    );
+    #[cfg(not(feature = "shared-budget-execution"))]
+    run_maintenance(weak, owner, selection, control).await;
+}
+
+#[cfg(feature = "shared-budget-execution")]
+async fn run_budget(
+    weak: Weak<Inner>,
+    owner: NativeOwner,
+    selection: AdoptedManagementSelection,
+    control: Arc<Control>,
+) {
+    let live = || {
+        !control.retired.load(Ordering::Acquire)
+            && weak
+                .upgrade()
+                .is_some_and(|inner| Service(inner).check().is_ok())
+    };
+    let mut polling = super::shared_budget::Polling::default();
+    let mut changes = None;
+    while live() {
+        let next = tokio::time::Instant::now() + Duration::from_secs(1);
+        if let Ok(executor) = acquire_executor(&weak, &owner, &selection, &control).await {
+            let changes = changes.get_or_insert_with(|| executor.work_changes());
+            changes.borrow_and_update();
+            // Original Stop recovery still precedes budget and demand work.
+            // Never cancel a poll when another message arrives: it may already
+            // have admitted a turn or be persisting its original receipt.
+            polling.poll(executor.as_ref(), live).await;
+        }
+        if !live() {
+            break;
+        }
+        wait_for_work(&control, changes.as_mut(), next).await;
+    }
+}
+
+#[cfg(feature = "shared-budget-execution")]
+async fn wait_for_work(
+    control: &Control,
+    changes: Option<&mut tokio::sync::watch::Receiver<()>>,
+    next: tokio::time::Instant,
+) {
+    if control.retired.load(Ordering::Acquire) {
+        return;
+    }
+    let changed = async {
+        if let Some(changes) = changes {
+            if changes.changed().await.is_ok() {
+                return;
+            }
+        }
+        std::future::pending::<()>().await;
+    };
+    tokio::select! {
+        _ = control.wake.notified() => {},
+        _ = changed => {},
+        _ = tokio::time::sleep_until(next) => {},
+    }
+}
+
+async fn run_maintenance(
+    weak: Weak<Inner>,
+    owner: NativeOwner,
+    selection: AdoptedManagementSelection,
+    control: Arc<Control>,
+) {
     let gate_weak = weak.clone();
     let gate: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
         gate_weak
@@ -87,8 +167,6 @@ async fn run(
     let mut matrix_cursor = None;
     let mut runtime_cursor = None;
     let mut settlement_cursor = None;
-    #[cfg(feature="shared-budget-execution")]
-    let mut budget=super::shared_budget::Polling::default();
     #[cfg(feature = "shared-successors")]
     let mut successors = super::shared_successors::Polling::default();
     #[cfg(feature = "shared-intake")]
@@ -104,10 +182,6 @@ async fn run(
         // native engine retains spawned work, receipt retries and stop evidence;
         // this worker must never restart a model turn after a missing response.
         if let Some(executor) = executor.as_ref() {
-            #[cfg(feature="shared-budget-execution")]
-            budget.poll(executor.as_ref(),||!control.retired.load(Ordering::Acquire)&&gate()).await;
-            if control.retired.load(Ordering::Acquire)||!gate(){break;}
-
             // Recover explicit Stop before another intake operation. Native
             // custody keeps its local restriction even if the POST was lost.
             #[cfg(feature = "shared-intake")]
@@ -161,8 +235,10 @@ fn advance_settlement(
 ) {
     use ::hagency::native_owner::AgentSettlementProgress;
     match result {
-        Ok(AgentSettlementProgress::HistoricalReceiptMissing { command_id }
-            | AgentSettlementProgress::Recorded { command_id, .. }) => *cursor = Some(command_id),
+        Ok(
+            AgentSettlementProgress::HistoricalReceiptMissing { command_id }
+            | AgentSettlementProgress::Recorded { command_id, .. },
+        ) => *cursor = Some(command_id),
         Ok(AgentSettlementProgress::Idle) | Err(_) => {}
     }
 }
@@ -285,6 +361,53 @@ impl Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "shared-budget-execution")]
+    #[tokio::test]
+    async fn room_key_arriving_during_poll_wakes_next_pass_without_losing_signal() {
+        let control = Control::default();
+        let (changed, mut updates) = tokio::sync::watch::channel(());
+        updates.borrow_and_update();
+        changed.send_replace(());
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_work(
+                &control,
+                Some(&mut updates),
+                tokio::time::Instant::now() + Duration::from_secs(10),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(!updates.has_changed().unwrap());
+    }
+
+    #[cfg(feature = "shared-budget-execution")]
+    #[tokio::test]
+    async fn slow_poll_and_retirement_do_not_add_another_sleep() {
+        let control = Control::default();
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_work(
+                &control,
+                None,
+                tokio::time::Instant::now() - Duration::from_secs(1),
+            ),
+        )
+        .await
+        .unwrap();
+        control.retired.store(true, Ordering::Release);
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_work(
+                &control,
+                None,
+                tokio::time::Instant::now() + Duration::from_secs(10),
+            ),
+        )
+        .await
+        .unwrap();
+    }
 
     #[tokio::test]
     async fn cancelled_drain_keeps_the_original_poll_task() {
