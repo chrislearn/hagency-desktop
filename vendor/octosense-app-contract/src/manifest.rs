@@ -267,6 +267,8 @@ pub const KNOWN_CAPABILITIES: &[&str] = &[
     "hagency.personal_agents.chat.encrypt",
     "hagency.agents.settlement.get",
     "hagency.agents.settlement.request",
+    "hagency.agents.calls.list",
+    "hagency.agents.calls.reconcile",
     "hagency.agents.removal.get",
     "hagency.agents.removal.list",
     "hagency.agents.revoke",

@@ -20,6 +20,7 @@ pub(crate) mod tool_approvals;
 mod execution_policy;
 mod workspaces;
 mod stopped;
+mod interrupted_calls;
 pub(crate) mod accounts;
 pub(crate) mod enrollment;
 pub(crate) mod resource_edit;
@@ -288,6 +289,7 @@ fn permissions(lease: &Lease) -> Vec<ManagementPermission> {
             stopped::LIST | stopped::GET => vec![ReadStoppedTasks],
             stopped::REVIEW => vec![InspectStoppedTasks],
             stopped::RESOLVE => vec![ResolveStoppedTasks],
+            interrupted_calls::LIST | interrupted_calls::RECONCILE => vec![ReconcileAgentCalls],
             workspaces::LIST | workspaces::GET => vec![ReadWorkspaces],
             workspaces::CLEAR => vec![ClearWorkspaceDirty],
             execution_policy::LIST | execution_policy::GET => vec![ReadExecutionPolicy],
@@ -644,6 +646,18 @@ impl Host {
                 stopped::Call::Get(q) => manager.stopped_inspection(q).await.and_then(|v| serde_json::to_value(v).map_err(|_| ::hagency::native_owner::NativeError {status:503,code:"management_invalid_result".into()})),
                 stopped::Call::Review(q) => manager.review_stopped(q).await.and_then(encode),
                 stopped::Call::Resolve(q) => manager.resolve_stopped(q).await.and_then(|v| serde_json::to_value(v).map_err(|_| ::hagency::native_owner::NativeError {status:503,code:"management_outcome_unknown".into()})),
+            }.map_err(|error| error.code);
+            self.check(&lease).and_then(|_| lease.authorize(&account, service, None))
+                .map_err(|error| if mutation {"management_outcome_unknown".into()} else {error})?;
+            return rinx_miniapp_core::bounded_reply(result?);
+        }
+        if let Some(call) = interrupted_calls::call(service, args.clone())? {
+            let manager = self.manager(&lease).await?;
+            let mutation = matches!(call, interrupted_calls::Call::Reconcile(_));
+            let encode = |v| serde_json::to_value(v).map_err(|_| ::hagency::native_owner::NativeError {status:503,code:"management_outcome_unknown".into()});
+            let result = match call {
+                interrupted_calls::Call::List(q) => manager.interrupted_calls(q).await.and_then(|v| serde_json::to_value(v).map_err(|_| ::hagency::native_owner::NativeError {status:503,code:"management_invalid_result".into()})),
+                interrupted_calls::Call::Reconcile(q) => manager.reconcile_interrupted_call(q).await.and_then(encode),
             }.map_err(|error| error.code);
             self.check(&lease).and_then(|_| lease.authorize(&account, service, None))
                 .map_err(|error| if mutation {"management_outcome_unknown".into()} else {error})?;

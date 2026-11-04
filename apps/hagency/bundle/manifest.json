@@ -39,6 +39,8 @@
     "hagency.people.search",
     "hagency.agents.settlement.get",
     "hagency.agents.settlement.request",
+    "hagency.agents.calls.list",
+    "hagency.agents.calls.reconcile",
     "hagency.agents.removal.get",
     "hagency.agents.removal.list",
     "hagency.account.reauthenticate",
@@ -168,7 +170,7 @@
   ],
   "id": "im.palpo.operations",
   "integrity": {
-    "bundle_blake3": "f2758ef466bdfacef62e5eebcf1a4324d78e0f8af54d1aa33c190ae26dd6605c"
+    "bundle_blake3": "58feaa1e68362303467b71aa9f03430f3bb986787ff314fcda7b63e41a4e6427"
   },
   "name": "Hagency",
   "requires": [

@@ -507,6 +507,8 @@ mod tests {
                 REMOVAL,
                 REMOVALS,
                 REVOKE,
+                super::super::interrupted_calls::LIST,
+                super::super::interrupted_calls::RECONCILE,
                 super::super::control::READINESS,
                 super::super::control::SET,
                 super::super::budget::GET,

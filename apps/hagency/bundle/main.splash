@@ -95,6 +95,8 @@ let {agent_control=nil,control_assignment="",control_agent_name="",control_poll_
 H.agent_control=agent_control H.control_assignment=control_assignment H.control_agent_name=control_agent_name H.control_poll_pool=control_poll_pool
 let {settlement=nil}=H
 H.settlement=settlement
+let {pool_calls=nil,pool_call=nil,pool_call_mode="",pool_call_amount="",pool_call_note=""}=H
+H.pool_calls=pool_calls H.pool_call=pool_call H.pool_call_mode=pool_call_mode H.pool_call_amount=pool_call_amount H.pool_call_note=pool_call_note
 let {removal=nil,removals=nil,removal_id="",removal_project=nil,removal_after=nil,removal_page=1,removal_confirmation="",removal_details=false}=H
 H.removal=removal H.removals=removals H.removal_id=removal_id H.removal_project=removal_project H.removal_after=removal_after H.removal_page=removal_page H.removal_confirmation=removal_confirmation H.removal_details=removal_details
 let {agent_work=nil,work_after=nil,work_page=1}=H
@@ -3677,7 +3679,7 @@ A.web_refresh_plan=fn(){let w=H.web let c=H.webConnection
         return {service:"hagency.agents.control.readiness" args:{assignmentId:assignment} done:fn(v){if H.control_assignment==assignment && v.readiness.control.assignmentId==assignment{H.agent_control=v H.control_poll_pool=true}}}
     }
     if H.page=="overview"{return nil}
-    if H.page=="pool_agent" && H.pool_detail!=nil && H.pool_confirm==""{return {service:"hagency.pools.agents.get" args:{id:H.pool_detail.id} done:fn(v){if H.pool_detail!=nil && v.request.id==H.pool_detail.id{H.pool_detail=v.request}}}}
+    if H.page=="pool_agent" && H.pool_detail!=nil && H.pool_confirm==""{return {service:"hagency.pools.agents.get" args:{id:H.pool_detail.id} done:fn(v){if H.pool_detail!=nil && v.request.id==H.pool_detail.id{H.pool_detail=v.request A.pool_calls_load(v.request)}}}}
     if H.page=="connections" && H.connections.len()<=16{return {service:"hagency.connections.list" args:{} done:A.connections_received}}
     if H.page=="resources" && H.owner.accountId!=""{
         let id=H.owner.accountId let after=H.ux.resourceCursor let q={id:id} if after!=nil{q.after=after}
@@ -7756,6 +7758,7 @@ A.recover_native = fn(row){
         if row.operation=="revoke_tool_grant" && (reply.operation!=row.operation || !A.valid_tool_result(data,row.input)) {H.notice=A.error_text("management_outcome_unknown") return}
         if row.operation=="review_stopped" && (reply.operation!=row.operation || !A.stopped_review_valid(data,row.input)){H.notice=A.error_text("management_outcome_unknown") return}
         if row.operation=="resolve_stopped" && (reply.operation!=row.operation || !A.stopped_result_valid(data,row.input)){H.notice=A.error_text("management_outcome_unknown") return}
+        if row.operation=="reconcile_interrupted_call" && (reply.operation!=row.operation || !A.pool_call_result_valid(data,row.input)){H.notice=A.error_text("management_outcome_unknown") return}
         if row.operation=="clear_workspace_dirty" && (reply.operation!=row.operation || !A.valid_workspace_result(data,row.input)) {H.notice=A.error_text("management_outcome_unknown") return}
         if row.operation=="edit_execution_policy" && (reply.operation!=row.operation || !A.valid_policy_result(data,row.input)) {H.notice=A.error_text("management_outcome_unknown") return}
         H.command = nil
@@ -7770,6 +7773,7 @@ A.recover_native = fn(row){
         else if reply.operation == "revoke_tool_grant" {A.tool_grant_received(data)}
         else if reply.operation == "review_stopped" {A.stopped_review_received(data)}
         else if reply.operation == "resolve_stopped" {A.stopped_result_received(data)}
+        else if reply.operation == "reconcile_interrupted_call" {A.pool_call_received(data)}
         else if reply.operation == "clear_workspace_dirty" {A.workspace_received(data)}
         else if reply.operation == "edit_execution_policy" {A.policy_received(data)}
         else if reply.operation == "retire_approval_binding" {A.binding_received(data)}
@@ -7827,6 +7831,7 @@ A.saved_label = fn(operation){
     if operation == "revoke_tool_grant" {return A.t("Revoke tool permission","撤销工具权限")}
     if operation == "review_stopped" {return A.t("Interrupted task inspection","中断任务检查")}
     if operation == "resolve_stopped" {return A.t("Interrupted task decision","中断任务处理")}
+    if operation == "reconcile_interrupted_call" {return A.t("Interrupted call settlement","中断调用核算")}
     if operation == "clear_workspace_dirty" {return A.t("Workspace recovery","工作区恢复")}
     if operation == "edit_execution_policy" {return A.t("Agent execution permissions","Agent 执行权限")}
     if operation == "retire_approval_binding" {return A.t("Remove approval room","移除审批对话")}
@@ -8647,12 +8652,66 @@ A.pool_agent_rows=fn(){
     }
     return rows
 }
+A.pool_calls_owner=fn(r){return H.entry_role=="owner" && r!=nil && H.session!=nil && r.resourceOwnerMxid==H.session.account && A.recipient_optional(r,"agentId")!=nil}
+A.pool_calls_load=fn(r){
+    if !A.pool_calls_owner(r) {H.pool_calls=nil return}
+    let agent=r.agentId
+    host.request("hagency.agents.calls.list",{agentId:agent},fn(reply){
+        if H.page!="pool_agent" || H.pool_detail==nil || H.pool_detail.agentId!=agent {return}
+        H.pool_calls=if reply.is_ok {reply.data} else {nil}
+        A.redraw()
+    })
+}
+A.pool_call_state=fn(row){
+    let period=if row.periodKey!=nil {" · "+row.periodKey} else {""}
+    if row.live {return A.t("Still running on this computer. Settle it after it ends.","仍在这台电脑上进行，结束后再处理。")+period}
+    if row.state=="unknown" {return A.t("Its process ended; the final usage was never captured.","进程已结束，最终用量没有记录下来。")+period}
+    return A.t("Its process ended without a closing record.","进程已结束，没有结束记录。")+period
+}
+A.pool_call_open=fn(row,mode){
+    if H.busy || H.command!=nil || row.live {return}
+    H.pool_call=row H.pool_call_mode=mode H.pool_call_amount=""+row.knownConsumedTokens H.pool_call_note="" H.pool_confirm="reconcile" A.redraw()
+}
+A.pool_call_consumed=fn(){
+    let c=H.pool_call
+    if c==nil {return nil}
+    if H.pool_call_mode=="zero" {return 0}
+    if H.pool_call_mode=="full" {return c.reservedTokens}
+    if H.pool_call_amount=="" {return nil}
+    let n=H.pool_call_amount.to_f64()
+    if n==nil || n<0 {return nil}
+    return n
+}
+A.pool_call_error=fn(){
+    let c=H.pool_call
+    if c==nil {return ""}
+    let n=A.pool_call_consumed()
+    if n==nil {return A.t("Enter the tokens actually used.","请输入实际用量。")}
+    if n<c.knownConsumedTokens {return A.t("At least ","不能少于已记录的 ")+A.tokens(c.knownConsumedTokens)+A.t(" tokens were already recorded."," token。")}
+    if n>c.reservedTokens {return A.t("Cannot exceed the reservation of ","不能超过预留的 ")+A.tokens(c.reservedTokens)+A.t(" tokens."," token。")}
+    if H.pool_call_mode=="exact" && H.pool_call_note=="" {return A.t("Say where you verified the figure.","请写明核实依据。")}
+    if H.pool_call_note.to_chars().len()>256 {return A.t("Keep the note under 256 characters.","依据请控制在 256 字以内。")}
+    return ""
+}
+A.pool_call_submit=fn(){
+    let c=H.pool_call
+    if c==nil || H.pool_detail==nil || A.pool_call_error()!="" {return}
+    let note=if H.pool_call_mode=="zero" {"no_model_request_recorded"} else if H.pool_call_mode=="full" {"owner_charged_full_reservation"} else {H.pool_call_note}
+    A.submit("hagency.agents.calls.reconcile",{agentId:H.pool_detail.agentId callId:c.callId expectedReservedTokens:c.reservedTokens consumedTokens:A.pool_call_consumed() evidenceReference:note})
+    H.pool_confirm=""
+}
+A.pool_call_received=fn(data){
+    H.pool_call=nil H.pool_confirm="" H.pool_call_mode=""
+    if H.page=="pool_agent" && H.pool_detail!=nil {A.pool_calls_load(H.pool_detail) A.open_pool_agent(H.pool_detail.id)}
+    H.notice=A.t("Settled at ","已按 ")+A.tokens(data.consumedTokens)+A.t(" tokens; "," token 结算，")+A.tokens(data.releasedTokens)+A.t(" tokens returned to this Agent's allowance."," token 回到该 Agent 本期额度。")
+}
+A.pool_call_result_valid=fn(data,input){return data!=nil && input!=nil && data.callId==input.callId && data.state=="settled"}
 A.open_pool_agent=fn(id){
     if H.pool_detail!=nil && H.pool_detail.id!=id {H.pool_detail=nil}
     if H.reqs.result!=nil && H.reqs.result.id!=id {H.reqs.result=nil}
     H.reqs.agent=id H.reqs.confirm=nil
     H.page="pool_agent" H.pool_confirm="" H.bar_past=false
-    A.request("hagency.pools.agents.get",{id:id},fn(v){H.pool_detail=v.request})
+    A.request("hagency.pools.agents.get",{id:id},fn(v){H.pool_detail=v.request A.pool_calls_load(v.request)})
 }
 A.pool_tone=fn(r){
     if r.state=="rejected" {return "attention"}
@@ -9597,6 +9656,18 @@ A.render_page = fn(){
                     if owner && r.resourceOwnerMxid==H.session.account && A.recipient_optional(r,"canRenew")==true {pool_agent_renew := mod.widgets.HagencyPillPrimary{text:A.t("Renew This Period","授权本期额度") enabled:!H.busy && !alert && H.command==nil on_click:||{H.pool_confirm="renew" A.redraw()}}}
                 }
             }}}
+            if A.pool_calls_owner(r) && H.pool_calls!=nil && H.pool_calls.calls.len()>0 {View{width:Fill height:Fit flow:Down
+                mod.widgets.HagencyListLabel{text:A.t("UNSETTLED CALLS","未结清的调用")}
+                for row in H.pool_calls.calls {mod.widgets.HagencyList{View{width:Fill height:Fit flow:Down spacing:8 padding:14
+                    mod.widgets.HagencyWrapTitle{text:A.t("Reserved ","预留 ")+A.tokens(row.reservedTokens)+A.t(" tokens · recorded "," token · 已记录 ")+A.tokens(row.knownConsumedTokens)+A.t(" tokens"," token")}
+                    mod.widgets.HagencyWrapSubtitle{text:A.pool_call_state(row)}
+                    if !row.live {View{width:Fill height:Fit flow:Right spacing:8
+                        if !row.usageObserved && row.knownConsumedTokens==0 {pool_call_zero := mod.widgets.HagencyPillPrimary{text:A.t("No request sent: settle at 0","未发出请求，按 0 结算") enabled:!H.busy && !alert && H.command==nil on_click:||A.pool_call_open(row,"zero")}}
+                        pool_call_full := mod.widgets.HagencyButton{text:A.t("Charge the full reservation","按预留全额结算") enabled:!H.busy && !alert && H.command==nil on_click:||A.pool_call_open(row,"full")}
+                        pool_call_exact := mod.widgets.HagencyButton{text:A.t("Enter verified usage…","按核实用量结算…") enabled:!H.busy && !alert && H.command==nil on_click:||A.pool_call_open(row,"exact")}
+                    }}
+                }}}
+            }}
             mod.widgets.HagencyListLabel{text:A.t("QUOTA","额度")}
             mod.widgets.HagencyList{
                 mod.widgets.HagencySwitchRow{
@@ -17220,6 +17291,26 @@ alert_layer := View{width:Fill height:Fill flow:Down align:Align{y:1.0} new_batc
                 reallocate_cancel := mod.widgets.HagencyAlertButton{text:A.t("Cancel","取消") on_click:||{H.pool_confirm="" A.redraw()}}
                 mod.widgets.HagencyVDivider{}
                 reallocate_confirm := mod.widgets.HagencyAlertBold{text:A.t("Authorize","确认授权") enabled:!H.busy && H.command==nil && (mode=="automatic" || mode=="owner") on_click:||A.pool_reallocate()}
+            }
+        }}
+        if kind=="pool_reconcile" && H.pool_call!=nil {View{width:Fill height:Fit flow:Down
+            let c=H.pool_call let mode=H.pool_call_mode
+            mod.widgets.HagencyAlertTitle{text:A.t("Settle this interrupted call?","结算这次中断的调用？")}
+            mod.widgets.HagencyAlertMessage{text:A.t("Reserved ","预留 ")+A.tokens(c.reservedTokens)+A.t(" tokens, recorded "," token，已记录 ")+A.tokens(c.knownConsumedTokens)+A.t(" tokens. The unused part returns to this Agent's allowance for the period."," token。未用部分回到该 Agent 本期额度。")}
+            if mode=="zero" {mod.widgets.HagencyAlertMessage{text:A.t("No model request was recorded for it. It is settled at 0 tokens.","没有记录到任何模型请求，按 0 token 结算。")}}
+            if mode=="full" {mod.widgets.HagencyAlertMessage{text:A.t("The whole reservation counts as used. Nothing is returned.","按预留全额计入消耗，不退还任何额度。")}}
+            if mode=="exact" {
+                mod.widgets.HagencyAlertMessage{text:A.t("Tokens actually used:","实际用量：")}
+                pool_call_amount := mod.widgets.HagencyNumberInput{slider_mode:false width:Fill minimum:0 text:H.pool_call_amount is_read_only:false on_change:|s|{H.pool_call_amount=s A.redraw()}}
+                mod.widgets.HagencyAlertMessage{text:A.t("Where you verified it (kept in the private audit):","核实依据（仅保存在本机审计记录）：")}
+                pool_call_note := mod.widgets.HagencyInput{text:H.pool_call_note is_read_only:false on_change:|s|{H.pool_call_note=s A.redraw()}}
+            }
+            if A.pool_call_error()!="" {mod.widgets.HagencyAlertMessage{text:A.pool_call_error() draw_text.color:mod.widgets.RINX_DANGER_FG}}
+            mod.widgets.HagencyDivider{}
+            View{width:Fill height:44 flow:Right
+                pool_call_cancel := mod.widgets.HagencyAlertButton{text:A.t("Cancel","取消") on_click:||{H.pool_confirm="" H.pool_call=nil A.redraw()}}
+                mod.widgets.HagencyVDivider{}
+                pool_call_confirm := mod.widgets.HagencyAlertBold{text:A.t("Settle","确认结算") enabled:!H.busy && H.command==nil && A.pool_call_error()=="" on_click:||A.pool_call_submit()}
             }
         }}
         if kind=="pool_renew" {View{width:Fill height:Fit flow:Down
