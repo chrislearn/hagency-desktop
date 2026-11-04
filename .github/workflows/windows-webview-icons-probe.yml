@@ -1,0 +1,92 @@
+name: Windows navigation icons with WebView
+
+on:
+  push:
+    branches: [codex/windows-webview-icons-probe-20261105]
+
+permissions:
+  contents: read
+
+jobs:
+  icons:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - name: Build and exercise navigation across WebView creation
+        shell: pwsh
+        env:
+          MAKEPAD_PACKAGE_DIR: .
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone --depth 1 --branch codex/windows-webview-icons-probe-20261105 https://github.com/hagency-org/hagency-desktop.git desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Probe checkout failed' }
+          $probe = 'desktop/tools/windows-render-probe'
+          New-Item -ItemType Directory -Force -Path "$probe/resources/icons" | Out-Null
+          Copy-Item desktop/resources/icons/home.svg,desktop/resources/icons/people.svg,desktop/resources/icons/globe.svg "$probe/resources/icons/"
+          rustup run stable cargo build --locked --release --manifest-path "$probe/Cargo.toml"
+          if ($LASTEXITCODE -ne 0) { throw 'Probe build failed' }
+          $bundle = Join-Path $env:GITHUB_WORKSPACE 'bundle'
+          $output = Join-Path $env:GITHUB_WORKSPACE 'inspection'
+          New-Item -ItemType Directory -Force -Path "$bundle/hagency_windows_render_probe/resources", "$bundle/makepad_widgets", $output | Out-Null
+          Copy-Item "$probe/target/release/hagency-windows-render-probe.exe" "$bundle/probe.exe"
+          Copy-Item "$probe/resources/icons" "$bundle/hagency_windows_render_probe/resources/icons" -Recurse
+          $widgets = (Get-Content "$probe/target/release/makepad-widgets.path" -Raw).Trim()
+          Copy-Item "$widgets/resources" "$bundle/makepad_widgets/resources" -Recurse
+          $env:MAKEPAD_NO_FOCUS = '1'
+          $stdout = Join-Path $output 'app.stdout'
+          $stderr = Join-Path $output 'app.stderr'
+          $process = Start-Process -FilePath "$bundle/probe.exe" -ArgumentList '--remote' -WorkingDirectory $env:RUNNER_TEMP -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          $port = $null
+          try {
+            $end = [DateTime]::UtcNow.AddSeconds(90)
+            while ([DateTime]::UtcNow -lt $end -and -not $process.HasExited) {
+              if ((Test-Path $stdout) -and ((Get-Content $stdout -Raw) -match 'listening on 127\.0\.0\.1:(\d+)')) { $port = $Matches[1]; break }
+              Start-Sleep -Seconds 2
+              $process.Refresh()
+            }
+            if (-not $port) { throw 'Probe endpoint unavailable' }
+            $root = "http://127.0.0.1:$port"
+            Start-Sleep -Seconds 3
+            Invoke-WebRequest -TimeoutSec 30 "$root/g?raw=1" -OutFile "$output/before.png"
+            Invoke-RestMethod "$root/event?data=open" | Out-Null
+            $ready = $false
+            while ([DateTime]::UtcNow -lt $end -and -not $process.HasExited) {
+              if ((Get-Content $stdout -Raw) -match 'ICONS_WEBVIEW_READY') { $ready = $true; break }
+              Start-Sleep -Seconds 1
+              $process.Refresh()
+            }
+            if (-not $ready) { throw 'WebView did not load' }
+            Invoke-WebRequest -TimeoutSec 30 "$root/g?raw=1" -OutFile "$output/after.png"
+            Add-Type -AssemblyName System.Drawing
+            $counts = @()
+            foreach ($name in @('before.png', 'after.png')) {
+              $bitmap = [System.Drawing.Bitmap]::new("$output/$name")
+              $count = 0
+              try {
+                $right = [int]($bitmap.Width * 76 / 520)
+                $bottom = [int]($bitmap.Height * 260 / 360)
+                for ($y = 30; $y -lt $bottom; $y++) {
+                  for ($x = 5; $x -lt $right; $x++) {
+                    $pixel = $bitmap.GetPixel($x, $y)
+                    if ($pixel.R -gt 200 -and $pixel.G -gt 200 -and $pixel.B -gt 200) { $count++ }
+                  }
+                }
+              } finally { $bitmap.Dispose() }
+              $counts += $count
+              Write-Output "NAV_ICON_PIXELS $name $count"
+            }
+            if ($counts[0] -lt 50 -or $counts[1] -lt ($counts[0] * 0.8)) { throw 'Navigation icons disappeared after opening the WebView' }
+            Write-Output 'ICONS_WEBVIEW_PASS'
+          } finally {
+            if ($port) { try { Invoke-WebRequest -TimeoutSec 5 "http://127.0.0.1:$port/quit" | Out-Null } catch { Write-Output "Graceful quit failed: $_" } }
+            if (-not $process.WaitForExit(5000)) { Stop-Process -Id $process.Id -Force }
+            if (Test-Path $stdout) { Get-Content $stdout }
+            if (Test-Path $stderr) { Get-Content $stderr }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-webview-icons-inspection
+          path: inspection/
+          if-no-files-found: ignore
+          retention-days: 2
