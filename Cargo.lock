@@ -1937,7 +1937,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -3807,8 +3807,8 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.1.3",
- "windows-result 0.3.4",
+ "windows-link 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "windows-result 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -4747,6 +4747,7 @@ dependencies = [
 [[package]]
 name = "hagency"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "base64 0.22.1",
  "cap-fs-ext",
@@ -4788,6 +4789,7 @@ dependencies = [
 [[package]]
 name = "hagency-agent-local"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "getrandom 0.3.4",
  "hagency-platform",
@@ -4805,6 +4807,7 @@ dependencies = [
 [[package]]
 name = "hagency-core"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -4821,6 +4824,7 @@ dependencies = [
 [[package]]
 name = "hagency-execution"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -4843,6 +4847,7 @@ dependencies = [
 [[package]]
 name = "hagency-files"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -4853,6 +4858,7 @@ dependencies = [
 [[package]]
 name = "hagency-matrix"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "getrandom 0.3.4",
  "hagency-core",
@@ -4880,6 +4886,7 @@ dependencies = [
 [[package]]
 name = "hagency-matrix-format"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "idna 1.1.0",
  "linkify",
@@ -4894,6 +4901,7 @@ dependencies = [
 [[package]]
 name = "hagency-media"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "base64 0.22.1",
  "hagency-files",
@@ -4907,6 +4915,7 @@ dependencies = [
 [[package]]
 name = "hagency-media-store"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -4921,6 +4930,7 @@ dependencies = [
 [[package]]
 name = "hagency-metering"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "serde",
  "serde_json",
@@ -4944,6 +4954,7 @@ dependencies = [
 [[package]]
 name = "hagency-palpo"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "hagency-core",
  "hagency-store",
@@ -4959,6 +4970,7 @@ dependencies = [
 [[package]]
 name = "hagency-platform"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -4976,6 +4988,7 @@ dependencies = [
 [[package]]
 name = "hagency-runtime"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "hagency-core",
  "hagency-platform",
@@ -4991,6 +5004,7 @@ dependencies = [
 [[package]]
 name = "hagency-store"
 version = "0.1.0"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=a06e4cc204989bb36e666d59f6510ae7a0489a77#a06e4cc204989bb36e666d59f6510ae7a0489a77"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -5512,7 +5526,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.56.0",
 ]
 
 [[package]]
@@ -6314,7 +6328,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07033963ba89ebaf1584d767badaa2e8fcec21aedea6b8c0346d487d49c28667"
 dependencies = [
  "cfg-if 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "windows-targets 0.53.5",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -12596,7 +12610,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell 1.21.4",
  "rustix",
  "windows-sys 0.61.2",
@@ -14190,7 +14204,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
