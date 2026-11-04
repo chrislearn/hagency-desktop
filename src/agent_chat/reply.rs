@@ -128,6 +128,12 @@ script_mod! {
         draw_bg +: {color_hover: RINX_HOVER color_active: RINX_SELECTED border_radius: 8}
         icon := Icon {icon_walk: Walk{width: 18 height: 18} draw_icon.color: RINX_MUTED}
     }
+    // The fold chevrons sit alone under a reply; keep them discreet.
+    let FoldButton = AnswerButton {
+        width: 24 height: 24
+        draw_bg +: {border_radius: 6}
+        icon := Icon {icon_walk: Walk{width: 12 height: 12} draw_icon.color: RINX_MUTED}
+    }
     mod.widgets.AgentReply = #(AgentReply::register_widget(vm)) {
         ..mod.widgets.View
         visible: false width: Fill height: Fit flow: Down spacing: 4
@@ -136,8 +142,8 @@ script_mod! {
             visible: false width: Fill height: Fit
             draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular{font_size: (10 * mod.widgets.RINX_TEXT_SCALE)}}
         }
-        agent_reply_expand := AnswerButton {visible: false icon.draw_icon.svg: ICON_CHEVRON_DOWN}
-        agent_reply_collapse := AnswerButton {visible: false icon.draw_icon.svg: ICON_CHEVRON_UP}
+        agent_reply_expand := FoldButton {visible: false icon.draw_icon.svg: ICON_CHEVRON_DOWN}
+        agent_reply_collapse := FoldButton {visible: false icon.draw_icon.svg: ICON_CHEVRON_UP}
         answer_actions := View {
             width: Fill height: Fit flow: Flow.Right{wrap: true} spacing: 6
             answer_copy := AnswerButton {icon.draw_icon.svg: ICON_COPY}
