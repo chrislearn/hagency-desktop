@@ -155,6 +155,13 @@ jobs:
           python3 tools/wechat-ux/check_i18n.py
           cargo test --locked -p octosense-app-contract --lib
           cargo test --locked --features agent_chat --lib
+      # Keep optimized dependencies separately: a failed test run can populate
+      # the earlier immutable cache before any release compilation has happened.
+      - name: Restore optimized build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.platform }}-${{ matrix.arch }}
+          cache-on-failure: true
       - name: Import Apple certificate for configured signed releases
         if: runner.os == 'macOS' && vars.MACOS_SIGNED_RELEASE == 'true'
         uses: ./.github/actions/import-apple-cert
