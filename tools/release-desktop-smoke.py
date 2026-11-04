@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 from urllib.request import urlopen
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from release_image_check import image_readiness
 
 
@@ -44,7 +44,10 @@ def software_renderer(binary, output):
             run(system/'dism.exe', '/online', '/add-capability',
                 '/capabilityname:tools.graphics.directx~~~~0.0.1.0', '/norestart', timeout=240)
         assert config.is_file(), 'DirectX Graphics Tools did not install d3dconfig.exe'
-        run(config, 'apps', '--add', binary)
+        # The hosted runner's TEMP uses an 8.3 username. Register the image name
+        # (supported by d3dconfig) so long/short path expansion cannot defeat it.
+        # This mode is limited to a disposable CI host, with one installed app.
+        run(config, 'apps', '--add', binary.name)
         try:
             run(config, 'device', 'force-warp=true')
             run(config, 'debug-layer', 'debug-layer-mode=force-off')
@@ -53,7 +56,7 @@ def software_renderer(binary, output):
             yield
         finally:
             run(config, 'device', 'force-warp=false', check=False)
-            run(config, 'apps', '--remove', binary, check=False)
+            run(config, 'apps', '--remove', binary.name, check=False)
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--package', type=Path, required=True)
@@ -148,6 +151,11 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary, 
                 ready_frames = ready_frames + 1 if sign_in and pixels['nonBlank'] else 0
             except HTTPError as error:
                 if error.code != 404: raise
+            except URLError:
+                # The remote server announces its port just before accepting
+                # requests. Retry within the readiness deadline; the next loop
+                # still fails immediately if the application has exited.
+                pass
             time.sleep(.4)
         assert ready_frames == 3, 'Packaged app did not render sign-in pixels before the deadline'
         errors = [line for line in log.read_text(errors='replace').splitlines()
