@@ -1,0 +1,77 @@
+name: Windows splitter cursor probe
+
+on:
+  push:
+    branches: [codex/windows-splitter-probe-20261105]
+
+permissions:
+  contents: read
+
+jobs:
+  cursor:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - name: Build and exercise the Windows splitter
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone --depth 1 --branch codex/windows-splitter-probe-20261105 https://github.com/hagency-org/hagency-desktop.git desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Probe checkout failed' }
+          rustup run stable cargo build --locked --release --manifest-path desktop/tools/windows-render-probe/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw 'Probe build failed' }
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'desktop/tools/windows-render-probe/target/release/hagency-windows-render-probe.exe'
+          $stdout = Join-Path $env:RUNNER_TEMP 'splitter-probe.stdout'
+          $stderr = Join-Path $env:RUNNER_TEMP 'splitter-probe.stderr'
+          $env:MAKEPAD_NO_FOCUS = '1'
+          $process = Start-Process -FilePath $exe -ArgumentList '--remote' -WorkingDirectory $env:RUNNER_TEMP -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          $port = $null
+          try {
+            $end = [DateTime]::UtcNow.AddSeconds(90)
+            while ([DateTime]::UtcNow -lt $end -and -not $process.HasExited) {
+              if ((Test-Path $stdout) -and ((Get-Content $stdout -Raw) -match 'listening on 127\.0\.0\.1:(\d+)')) { $port = $Matches[1]; break }
+              Start-Sleep -Seconds 2
+              $process.Refresh()
+            }
+            if (-not $port) { throw 'Probe endpoint unavailable' }
+            $root = "http://127.0.0.1:$port"
+            $status = $null
+            while ([DateTime]::UtcNow -lt $end -and -not $process.HasExited) {
+              $status = Invoke-RestMethod "$root/s"
+              if ($status.w.Count -gt 0) { break }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $status -or $status.w.Count -eq 0) { throw 'Probe window unavailable' }
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class CursorProbe {
+              [StructLayout(LayoutKind.Sequential)] public struct Point { public int x, y; }
+              [StructLayout(LayoutKind.Sequential)] public struct CursorInfo { public int size, flags; public IntPtr cursor; public Point position; }
+              [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr window, ref Point point);
+              [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+              [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CursorInfo info);
+              [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr LoadCursorW(IntPtr instance, IntPtr name);
+          }
+          '@
+            $process.Refresh()
+            $origin = New-Object CursorProbe+Point
+            if ($process.MainWindowHandle -eq [IntPtr]::Zero -or -not [CursorProbe]::ClientToScreen($process.MainWindowHandle, [ref]$origin)) { throw 'Window coordinates unavailable' }
+            $dpi = $status.w[0].dpi
+            $expected = [CursorProbe]::LoadCursorW([IntPtr]::Zero, [IntPtr]32644)
+            foreach ($x in @(260, 261, 262, 263, 264)) {
+              if (-not [CursorProbe]::SetCursorPos(($origin.x + [int][Math]::Round($x * $dpi)), ($origin.y + [int][Math]::Round(180 * $dpi)))) { throw 'Cannot move pointer' }
+              Start-Sleep -Milliseconds 500
+              $info = New-Object CursorProbe+CursorInfo
+              $info.size = [Runtime.InteropServices.Marshal]::SizeOf($info)
+              if (-not [CursorProbe]::GetCursorInfo([ref]$info)) { throw 'Cannot read pointer' }
+              Write-Output "CURSOR_PROBE x=$x resize=$($info.cursor -eq $expected)"
+              if ($info.cursor -ne $expected) { throw "Resize cursor missing at x=$x" }
+            }
+            Write-Output 'SPLITTER_CURSOR_PASS'
+          } finally {
+            if ($port) { try { Invoke-WebRequest -TimeoutSec 5 "http://127.0.0.1:$port/quit" | Out-Null } catch { Write-Output "Graceful quit failed: $_" } }
+            if (-not $process.WaitForExit(5000)) { Stop-Process -Id $process.Id -Force }
+            if (Test-Path $stdout) { Get-Content $stdout }
+            if (Test-Path $stderr) { Get-Content $stderr }
+          }

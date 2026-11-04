@@ -11,24 +11,15 @@ script_mod! {
             main_window := Window{
                 window.inner_size: vec2(520, 360)
                 body +: {
-                    SolidView{
+                    split := Splitter{
                         width: Fill
                         height: Fill
-                        padding: 24
-                        spacing: 20
-                        flow: Down
-                        draw_bg +: {
-                            color: #123456
-                            debug_code: true
-                            debug_draw: true
-                        }
-                        Label{text: "Windows renderer probe"}
-                        Button{text: "Rendered button"}
-                        SolidView{
-                            width: 160
-                            height: 80
-                            draw_bg +: {color: #ff3344}
-                        }
+                        axis: SplitterAxis.Horizontal
+                        align: SplitterAlign.FromA(260.0)
+                        size: 4.0
+                        hit_margin: 6.0
+                        a: SolidView{width: Fill height: Fill draw_bg.color: #x123456}
+                        b: SolidView{width: Fill height: Fill draw_bg.color: #xff3344}
                     }
                 }
             }
