@@ -1,0 +1,70 @@
+name: Inspect Windows test build navigation
+
+on:
+  push:
+    branches: [codex/windows-webview-rail-inspect-20261105]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hagency-desktop-webview-test-windows-x64
+          path: bundle
+          run-id: 41931366072
+          github-token: ${{ github.token }}
+      - name: Inspect navigation without a Matrix account
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:GITHUB_WORKSPACE 'inspection'
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
+          $env:HAGENCY_DESKTOP_DATA_DIR = Join-Path $env:RUNNER_TEMP 'rail-profile'
+          New-Item -ItemType Directory -Force -Path $env:HAGENCY_DESKTOP_DATA_DIR | Out-Null
+          $env:MAKEPAD_NO_FOCUS = '1'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'bundle/rinx.exe'
+          $stdout = Join-Path $output 'app.stdout'
+          $stderr = Join-Path $output 'app.stderr'
+          $process = Start-Process -FilePath $exe -ArgumentList '--remote' -WorkingDirectory $env:RUNNER_TEMP -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          $port = $null
+          try {
+            $end = [DateTime]::UtcNow.AddSeconds(90)
+            while ([DateTime]::UtcNow -lt $end -and -not $process.HasExited) {
+              if ((Test-Path $stdout) -and ((Get-Content $stdout -Raw) -match 'listening on 127\.0\.0\.1:(\d+)')) { $port = $Matches[1]; break }
+              Start-Sleep -Seconds 2
+              $process.Refresh()
+            }
+            if (-not $port) { throw 'Remote endpoint unavailable' }
+            $root = "http://127.0.0.1:$port"
+            Start-Sleep -Seconds 4
+            Invoke-RestMethod "$root/d" | Set-Content "$output/before.txt"
+            foreach ($edit in @(@{path='login_screen_view';prop='visible';value='false'}, @{path='home_screen_view';prop='visible';value='true'})) {
+              $result = Invoke-RestMethod -Method Post -Uri "$root/tweak/apply" -ContentType 'application/json' -Body ($edit | ConvertTo-Json -Compress)
+              Write-Output ($result | ConvertTo-Json -Depth 8 -Compress)
+              if ($result.err) { throw "Cannot prepare offline navigation: $($result.err)" }
+            }
+            Invoke-RestMethod "$root/tweak?on=0" | Out-Null
+            Start-Sleep -Seconds 4
+            Invoke-RestMethod "$root/d" | Set-Content "$output/after.txt"
+            Invoke-RestMethod "$root/snap?all=1" | ConvertTo-Json -Depth 20 | Set-Content "$output/snapshot.json"
+            Invoke-WebRequest -TimeoutSec 30 "$root/g?raw=1" -OutFile "$output/rail.png"
+            Write-Output 'OFFLINE_RAIL_CAPTURED'
+          } finally {
+            if ($port) { try { Invoke-WebRequest -TimeoutSec 5 "http://127.0.0.1:$port/quit" | Out-Null } catch { Write-Output "Graceful quit failed: $_" } }
+            if (-not $process.WaitForExit(5000)) { Stop-Process -Id $process.Id -Force }
+            if (Test-Path $stdout) { Get-Content $stdout }
+            if (Test-Path $stderr) { Get-Content $stderr }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-rail-inspection
+          path: inspection/
+          if-no-files-found: warn
+          retention-days: 2
