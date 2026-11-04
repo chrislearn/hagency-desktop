@@ -330,6 +330,7 @@ async fn desktop_retirement_during_initialization_does_not_wait_for_async_native
     f.stop().await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn desktop_retirement_revokes_already_issued_native_management_before_cleanup() {
     let f = Fixture::new().await;
@@ -348,6 +349,34 @@ async fn desktop_retirement_revokes_already_issued_native_management_before_clea
     f.service.retire();
     assert!(owner.identity().await.is_err());
     assert!(manager.resources(Default::default()).await.is_err());
+    assert!(f.service.register_native_owner(&owner).is_err());
+    drop(async_lock);
+    owner.shutdown().await;
+    f.stop().await;
+}
+
+// The native resource ledger is not qualified on Windows in this release.
+// Still exercise retirement there: failing to obtain a management lease must
+// not leave a previously opened owner authorized or registered after logout.
+#[cfg(not(unix))]
+#[tokio::test]
+async fn desktop_retirement_revokes_owner_when_native_management_is_unavailable() {
+    let f = Fixture::new().await;
+    let owner = f.open(Source::normal(&f.service)).await.unwrap();
+    let error = owner
+        .management(::hagency::native_owner::ManagementPackage {
+            digest: "c".repeat(64),
+            instance: 1,
+            account_epoch: 1,
+            permissions: vec![::hagency::native_owner::ManagementPermission::ReadResources],
+        })
+        .await
+        .err()
+        .expect("native resource management is unavailable on this platform");
+    assert_eq!(error.code, "management_unavailable");
+    let async_lock = f.service.0.native.lock().await;
+    f.service.retire();
+    assert!(owner.identity().await.is_err());
     assert!(f.service.register_native_owner(&owner).is_err());
     drop(async_lock);
     owner.shutdown().await;

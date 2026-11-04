@@ -1620,7 +1620,18 @@ mod mini_apps_side_tests {
         region.open(&mut cx, &MiniAppsAction::Open);
         region.web_action(&mut cx, &WebBrowserAction::Open("https://example.org/first".parse().unwrap()));
         let reader = region.reader(&mut cx);
-        let browser = reader.browser_id().unwrap();
+        let browser = reader.browser_id();
+        assert_eq!(
+            browser.is_some(),
+            cfg!(any(target_os = "macos", target_os = "ios", target_os = "android")),
+            "the web tab has a native browser only on supported platforms"
+        );
+        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+        assert_eq!(
+            reader.borrow().unwrap().label(&mut cx, ids!(web_status)).text(),
+            crate::i18n::tr("In-app browsing is unavailable on this platform. Use Open in browser."),
+            "unsupported platforms explain how to open web links externally"
+        );
         region.article_action(&mut cx, &ArticleAction::Open);
         let editor_id = region.selected().unwrap();
         let editor = region.surface(&mut cx, editor_id);

@@ -7,6 +7,6 @@ This is a release candidate for Hagency Desktop and macOS resource hosting.
 
 Install **Hagency Desktop** for chat and Agent management. Resource owners using macOS can additionally install **Hagency Hosting** to keep execution available independently of the chat app. Provider accounts and coding tools still need to be configured on the execution machine.
 
-Windows background-daemon hosting, Windows ARM64, automatic updates, and mobile store packages are not included. This RC does not claim a new manual Windows 11 test of the complete installer; the upstream PR's Windows 11 verification and the build/test results are distinct evidence.
+Windows native resource hosting (including the background daemon), Windows ARM64, automatic updates, and mobile store packages are not included. Windows web links use the external-browser option; native article tabs and the editor remain available. This RC does not claim a new manual Windows 11 test of the complete installer; the upstream PR's Windows 11 verification and the build/test results are distinct evidence.
 
 The version series is intentionally reset from inherited Rinx 1.1.x releases to Hagency 0.5.0. Install this RC manually. The earlier [dependency audit follow-up](https://github.com/hagency-org/hagency-desktop/blob/work/hagency-desktop-local-20261028/dev-vibe/release-0.5.0/assessment.zh.md) remains open; this RC does not claim that all upstream dependency advisories are resolved.
