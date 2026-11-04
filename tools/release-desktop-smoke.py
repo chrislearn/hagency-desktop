@@ -17,32 +17,43 @@ from release_image_check import image_readiness
 
 
 @contextmanager
-def software_renderer(binary):
+def software_renderer(binary, output):
     """Select WARP for this temporary executable on GPU-less Windows CI hosts.
 
     This is the per-application DirectX Control Panel override; it does not
     change the distributed executable or the machine's global GPU selection.
     """
-    import winreg
-    parent = r'Software\Microsoft\Direct3D'
-    for index in range(10000):
-        path = parent + r'\Application' + str(index)
+    # Use Microsoft's configuration utility: partial hand-written registry
+    # entries are not enough to register an application on every Windows SDK.
+    # Device settings affect registered apps, so restrict this to disposable CI.
+    assert os.environ.get('GITHUB_ACTIONS') == 'true', 'WARP setup requires an isolated CI host'
+    system = Path(os.environ['SystemRoot'])/'System32'
+    config = system/'d3dconfig.exe'
+    with (output/'graphics-config.log').open('w') as log:
+        def run(*command, timeout=30, check=True):
+            result = subprocess.run(list(map(str, command)), text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    timeout=timeout)
+            log.write(result.stdout)
+            log.flush()
+            print(result.stdout, flush=True)
+            if check:
+                result.check_returncode()
+            return result
+        if not config.is_file():
+            run(system/'dism.exe', '/online', '/add-capability',
+                '/capabilityname:tools.graphics.directx~~~~0.0.1.0', '/norestart', timeout=240)
+        assert config.is_file(), 'DirectX Graphics Tools did not install d3dconfig.exe'
+        run(config, 'apps', '--add', binary)
         try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path):
-                pass
-        except FileNotFoundError:
-            break
-    else:
-        raise RuntimeError('No free DirectX application override slot')
-    try:
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, path) as key:
-            winreg.SetValueEx(key, 'Name', 0, winreg.REG_SZ, str(binary))
-            winreg.SetValueEx(key, 'RequireSDKLayers', 0, winreg.REG_DWORD, 0)
-            winreg.SetValueEx(key, 'D3DBehaviors', 0, winreg.REG_SZ,
-                'RequireSDKLayers=0;FeatureLevelLimit=0;ForceWARP=1;DisableFLUpgrade=0')
-        yield
-    finally:
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+            run(config, 'device', 'force-warp=true')
+            run(config, 'debug-layer', 'debug-layer-mode=force-off')
+            run(config, 'apps')
+            run(config, 'device')
+            yield
+        finally:
+            run(config, 'device', 'force-warp=false', check=False)
+            run(config, 'apps', '--remove', binary, check=False)
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--package', type=Path, required=True)
@@ -96,7 +107,7 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary, 
             env=dict(os.environ, HAGENCY_SMOKE_BINARY=str(binary)), text=True, timeout=20))
         assert version_info == {'product': 'Hagency Desktop', 'company': 'Hagency'}, version_info
         if args.software_rendering:
-            cleanup.enter_context(software_renderer(binary))
+            cleanup.enter_context(software_renderer(binary, output))
     else:
         raise SystemExit('This smoke check covers macOS and Windows installers')
     kernel_version = subprocess.check_output([str(kernel),'--version'], text=True, timeout=20).strip()
