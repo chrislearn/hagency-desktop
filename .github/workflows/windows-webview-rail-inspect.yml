@@ -54,6 +54,35 @@ jobs:
             Invoke-RestMethod "$root/d" | Set-Content "$output/after.txt"
             Invoke-RestMethod "$root/snap?all=1" | ConvertTo-Json -Depth 20 | Set-Content "$output/snapshot.json"
             Invoke-WebRequest -TimeoutSec 30 "$root/g?raw=1" -OutFile "$output/rail.png"
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class CursorProbe {
+              [StructLayout(LayoutKind.Sequential)] public struct Point { public int x, y; }
+              [StructLayout(LayoutKind.Sequential)] public struct CursorInfo { public int size, flags; public IntPtr cursor; public Point position; }
+              [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr window, ref Point point);
+              [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+              [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CursorInfo info);
+              [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr LoadCursorW(IntPtr instance, IntPtr name);
+          }
+          '@
+            $process.Refresh()
+            $window = $process.MainWindowHandle
+            $origin = New-Object CursorProbe+Point
+            if ($window -eq [IntPtr]::Zero -or -not [CursorProbe]::ClientToScreen($window, [ref]$origin)) { throw 'Cannot resolve test window coordinates' }
+            $status = Invoke-RestMethod "$root/s"
+            $dpi = $status.w[0].dpi
+            $expected = [CursorProbe]::LoadCursorW([IntPtr]::Zero, [IntPtr]32644)
+            foreach ($x in @(330, 376, 377, 378, 379, 380, 400)) {
+              $physicalX = $origin.x + [int][Math]::Round($x * $dpi)
+              $physicalY = $origin.y + [int][Math]::Round(350 * $dpi)
+              if (-not [CursorProbe]::SetCursorPos($physicalX, $physicalY)) { throw 'Cannot move test pointer' }
+              Start-Sleep -Milliseconds 500
+              $info = New-Object CursorProbe+CursorInfo
+              $info.size = [Runtime.InteropServices.Marshal]::SizeOf($info)
+              if (-not [CursorProbe]::GetCursorInfo([ref]$info)) { throw 'Cannot inspect test pointer' }
+              Write-Output "CURSOR_PROBE x=$x screen=$($info.position.x),$($info.position.y) resize=$($info.cursor -eq $expected) handle=$($info.cursor)"
+            }
             Write-Output 'OFFLINE_RAIL_CAPTURED'
           } finally {
             if ($port) { try { Invoke-WebRequest -TimeoutSec 5 "http://127.0.0.1:$port/quit" | Out-Null } catch { Write-Output "Graceful quit failed: $_" } }
