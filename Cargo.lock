@@ -4747,7 +4747,7 @@ dependencies = [
 [[package]]
 name = "hagency"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "base64 0.22.1",
  "cap-fs-ext",
@@ -4789,7 +4789,7 @@ dependencies = [
 [[package]]
 name = "hagency-agent-local"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "getrandom 0.3.4",
  "hagency-platform",
@@ -4807,7 +4807,7 @@ dependencies = [
 [[package]]
 name = "hagency-core"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -4824,7 +4824,7 @@ dependencies = [
 [[package]]
 name = "hagency-execution"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -4847,7 +4847,7 @@ dependencies = [
 [[package]]
 name = "hagency-files"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -4858,7 +4858,7 @@ dependencies = [
 [[package]]
 name = "hagency-matrix"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "getrandom 0.3.4",
  "hagency-core",
@@ -4886,7 +4886,7 @@ dependencies = [
 [[package]]
 name = "hagency-matrix-format"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "idna 1.1.0",
  "linkify",
@@ -4901,7 +4901,7 @@ dependencies = [
 [[package]]
 name = "hagency-media"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "base64 0.22.1",
  "hagency-files",
@@ -4915,7 +4915,7 @@ dependencies = [
 [[package]]
 name = "hagency-media-store"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -4930,7 +4930,7 @@ dependencies = [
 [[package]]
 name = "hagency-metering"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "serde",
  "serde_json",
@@ -4954,7 +4954,7 @@ dependencies = [
 [[package]]
 name = "hagency-palpo"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "hagency-core",
  "hagency-store",
@@ -4970,7 +4970,7 @@ dependencies = [
 [[package]]
 name = "hagency-platform"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -4988,7 +4988,7 @@ dependencies = [
 [[package]]
 name = "hagency-runtime"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "hagency-core",
  "hagency-platform",
@@ -5004,7 +5004,7 @@ dependencies = [
 [[package]]
 name = "hagency-store"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=31a08e183c0d135a71fff2aa485f6ec31ef0a752#31a08e183c0d135a71fff2aa485f6ec31ef0a752"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=e05bdce6b6c8cd0e009cdac2219be5326769eab4#e05bdce6b6c8cd0e009cdac2219be5326769eab4"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -14205,7 +14205,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
