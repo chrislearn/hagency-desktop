@@ -424,7 +424,7 @@ script_mod! {
                 forward_card := mod.widgets.ForwardCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_approval_card := mod.widgets.AgentApprovalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
-                agent_reply := mod.widgets.AgentReply {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_reply := mod.widgets.AgentReply {width: Fill}
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
                 link_preview_view := mod.widgets.LinkPreview {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
@@ -611,7 +611,7 @@ script_mod! {
                 forward_card := mod.widgets.ForwardCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_approval_card := mod.widgets.AgentApprovalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
-                agent_reply := mod.widgets.AgentReply {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_reply := mod.widgets.AgentReply {width: Fill}
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
                 link_preview_view := mod.widgets.LinkPreview {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
@@ -7879,6 +7879,63 @@ mod agent_chat_status_tests;
 mod desktop_information_columns_tests {
     use super::*;
     use makepad_widgets::makepad_draw::cx_draw::CxDraw;
+
+    #[cfg(feature = "agent_chat")]
+    #[test]
+    fn agent_replies_reflow_across_the_available_chat_width_when_resized() {
+        use crate::agent_chat::reply::AgentReplyWidgetRefExt;
+        let body = format!("## 长回复布局\n\n{}\n\n正文应跟随聊天区域调整宽度。",
+            "这是一条较长的 Agent 回答，用于检查宽屏和窄屏中的文字换行。".repeat(12));
+        let rich = matrix_sdk::ruma::events::room::message::FormattedBody::markdown(&body);
+        for condensed in [false, true] {
+            let mut cx = Cx::new(Box::new(|_, _| {}));
+            let message = cx.with_vm(|vm| {
+                makepad_widgets::script_mod(vm);
+                crate::app::register_widgets(vm);
+                vm.bx.captured_errors = Some(Vec::new());
+                let value = if condensed {script_eval!(vm, {mod.widgets.CondensedMessage {}})}
+                    else {script_eval!(vm, {mod.widgets.Message {}})};
+                let message = WidgetRef::script_from_value(vm, value);
+                message.register_as_ui_root(vm);
+                assert!(vm.take_errors().is_empty());
+                message
+            });
+            message.widget(&mut cx, ids!(content.message)).set_visible(&mut cx, false);
+            message.agent_reply(&mut cx, ids!(content.agent_reply))
+                .populate(&mut cx, "width-fixture".into(), &body, rich.as_ref(), false, false);
+            let mut heights = Vec::new();
+            for width in [520.0, 1400.0, 520.0] {
+                cx.redraw_all();
+                let pass = DrawPass::new(&mut cx);
+                pass.set_size(&mut cx, dvec2(width, 1600.0));
+                let mut list = DrawList2d::new(&mut cx);
+                let event = DrawEvent::default();
+                {
+                    let mut draw = CxDraw::new(&mut cx, &event);
+                    let mut cx2d = Cx2d::new(&mut draw);
+                    cx2d.begin_pass(&pass, None);
+                    list.begin_always(&mut cx2d);
+                    cx2d.begin_root_turtle(dvec2(width, 1600.0), Layout::flow_overlay());
+                    message.draw_walk_all(&mut cx2d, &mut Scope::empty(), Walk {
+                        width: Size::Fixed(width), height: Size::Fit {min: None, max: None}, ..Walk::default()
+                    });
+                    cx2d.end_pass_sized_turtle();
+                    list.end(&mut cx2d);
+                    cx2d.end_pass(&pass);
+                }
+                let content = message.widget(&mut cx, ids!(body.content)).area().rect(&cx);
+                let text = message.widget(&mut cx, ids!(content.agent_reply.agent_reply_body)).area().rect(&cx);
+                assert!((text.pos.x + text.size.x - content.pos.x - content.size.x).abs() < 1.0,
+                    "Agent text must reach the content edge after its leading inset: {width} {text:?} {content:?}");
+                assert!(text.pos.x + text.size.x <= width && text.size.y > 0.0);
+                heights.push(text.size.y);
+                cx.with_vm(|vm| assert!(vm.take_errors().is_empty()));
+            }
+            assert!(heights[1] < heights[0], "Wider text must reflow into fewer lines: {heights:?}");
+            assert!((heights[0] - heights[2]).abs() < 1.0, "Narrow layout must restore after resizing: {heights:?}");
+        }
+    }
+
     #[test]
     fn delivery_rows_reach_the_timeline_edge_while_text_keeps_its_reading_width() {
         let mut right_edges = Vec::new();
