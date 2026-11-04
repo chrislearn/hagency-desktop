@@ -65,8 +65,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: inputs.artifact_run_id == ''
         with:
-          shared-key: package
-          key: release-windows-amd64
+          shared-key: release-windows-amd64-package
           cache-on-failure: true
       - name: Prepare Windows packager
         if: inputs.artifact_run_id == ''
