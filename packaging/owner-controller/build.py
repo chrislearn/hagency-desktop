@@ -38,6 +38,7 @@ def main():
     parser.add_argument('--release', action='store_true')
     parser.add_argument('--client', type=Path, default=ROOT.parent / 'hagency-client')
     parser.add_argument('--output', type=Path, default=ROOT / '.run/owner-daemon/dist')
+    parser.add_argument('--dmg', action='store_true', help='Also create the distributable macOS disk image')
     args = parser.parse_args()
     if sys.platform != 'darwin':
         parser.error('This bundle is for macOS.')
@@ -70,7 +71,8 @@ def main():
     shutil.copy2(ROOT / fonts, source / fonts)
     controller = source / 'apps/owner-controller/Cargo.toml'
     env = os.environ.copy()
-    env['MAKEPAD_PACKAGE_DIR'] = '../Resources'
+    env['MAKEPAD'] = 'apple_bundle'
+    env['MAKEPAD_PACKAGE_DIR'] = '.'
     env['RUST_MIN_STACK'] = env.get('RUST_MIN_STACK', '16777216')
     # Packaging must never overwrite the instrumentation build while a review
     # is running. The helper keeps its existing Client target directory.
@@ -118,14 +120,16 @@ def main():
                 if license_file.is_file():
                     shutil.copy2(license_file, contents / 'Resources/Licenses' /
                                  f'{package_name}-{package["version"]}-{license_file.name}')
+        release_version = re.search(r'^version\s*=\s*"([^"]+)"', (ROOT / 'Cargo.toml').read_text(), re.M)[1]
         info = {
             'CFBundleIdentifier': IDENTITY,
             'CFBundleName': 'Hagency Hosting',
             'CFBundleDisplayName': 'Hagency Hosting',
             'CFBundleExecutable': 'hagency-owner-controller',
             'CFBundlePackageType': 'APPL',
-            'CFBundleShortVersionString': '0.1.0',
-            'CFBundleVersion': '1',
+            'CFBundleShortVersionString': release_version.split('-')[0],
+            'CFBundleVersion': os.environ.get('GITHUB_RUN_NUMBER', '1'),
+            'HagencyReleaseVersion': release_version,
             'CFBundleIconFile': 'icon.icns',
             'NSHighResolutionCapable': True,
             'LSMinimumSystemVersion': '11.0',
@@ -137,7 +141,7 @@ def main():
             run(['/usr/bin/codesign', '--force', '--sign', '-', str(path)])
         run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(bundle)])
         report = {
-            'bundleId': IDENTITY, 'profile': build_profile, 'signing': 'ad-hoc-local-review',
+            'bundleId': IDENTITY, 'profile': build_profile, 'signing': 'ad-hoc',
             'nativeAccessibility': True,
             'makepadPatchSha256': digest(ROOT / 'packaging/owner-controller/makepad-accessibility.patch'),
             'controllerSha256': digest(contents / 'MacOS/hagency-owner-controller'),
@@ -147,10 +151,24 @@ def main():
             'clientCommit': run(['git', 'rev-parse', 'HEAD'], cwd=client, capture=True).strip(),
             'desktopTrackedDiffSha256': hashlib.sha256(run(['git', 'diff', 'HEAD'], capture=True).encode()).hexdigest(),
             'clientTrackedDiffSha256': hashlib.sha256(run(['git', 'diff', 'HEAD'], cwd=client, capture=True).encode()).hexdigest(),
+            'version': release_version,
+            'languages': ['en', 'zh-Hans'],
+            'languageSelection': 'persistent, with system default',
             'installed': False, 'launchAgentInstalled': False,
         }
         bundle.rename(destination)
         (output / 'build-report.json').write_text(json.dumps(report, indent=2) + '\n')
+    if args.dmg:
+        with tempfile.TemporaryDirectory(prefix='hosting-dmg-', dir=output) as tmp:
+            stage = Path(tmp)
+            run(['ditto', str(destination), str(stage / destination.name)])
+            (stage / 'Applications').symlink_to('/Applications')
+            dmg = output / 'Hagency Hosting.dmg'
+            run(['hdiutil', 'create', '-volname', 'Hagency Hosting', '-srcfolder', str(stage),
+                 '-format', 'UDZO', '-imagekey', 'zlib-level=9', str(dmg)])
+        run(['bash', str(ROOT / 'packaging/fix-dmg-applications-icon.sh'), str(dmg),
+             str(ROOT / 'packaging/macos/dmg-background.png'), destination.name])
+        run(['hdiutil', 'verify', str(dmg)])
     print(destination)
 
 

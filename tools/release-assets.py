@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Plan and verify complete releases from one source commit."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+
+ROOT = Path(__file__).resolve().parents[1]
+TARGETS = {
+    'macos-arm64': dict(runner='macos-14', platform='macos', arch='arm64', formats='dmg'),
+    'windows-amd64': dict(runner='windows-2022', platform='windows', arch='amd64', formats='nsis'),
+    'macos-amd64': dict(runner='macos-15-intel', platform='macos', arch='amd64', formats='dmg'),
+    'linux-amd64': dict(runner='ubuntu-22.04', platform='linux', arch='amd64', formats='deb,appimage'),
+    'linux-arm64': dict(runner='ubuntu-22.04-arm', platform='linux', arch='arm64', formats='deb,appimage'),
+}
+EXTENSIONS = {'macos': ['.dmg'], 'windows': ['.exe'], 'linux': ['.deb', '.AppImage']}
+
+
+def targets(scope):
+    keys = ['macos-arm64', 'windows-amd64'] if scope == 'macos-arm64-windows' else list(TARGETS)
+    return [TARGETS[key] for key in keys]
+
+
+def expected_assets(scope, hosting):
+    names = []
+    for target in targets(scope):
+        platform, arch = target['platform'], target['arch']
+        names.extend(f'hagency-desktop-{platform}-{arch}{ext}' for ext in EXTENSIONS[platform])
+        if platform == 'macos' and hosting:
+            names.append(f'hagency-hosting-macos-{arch}.dmg')
+    return names
+
+
+def metadata():
+    manifest = (ROOT/'Cargo.toml').read_text()
+    def revision(name):
+        return re.search(r'^'+re.escape(name)+r'\s*=\s*\{[^\n]*\brev\s*=\s*"([^"]+)"', manifest, re.M)[1]
+    return dict(version=re.search(r'^version\s*=\s*"([^"]+)"', manifest, re.M)[1],
+                sourceCommit=os.environ['GITHUB_SHA'], clientCommit=revision('hagency'),
+                makepadCommit=revision('makepad-app-module'))
+
+
+def sha(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024*1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def collect(platform, arch, hosting):
+    out = ROOT/'release-assets'
+    out.mkdir(exist_ok=True)
+    assets = []
+    for ext in EXTENSIONS[platform]:
+        found = list((ROOT/'dist').glob('*'+ext))
+        assert len(found) == 1, (ext, found)
+        destination = out/f'hagency-desktop-{platform}-{arch}{ext}'
+        shutil.copy2(found[0], destination)
+        assets.append(destination)
+    if platform == 'macos' and hosting:
+        src = ROOT/'dist/hosting/Hagency Hosting.dmg'
+        assert src.is_file(), 'Missing Hosting installer'
+        destination = out/f'hagency-hosting-macos-{arch}.dmg'
+        shutil.copy2(src, destination)
+        assets.append(destination)
+    sums = {p.name: sha(p) for p in assets}
+    report = dict(metadata(), platform=platform, arch=arch, assets=sums)
+    if platform == 'macos' and hosting:
+        report['hosting'] = json.loads((ROOT/'dist/hosting/build-report.json').read_text())
+        assert report['hosting']['desktopCommit'] == report['sourceCommit']
+        assert report['hosting']['clientCommit'] == report['clientCommit']
+    (out/f'build-{platform}-{arch}.json').write_text(json.dumps(report, indent=2)+'\n')
+    (out/f'SHA256SUMS-{platform}-{arch}.txt').write_text(''.join(f'{v}  {k}\n' for k,v in sums.items()))
+
+
+def verify(scope, hosting):
+    out = ROOT/'release-assets'
+    expected = set(expected_assets(scope, hosting))
+    recorded = {}
+    expected_meta = metadata()
+    reports = list(out.glob('build-*.json'))
+    assert len(reports) == len(targets(scope)), 'Incomplete platform reports'
+    for file in reports:
+        report = json.loads(file.read_text())
+        assert all(report.get(k) == v for k,v in expected_meta.items()), f'Mixed source versions: {file}'
+        for name, digest in report['assets'].items():
+            assert name not in recorded, f'Duplicate asset: {name}'
+            assert Path(name).name == name and sha(out/name) == digest, f'Checksum mismatch: {name}'
+            recorded[name] = digest
+    assert set(recorded) == expected, (set(recorded), expected)
+    actual = {p.name for p in out.iterdir() if p.suffix in ('.dmg','.exe','.deb','.AppImage')}
+    assert actual == expected, 'Unexpected or missing installer'
+    (out/'SHA256SUMS.txt').write_text(''.join(f'{recorded[name]}  {name}\n' for name in sorted(recorded)))
+    return expected_meta
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=['plan','collect','verify'])
+    parser.add_argument('--scope', choices=['all','macos-arm64-windows'], default='all')
+    parser.add_argument('--hosting', choices=['true','false'], default='false')
+    parser.add_argument('--platform', choices=list(EXTENSIONS))
+    parser.add_argument('--arch')
+    args = parser.parse_args()
+    hosting = args.hosting == 'true'
+    if args.command == 'plan':
+        data = dict(matrix=json.dumps({'include':targets(args.scope)}, separators=(',',':')),
+                    scope=args.scope, hosting=str(hosting).lower(), **metadata())
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+            for key, value in data.items(): out.write(f'{key}={value}\n')
+        print(json.dumps(data, indent=2))
+    elif args.command == 'collect':
+        assert args.platform and args.arch
+        collect(args.platform, args.arch, hosting)
+    else:
+        print(json.dumps(verify(args.scope, hosting), indent=2))
+
+
+if __name__ == '__main__':
+    main()

@@ -9,6 +9,15 @@ on:
         description: 'Create the version tag and publish after all installers pass'
         type: boolean
         default: false
+      platforms:
+        description: 'Installer platforms (RC excludes Intel macOS)'
+        type: choice
+        options: [all, macos-arm64-windows]
+        default: macos-arm64-windows
+      hosting:
+        description: 'Include Hagency Hosting with the owner daemon on macOS'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -21,12 +30,34 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
+  RUST_MIN_STACK: 16777216
+  CARGO_BUILD_JOBS: 2
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
 
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      scope: ${{ steps.plan.outputs.scope }}
+      hosting: ${{ steps.plan.outputs.hosting }}
+      client: ${{ steps.plan.outputs.clientCommit }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: plan
+        env:
+          SCOPE: ${{ inputs.platforms || 'macos-arm64-windows' }}
+          HOSTING: ${{ github.event_name != 'workflow_dispatch' || inputs.hosting }}
+        run: |
+          python3 tools/test-release-assets.py
+          python3 tools/release-assets.py plan --scope "$SCOPE" --hosting "$HOSTING"
   regression:
+    needs: plan
     name: Budget and chat regression gate
     runs-on: macos-14
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,38 +65,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.0
+      - uses: actions/checkout@v7
+        with:
+          repository: hagency-org/hagency-client
+          ref: ${{ needs.plan.outputs.client }}
+          path: .release/client
+          persist-credentials: false
       - uses: Swatinem/rust-cache@v2
       - run: brew install cmake
-      - run: python3 tools/check-hagency-regressions.py --output .run/release-regressions
+      - run: python3 tools/check-hagency-regressions.py --output .run/release-regressions --client .release/client
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: release-regressions
+          path: .run/release-regressions
+          retention-days: 14
   package:
-    needs: regression
+    needs: plan
     name: Installer (${{ matrix.platform }}-${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-22.04
-            platform: linux
-            arch: amd64
-            formats: deb,appimage
-          - runner: ubuntu-22.04-arm
-            platform: linux
-            arch: arm64
-            formats: deb,appimage
-          - runner: macos-14
-            platform: macos
-            arch: arm64
-            formats: dmg
-          - runner: macos-15-intel
-            platform: macos
-            arch: amd64
-            formats: dmg
-          - runner: windows-2022
-            platform: windows
-            arch: amd64
-            formats: nsis
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     defaults:
       run:
         shell: bash
@@ -91,8 +113,10 @@ jobs:
           p = Path('packaging/macos/Info.plist')
           data = plistlib.loads(p.read_bytes())
           data.update(CFBundleIdentifier='org.hagency.desktop', CFBundleName='Hagency Desktop',
-                      CFBundleDisplayName='Hagency Desktop', CFBundleShortVersionString=version,
+                      CFBundleDisplayName='Hagency Desktop', CFBundleShortVersionString=version.split('-')[0],
+                      HagencyReleaseVersion=version,
                       CFBundleVersion=os.environ['GITHUB_RUN_NUMBER'])
+          data.pop('CFBundleIconFile', None)  # Let the packager name its generated ICNS.
           p.write_bytes(plistlib.dumps(data))
           PY
       - name: Linux dependencies
@@ -143,26 +167,43 @@ jobs:
         # An absolute output directory avoids cargo-packager 0.10.1 resolving
         # generated scripts twice when it changes the working directory.
         run: cargo packager --verbose --release --out-dir "$PWD/dist" --formats "$FORMATS"
+      - name: Start the packaged Desktop on macOS
+        if: runner.os == 'macOS'
+        run: python3 tools/release-desktop-smoke.py --package 'dist/Hagency Desktop.app' --output .run/release-desktop-smoke
+      - name: Install and start the packaged Desktop on Windows
+        if: runner.os == 'Windows'
+        run: |
+          package=$(find dist -maxdepth 1 -name '*.exe' -print -quit)
+          python3 tools/release-desktop-smoke.py --package "$package" --output .run/release-desktop-smoke
+      - uses: actions/checkout@v7
+        if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
+        with:
+          repository: hagency-org/hagency-client
+          ref: ${{ needs.plan.outputs.client }}
+          path: .release/client
+          persist-credentials: false
+      - name: Package Hosting and its owner daemon
+        if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
+        run: python3 packaging/owner-controller/build.py --release --client .release/client --output dist/hosting --dmg
+      - name: Verify packaged controller and daemon lifecycle
+        if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
+        run: python3 tools/owner-controller-bundle-smoke.py --bundle 'dist/hosting/Hagency Hosting.app' --output .run/release-hosting-smoke
       - name: Collect installers and checksums
         env:
           PLATFORM: ${{ matrix.platform }}
           ARCH: ${{ matrix.arch }}
-        run: |
-          python3 - <<'PY'
-          import hashlib, os, shutil
-          from pathlib import Path
-          extensions = {'linux': ['.deb', '.AppImage'], 'macos': ['.dmg'], 'windows': ['.exe']}[os.environ['PLATFORM']]
-          out = Path('release-assets'); out.mkdir()
-          sums = []
-          for ext in extensions:
-              files = list(Path('dist').glob('*' + ext))
-              assert len(files) == 1, f'Expected one {ext} installer, got {files}'
-              src = files[0]
-              dest = out / f"hagency-desktop-{os.environ['PLATFORM']}-{os.environ['ARCH']}{ext}"
-              shutil.copy2(src, dest)
-              sums.append(f'{hashlib.sha256(dest.read_bytes()).hexdigest()}  {dest.name}\n')
-          (out / f"SHA256SUMS-{os.environ['PLATFORM']}-{os.environ['ARCH']}.txt").write_text(''.join(sums))
-          PY
+          HOSTING: ${{ needs.plan.outputs.hosting }}
+        run: python3 tools/release-assets.py collect --platform "$PLATFORM" --arch "$ARCH" --hosting "$HOSTING"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: installer-checks-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            .run/release-desktop-smoke
+            .run/release-hosting-smoke
+            dist/hosting/build-report.json
+          if-no-files-found: ignore
+          retention-days: 14
       - uses: actions/upload-artifact@v7
         with:
           name: installers-${{ matrix.platform }}-${{ matrix.arch }}
@@ -172,7 +213,7 @@ jobs:
 
   release:
     name: Publish complete release
-    needs: package
+    needs: [plan, regression, package]
     if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -197,16 +238,25 @@ jobs:
           MACOS_SIGNED: ${{ vars.MACOS_SIGNED_RELEASE }}
           SOURCE_SHA: ${{ github.sha }}
           REPOSITORY: ${{ github.repository }}
+          SCOPE: ${{ needs.plan.outputs.scope }}
+          HOSTING: ${{ needs.plan.outputs.hosting }}
         run: |
           set -euo pipefail
+          python3 tools/release-assets.py verify --scope "$SCOPE" --hosting "$HOSTING"
           cd release-assets
-          cat SHA256SUMS-*.txt > SHA256SUMS.txt
-          test "$(wc -l < SHA256SUMS.txt)" -eq 7
           sha256sum --check SHA256SUMS.txt
           # shellcheck disable=SC2016
           printf 'Hagency Desktop installers built from `%s`.\n\n' "$SOURCE_SHA" > ../release-notes.md
           # shellcheck disable=SC2016
-          printf 'Linux: amd64/arm64 DEB and AppImage. macOS: Intel/Apple Silicon DMG. Windows: amd64 NSIS installer.\n\nVerify downloads against `SHA256SUMS.txt`.\n\n' >> ../release-notes.md
+          if [[ "$SCOPE" == 'macos-arm64-windows' ]]; then
+            printf 'Desktop: macOS Apple Silicon DMG and Windows x64 NSIS installer. Intel macOS is not included.\n\n' >> ../release-notes.md
+          else
+            printf 'Desktop: Linux amd64/arm64 DEB and AppImage, macOS Intel/Apple Silicon DMG, and Windows x64 NSIS installer.\n\n' >> ../release-notes.md
+          fi
+          if [[ "$HOSTING" == true ]]; then
+            printf 'Hagency Hosting is a separate macOS installer containing the resource daemon and its English/Simplified Chinese control panel. Windows background hosting is not included. Hosting uses an ad-hoc signature and is not notarized.\n\n' >> ../release-notes.md
+          fi
+          printf 'Verify downloads against `SHA256SUMS.txt`. Each build report records the exact Desktop, Client and Makepad commits.\n\n' >> ../release-notes.md
           if [[ "$MACOS_SIGNED" == true ]]; then
             printf 'macOS packages are Developer ID signed and notarized.\n' >> ../release-notes.md
           else

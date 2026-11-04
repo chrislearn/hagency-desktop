@@ -1191,6 +1191,7 @@ impl OwnerDashboard {
                     ConnectionStatus::Incompatible { .. } => (Msg::IncompatibleTitle, Tone::Caution, Glyph::Warning),
                     ConnectionStatus::AuthExpired => (Msg::AuthExpiredTitle, Tone::Caution, Glyph::Warning),
                     ConnectionStatus::OwnerMismatch => (Msg::StatusOtherOwner, Tone::Caution, Glyph::Warning),
+                    ConnectionStatus::UnsupportedPlatform => (Msg::UnsupportedPlatformTitle, Tone::Neutral, Glyph::Info),
                     _ => (Msg::StatusDisconnected, Tone::Critical, Glyph::Offline),
                 };
                 (Status::new(tone, glyph, t(msg)), p.banner.as_ref().map(|banner| format!("{} {}", banner.title, banner.body)))

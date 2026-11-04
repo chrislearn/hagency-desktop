@@ -107,7 +107,22 @@ script_mod! {
                 window.title: "Hagency Hosting"
                 window.inner_size: #(initial_size())
                 body +: {
-                    flow: Overlay
+                    flow: Down
+                    View {
+                        width: Fill height: Fit flow: Right align: Align{y: 0.5}
+                        padding: Inset{left: 20 right: 20 top: 8 bottom: 4} spacing: 10
+                        show_bg: true draw_bg.color: OD_PAGE
+                        View {width: Fill height: 1}
+                        language_label := OdCaption {text: "Language"}
+                        hosting_language := OdDropDown {
+                            width: 172 height: 36
+                            labels: ["System default" "English" "简体中文"]
+                            values: [@system @en @zh]
+                            draw_text +: {text_style: theme.font_regular{font_size: OD_SIZE_CAPTION}}
+                        }
+                    }
+                    View {
+                    width: Fill height: Fill flow: Overlay
                     dashboard := OwnerDashboard {}
                     setup_page := OdScrollY {
                         visible: false width: Fill height: Fill
@@ -131,6 +146,7 @@ script_mod! {
                         setup_status := OdText {text: ""}
                         setup_enable := OdPrimaryButton {width: Fill text: "Enable hosting"}
                         setup_back := OdButton {width: Fill text: "Back"}
+                    }
                     }
                 }
             }
@@ -173,6 +189,17 @@ impl App {
             self.localize_setup(cx);
             self.ui.window(cx, ids!(main_window)).set_title(cx, tr(locale, Msg::WindowTitle));
         }
+        self.sync_language_control(cx, prefs.language, locale);
+    }
+
+    fn sync_language_control(&mut self, cx: &mut Cx, choice: system::LanguagePreference, locale: Locale) {
+        if self.language_control == Some((choice, locale)) { return; }
+        let zh = locale == Locale::ZhHans;
+        self.ui.label(cx, ids!(language_label)).set_text(cx, if zh { "语言" } else { "Language" });
+        let control = self.ui.drop_down(cx, ids!(hosting_language));
+        control.set_labels(cx, vec![if zh { "跟随系统" } else { "System default" }.into(), "English".into(), "简体中文".into()]);
+        control.set_selected_item(cx, choice.index());
+        self.language_control = Some((choice, locale));
     }
 
     fn drain(&mut self, cx: &mut Cx) {
@@ -501,6 +528,8 @@ pub struct App {
     poll_timer: Timer,
     #[rust]
     prefs_timer: Timer,
+    #[rust]
+    language_control: Option<(system::LanguagePreference, Locale)>,
 }
 
 impl MatchEvent for App {
@@ -511,6 +540,7 @@ impl MatchEvent for App {
         dashboard.set_host(cx, o.host.unwrap_or(HostMode::Standalone));
         let locale = o.locale.unwrap_or(prefs.locale);
         dashboard.set_locale(cx, locale);
+        self.sync_language_control(cx, prefs.language, locale);
         self.ui.window(cx, ids!(main_window)).set_title(cx, tr(locale, Msg::WindowTitle));
         dashboard.set_reduced_motion(cx, o.reduced_motion.unwrap_or(prefs.reduced_motion));
         self.set_dark(cx, o.dark.unwrap_or(prefs.dark));
@@ -539,6 +569,18 @@ impl MatchEvent for App {
     }
 
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
+        if let Some(index) = self.ui.drop_down(cx, ids!(hosting_language)).changed(actions) {
+            if system::LanguagePreference::from_index(index).save() {
+                self.check_prefs(cx);
+            } else {
+                let dashboard = self.dashboard(cx);
+                dashboard.set_notice(cx, Some(Status::new(Tone::Critical, Glyph::Warning,
+                    if dashboard.locale() == Locale::ZhHans { "无法保存语言设置，请重试。" }
+                    else { "Could not save the language. Please try again." })));
+                self.language_control = None;
+                self.check_prefs(cx);
+            }
+        }
         if self.ui.button(cx, ids!(setup_enable)).clicked(actions) { self.begin_setup(cx); }
         if self.ui.button(cx, ids!(setup_back)).clicked(actions) {
             self.setup_job = None;

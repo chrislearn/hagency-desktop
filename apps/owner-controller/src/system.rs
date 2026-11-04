@@ -3,11 +3,39 @@
 //! linked by Makepad) so the controller needs no extra crates.
 use owner_dashboard::Locale;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LanguagePreference {
+    #[default]
+    System,
+    English,
+    Chinese,
+}
+
+impl LanguagePreference {
+    pub fn from_saved(value: &str) -> Self {
+        match value { "en" => Self::English, "zh-Hans" => Self::Chinese, _ => Self::System }
+    }
+    pub fn saved(self) -> &'static str {
+        match self { Self::System => "system", Self::English => "en", Self::Chinese => "zh-Hans" }
+    }
+    pub fn index(self) -> usize {
+        match self { Self::System => 0, Self::English => 1, Self::Chinese => 2 }
+    }
+    pub fn from_index(index: usize) -> Self {
+        match index { 1 => Self::English, 2 => Self::Chinese, _ => Self::System }
+    }
+    pub fn resolve(self, system: Locale) -> Locale {
+        match self { Self::System => system, Self::English => Locale::En, Self::Chinese => Locale::ZhHans }
+    }
+    pub fn save(self) -> bool { imp::save_language(self) }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SystemPrefs {
     pub dark: bool,
     pub reduced_motion: bool,
     pub locale: Locale,
+    pub language: LanguagePreference,
 }
 
 impl SystemPrefs {
@@ -18,7 +46,7 @@ impl SystemPrefs {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::SystemPrefs;
+    use super::{SystemPrefs, LanguagePreference};
     use owner_dashboard::Locale;
     use std::ffi::{CString, c_char, c_void};
 
@@ -31,6 +59,7 @@ mod imp {
     unsafe extern "C" {
         static kCFPreferencesAnyApplication: CFStringRef;
         fn CFPreferencesCopyAppValue(key: CFStringRef, app: CFStringRef) -> CFTypeRef;
+        fn CFPreferencesSetAppValue(key: CFStringRef, value: CFTypeRef, app: CFStringRef);
         fn CFPreferencesAppSynchronize(app: CFStringRef) -> u8;
         fn CFStringCreateWithCString(alloc: *const c_void, s: *const c_char, encoding: u32) -> CFStringRef;
         fn CFStringGetCString(s: CFStringRef, buffer: *mut c_char, size: CFIndex, encoding: u32) -> u8;
@@ -117,23 +146,62 @@ mod imp {
         }
     }
 
+    fn app_domain() -> String {
+        // Also allows isolated UI tests to keep the user's preferences untouched.
+        std::env::var("HAGENCY_HOSTING_PREFERENCE_DOMAIN")
+            .unwrap_or_else(|_| "io.hagency.owner-controller".into())
+    }
+
+    pub fn save_language(language: LanguagePreference) -> bool {
+        let key = cfstr("HagencyLanguage");
+        let value = cfstr(language.saved());
+        let domain = cfstr(&app_domain());
+        // SAFETY: all three CFStrings stay owned for the duration of these calls.
+        unsafe {
+            CFPreferencesSetAppValue(key.0, value.0, domain.0);
+            CFPreferencesAppSynchronize(domain.0) != 0
+        }
+    }
+
     pub fn read() -> SystemPrefs {
         let style = pref("AppleInterfaceStyle", None);
         let motion = pref("reduceMotion", Some("com.apple.universalaccess"));
+        let saved = pref("HagencyLanguage", Some(&app_domain()));
+        let language = LanguagePreference::from_saved(&to_string(saved.0).unwrap_or_default());
+        let system = first_language().map(|l| Locale::from_tag(&l)).unwrap_or_default();
         SystemPrefs {
             dark: to_string(style.0).is_some_and(|s| s.eq_ignore_ascii_case("dark")),
             reduced_motion: truthy(motion.0),
-            locale: first_language().map(|l| Locale::from_tag(&l)).unwrap_or_default(),
+            locale: language.resolve(system),
+            language,
         }
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
-    use super::SystemPrefs;
+    use super::{SystemPrefs, LanguagePreference};
     use owner_dashboard::Locale;
     pub fn read() -> SystemPrefs {
         let tag = std::env::var("LANG").unwrap_or_default();
-        SystemPrefs { dark: false, reduced_motion: false, locale: Locale::from_tag(&tag) }
+        SystemPrefs { dark: false, reduced_motion: false, locale: Locale::from_tag(&tag), language: LanguagePreference::System }
+    }
+    pub fn save_language(_language: LanguagePreference) -> bool { false }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn saved_language_overrides_system_and_system_choice_tracks_it() {
+        for choice in [LanguagePreference::System, LanguagePreference::English, LanguagePreference::Chinese] {
+            assert_eq!(LanguagePreference::from_saved(choice.saved()), choice);
+            assert_eq!(LanguagePreference::from_index(choice.index()), choice);
+        }
+        assert_eq!(LanguagePreference::English.resolve(Locale::ZhHans), Locale::En);
+        assert_eq!(LanguagePreference::Chinese.resolve(Locale::En), Locale::ZhHans);
+        assert_eq!(LanguagePreference::System.resolve(Locale::En), Locale::En);
+        assert_eq!(LanguagePreference::System.resolve(Locale::ZhHans), Locale::ZhHans);
+        assert_eq!(LanguagePreference::from_saved("unexpected"), LanguagePreference::System);
     }
 }

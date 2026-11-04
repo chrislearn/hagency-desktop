@@ -83,6 +83,8 @@ messages! {
     ConnectingTitle => "Connecting to hosting service…", "正在连接托管服务…";
     ConnectingBody => "Your Agents keep running in the background while this window opens.", "窗口打开期间，你的 Agent 会继续在后台运行。";
     DaemonAbsentTitle => "Hosting service isn't running", "托管服务未运行";
+    UnsupportedPlatformTitle => "Background hosting is available on macOS", "后台托管目前支持 macOS";
+    UnsupportedPlatformBody => "This release does not include a Windows resource daemon. You can still chat with Agents hosted on another execution device.", "此版本尚未包含 Windows 资源 daemon。你仍可与其他执行设备托管的 Agent 聊天。";
     DaemonAbsentBody => "Hagency hosts your rented Agents with a background service that keeps working when Hagency is closed. Set it up or start it to continue.", "Hagency 通过后台服务托管你出租的 Agent，即使关闭 Hagency 也会继续工作。请设置或启动该服务。";
     IncompatibleTitle => "Update required", "需要更新";
     AuthExpiredTitle => "Sign-in needed", "需要重新登录";

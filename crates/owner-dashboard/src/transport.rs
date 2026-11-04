@@ -19,6 +19,7 @@ use hagency_metering::dashboard::{DashboardSnapshot, HostingState, UsageFilter, 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -244,6 +245,7 @@ impl DaemonEndpoint {
     }
 }
 
+#[cfg(unix)]
 fn euid() -> u32 {
     // SAFETY: geteuid has no preconditions.
     unsafe { libc::geteuid() }
@@ -277,6 +279,7 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
 }
 
 /// Checks that `home` and its socket are private to this user.
+#[cfg(unix)]
 pub fn check_private(home: &Path) -> Result<PathBuf, TransportError> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let uid = euid();
@@ -293,10 +296,12 @@ pub fn check_private(home: &Path) -> Result<PathBuf, TransportError> {
 }
 
 /// One private, blocking connection. Use from a worker thread only.
+#[cfg(unix)]
 pub struct DaemonConnection {
     stream: UnixStream,
 }
 
+#[cfg(unix)]
 impl DaemonConnection {
     pub fn connect(endpoint: &DaemonEndpoint) -> Result<Self, TransportError> {
         let path = check_private(&endpoint.home)?;
@@ -331,6 +336,29 @@ impl DaemonConnection {
         self.stream.set_read_timeout(Some(timeout)).map_err(|_| TransportError::Uncertain)?;
         let payload = read_bounded(&mut self.stream, MAX_REPLY_FRAME).map_err(|_| TransportError::Uncertain)?;
         decode_reply(&payload, &request.request_id)
+    }
+}
+
+// The initial owner daemon uses authenticated Unix IPC. Desktop remains
+// buildable on Windows; no unauthenticated transport is substituted there.
+#[cfg(not(unix))]
+pub fn check_private(_home: &Path) -> Result<PathBuf, TransportError> {
+    Err(TransportError::Unavailable)
+}
+
+#[cfg(not(unix))]
+pub struct DaemonConnection;
+
+#[cfg(not(unix))]
+impl DaemonConnection {
+    pub fn connect(_endpoint: &DaemonEndpoint) -> Result<Self, TransportError> {
+        Err(TransportError::Unavailable)
+    }
+    pub fn call(&mut self, _request: &Request, _timeout: Duration) -> Result<Reply, TransportError> {
+        Err(TransportError::Unavailable)
+    }
+    fn call_guarded(&mut self, request: &Request, timeout: Duration, _retired: Option<&std::sync::atomic::AtomicBool>) -> Result<Reply, TransportError> {
+        self.call(request, timeout)
     }
 }
 
@@ -394,7 +422,10 @@ pub fn status_for_error(error: &ErrorBody) -> ConnectionStatus {
 
 pub fn status_for_transport(error: &TransportError) -> ConnectionStatus {
     match error {
+        #[cfg(unix)]
         TransportError::Unavailable => ConnectionStatus::DaemonUnavailable,
+        #[cfg(not(unix))]
+        TransportError::Unavailable => ConnectionStatus::UnsupportedPlatform,
         TransportError::Incompatible { version } => ConnectionStatus::Incompatible { daemon_version: *version },
         TransportError::Unsafe => ConnectionStatus::Failed { message: "daemon_socket_not_private".into() },
         TransportError::PeerRejected => ConnectionStatus::Failed { message: "daemon_peer_rejected".into() },
@@ -727,5 +758,5 @@ impl Worker {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;

@@ -137,3 +137,26 @@ has 36. These counts are not proof of reachability for every advisory. The
 [release assessment](../dev-vibe/release-0.5.0/assessment.zh.md) records the actual
 PDF/XML paths, feature boundaries, lock hashes and remaining upstream work.
 Neither cancelled installer run published a v0.5.0 tag or Release.
+
+## 0.5.0-rc.1 packaging
+
+The release workflow now defaults to macOS Apple Silicon and Windows x64.
+The explicit `platforms=all` choice retains the other targets; this RC does
+not build Intel macOS. `hosting=true` adds a separate macOS Hagency Hosting
+DMG containing the controller and the pinned Client daemon. The controller
+provides persistent System default / English / Simplified Chinese selection.
+Windows background-daemon hosting remains unsupported.
+
+Desktop packages are installed or relocated and launched with a fresh profile
+before collecting artifacts. Hosting has an independent packaged lifecycle
+check. Build reports and SHA256SUMS must cover the exact selected asset set
+from one Desktop, Client and Makepad revision before a draft is published.
+The regression gate and packaging run concurrently, but publication requires
+both. macOS RC builds are ad-hoc signed unless Developer ID signing is
+configured; Hosting is ad-hoc signed. Windows installers remain unsigned.
+
+For this RC, Makepad is pinned to PR #132's published author commit
+`4ec079b02bca9747acde3216cfc370cd558e40f4` in `csheargm/makepad`, while the
+upstream PR is open. All Makepad crates, standalone tools, dashboard and
+controller workspaces resolve to that commit. The tracked accessibility
+patch is applied to an isolated checkout of the same revision.

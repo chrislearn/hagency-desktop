@@ -57,6 +57,7 @@ pub enum HostMode {
 /// widget never infers readiness from the presence of data.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum ConnectionStatus {
+    UnsupportedPlatform,
     #[default]
     Connecting,
     Connected,
@@ -1098,6 +1099,11 @@ fn banner(state: &DashboardState, locale: Locale) -> Option<Banner> {
             Tone::Caution, Glyph::Warning, Msg::OwnerMismatchTitle,
             tr(locale, Msg::OwnerMismatchBody).to_owned(),
             BannerAction::Setup, BannerAction::Retry,
+        )),
+        ConnectionStatus::UnsupportedPlatform => Some(make(
+            Tone::Neutral, Glyph::Info, Msg::UnsupportedPlatformTitle,
+            tr(locale, Msg::UnsupportedPlatformBody).to_owned(),
+            BannerAction::None, BannerAction::None,
         )),
         ConnectionStatus::Failed { message } => Some(make(
             Tone::Critical, Glyph::Cross, Msg::FailedTitle,
