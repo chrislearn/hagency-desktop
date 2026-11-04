@@ -188,6 +188,9 @@ jobs:
       - name: Verify packaged controller and daemon lifecycle
         if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
         run: python3 tools/owner-controller-bundle-smoke.py --bundle 'dist/hosting/Hagency Hosting.app' --output .run/release-hosting-smoke
+      - name: Verify Hosting language switching and persistence
+        if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
+        run: python3 tools/owner-hosting-language-smoke.py --binary 'dist/hosting/Hagency Hosting.app' --output .run/release-hosting-language
       - name: Collect installers and checksums
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -201,6 +204,7 @@ jobs:
           path: |
             .run/release-desktop-smoke
             .run/release-hosting-smoke
+            .run/release-hosting-language
             dist/hosting/build-report.json
           if-no-files-found: ignore
           retention-days: 14
@@ -260,7 +264,7 @@ jobs:
           if [[ "$MACOS_SIGNED" == true ]]; then
             printf 'macOS packages are Developer ID signed and notarized.\n' >> ../release-notes.md
           else
-            printf 'macOS packages are unsigned development builds; Gatekeeper may block installation.\n' >> ../release-notes.md
+            printf 'macOS Desktop uses an ad-hoc signature and is not notarized; Gatekeeper may block installation.\n' >> ../release-notes.md
           fi
           printf 'Windows packages are currently unsigned.\n' >> ../release-notes.md
           printf '\n' >> ../release-notes.md

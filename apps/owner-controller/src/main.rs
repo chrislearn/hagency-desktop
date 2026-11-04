@@ -113,11 +113,10 @@ script_mod! {
                         padding: Inset{left: 20 right: 20 top: 8 bottom: 4} spacing: 10
                         show_bg: true draw_bg.color: OD_PAGE
                         View {width: Fill height: 1}
-                        language_label := OdCaption {text: "Language"}
+                        language_label := OdCaption {width: Fit text: "Language"}
                         hosting_language := OdDropDown {
-                            width: 172 height: 36
+                            width: 172 height: 36 align: Align{y: 0.5}
                             labels: ["System default" "English" "简体中文"]
-                            values: [@system @en @zh]
                             draw_text +: {text_style: theme.font_regular{font_size: OD_SIZE_CAPTION}}
                         }
                     }

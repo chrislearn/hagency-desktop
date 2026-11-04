@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 from urllib.request import urlopen
+from urllib.error import HTTPError
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--package', type=Path, required=True)
@@ -57,10 +58,16 @@ with tempfile.TemporaryDirectory(prefix='hagency-release-smoke-') as temporary:
         def request(path):
             with urlopen(f'http://127.0.0.1:{port}/'+path, timeout=15) as response:
                 return json.load(response)
-        for _ in range(5):
-            snapshot = request('snap?w=0&wait=1')
-            image = request('g?w=0&wait=1')
+        frames = 0
+        while time.monotonic() < deadline and frames < 5:
+            try:
+                snapshot = request('snap?w=0&wait=1')
+                image = request('g?w=0&wait=1')
+                frames += 1
+            except HTTPError as error:
+                if error.code != 404: raise
             time.sleep(.4)
+        assert frames == 5, 'Packaged app did not draw its window'
         texts = [node.get('t','') for node in snapshot.get('s',[]) if node.get('r') and node['r'][2]>0 and node['r'][3]>0]
         assert any('Sign in to Hagency' in text or '登录 Hagency' in text for text in texts), texts
         shutil.copy2(image['png'], output/'sign-in.png')
