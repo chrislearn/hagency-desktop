@@ -1,0 +1,158 @@
+name: Temporary Windows WebView and splitter test build
+
+on:
+  push:
+    branches: [codex/windows-webview-test-exe-20261105]
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  RUSTUP_TOOLCHAIN: stable
+  CARGO_BUILD_JOBS: 4
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-webview-test-runtime
+          path: runtime
+          run-id: 41925532444
+          github-token: ${{ github.token }}
+
+      - name: Build the pinned Desktop source
+        id: build
+        shell: pwsh
+        env:
+          MAKEPAD_PACKAGE_DIR: .
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone --depth 1 --branch codex/windows-system-browser-20261104 https://github.com/hagency-org/hagency-desktop.git desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop checkout failed' }
+          if ((git -C desktop rev-parse HEAD) -ne 'fea1a7af48ab883a905344ab8685f7b064051feb') { throw 'Unexpected Desktop revision' }
+          $pin = (Get-Content desktop/packaging/octos.lock.json -Raw | ConvertFrom-Json).revision
+          if ($pin -ne 'fe08d8e6b3b32e672b0f956a2b692c3c8205b167') { throw 'Unexpected runtime revision' }
+          $version = & "$env:GITHUB_WORKSPACE/runtime/octos.exe" --version
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '\(fe08d8e') { throw 'Runtime revision check failed' }
+          Write-Output $version
+          Push-Location desktop
+          try {
+            rustc --version
+            cargo build --locked --release --bin rinx
+            if ($LASTEXITCODE -ne 0) { throw 'Windows Desktop build failed' }
+          } finally { Pop-Location }
+          $bundle = Join-Path $env:GITHUB_WORKSPACE 'bundle'
+          New-Item -ItemType Directory -Force -Path "$bundle/rinx", "$bundle/makepad_widgets", "$bundle/licenses" | Out-Null
+          Copy-Item desktop/target/release/rinx.exe "$bundle/rinx.exe"
+          Copy-Item runtime/octos.exe "$bundle/octos.exe"
+          Copy-Item runtime/octos-LICENSE "$bundle/licenses/octos-LICENSE"
+          Copy-Item desktop/resources "$bundle/rinx/resources" -Recurse
+          $widgets = (Get-Content desktop/target/release/makepad-widgets.path -Raw).Trim()
+          if (-not (Test-Path "$widgets/resources")) { throw 'Makepad resources not found' }
+          Copy-Item "$widgets/resources" "$bundle/makepad_widgets/resources" -Recurse
+          Copy-Item desktop/LICENSE,desktop/LICENSE-MIT,desktop/NOTICE "$bundle/licenses/"
+          @'
+          @echo off
+          setlocal
+          set "HAGENCY_DESKTOP_DATA_DIR=%LOCALAPPDATA%\HagencyDesktop-WebView-Test"
+          if not exist "%HAGENCY_DESKTOP_DATA_DIR%" mkdir "%HAGENCY_DESKTOP_DATA_DIR%"
+          start "" "%~dp0rinx.exe"
+          '@ | Set-Content -Encoding ascii "$bundle/Start-WebView-Test.cmd"
+          $hashes = @('rinx.exe', 'octos.exe') | ForEach-Object { "$((Get-FileHash "$bundle/$_" -Algorithm SHA256).Hash.ToLower())  $_" }
+          $hashes | Set-Content -Encoding ascii "$bundle/SHA256SUMS.txt"
+          $hashes
+
+      - name: Verify offline navigation and Windows resize cursor
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:GITHUB_WORKSPACE 'inspection'
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
+          $env:HAGENCY_DESKTOP_DATA_DIR = Join-Path $env:RUNNER_TEMP 'desktop-test-profile'
+          New-Item -ItemType Directory -Force -Path $env:HAGENCY_DESKTOP_DATA_DIR | Out-Null
+          $env:MAKEPAD_NO_FOCUS = '1'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'bundle/rinx.exe'
+          $stdout = Join-Path $output 'app.stdout'
+          $stderr = Join-Path $output 'app.stderr'
+          $process = Start-Process -FilePath $exe -ArgumentList '--remote' -WorkingDirectory $env:RUNNER_TEMP -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          $port = $null
+          try {
+            $end = [DateTime]::UtcNow.AddSeconds(120)
+            while ([DateTime]::UtcNow -lt $end -and -not $process.HasExited) {
+              if ((Test-Path $stdout) -and ((Get-Content $stdout -Raw) -match 'listening on 127\.0\.0\.1:(\d+)')) { $port = $Matches[1]; break }
+              Start-Sleep -Seconds 2
+              $process.Refresh()
+            }
+            if (-not $port) { throw 'Desktop endpoint unavailable' }
+            $root = "http://127.0.0.1:$port"
+            Start-Sleep -Seconds 4
+            foreach ($edit in @(@{path='login_screen_view';prop='visible';value='false'}, @{path='home_screen_view';prop='visible';value='true'})) {
+              $result = Invoke-RestMethod -Method Post -Uri "$root/tweak/apply" -ContentType 'application/json' -Body ($edit | ConvertTo-Json -Compress)
+              if ($result.err) { throw "Cannot prepare offline navigation: $($result.err)" }
+            }
+            Invoke-RestMethod "$root/tweak?on=0" | Out-Null
+            Start-Sleep -Seconds 3
+            $snapshot = Invoke-RestMethod "$root/snap?all=1"
+            $snapshot | ConvertTo-Json -Depth 20 | Set-Content "$output/snapshot.json"
+            $dock = @($snapshot.s | Where-Object { $_.i -eq 'dock' -and $_.r[2] -gt 0 }) | Select-Object -First 1
+            if (-not $dock) { throw 'Offline navigation did not become ready' }
+            Invoke-WebRequest -TimeoutSec 30 "$root/g?raw=1" -OutFile "$output/rail.png"
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class CursorProbe {
+              [StructLayout(LayoutKind.Sequential)] public struct Point { public int x, y; }
+              [StructLayout(LayoutKind.Sequential)] public struct CursorInfo { public int size, flags; public IntPtr cursor; public Point position; }
+              [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr window, ref Point point);
+              [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+              [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CursorInfo info);
+              [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr LoadCursorW(IntPtr instance, IntPtr name);
+          }
+          '@
+            $process.Refresh()
+            $origin = New-Object CursorProbe+Point
+            if ($process.MainWindowHandle -eq [IntPtr]::Zero -or -not [CursorProbe]::ClientToScreen($process.MainWindowHandle, [ref]$origin)) { throw 'Window coordinates unavailable' }
+            $status = Invoke-RestMethod "$root/s"
+            $dpi = $status.w[0].dpi
+            $expected = [CursorProbe]::LoadCursorW([IntPtr]::Zero, [IntPtr]32644)
+            foreach ($offset in @(0, 1, 2, 3, 4)) {
+              $x = $dock.r[0] + 300 + $offset
+              $y = $dock.r[1] + [Math]::Min(320, $dock.r[3] / 2)
+              if (-not [CursorProbe]::SetCursorPos(($origin.x + [int][Math]::Round($x * $dpi)), ($origin.y + [int][Math]::Round($y * $dpi)))) { throw 'Cannot move test cursor' }
+              Start-Sleep -Milliseconds 500
+              $info = New-Object CursorProbe+CursorInfo
+              $info.size = [Runtime.InteropServices.Marshal]::SizeOf($info)
+              if (-not [CursorProbe]::GetCursorInfo([ref]$info)) { throw 'Cannot inspect cursor' }
+              Write-Output "CURSOR_PROBE x=$x resize=$($info.cursor -eq $expected)"
+              if ($info.cursor -ne $expected) { throw "Resize cursor missing at x=$x" }
+            }
+            Write-Output 'DESKTOP_SPLITTER_CURSOR_PASS'
+          } finally {
+            if ($port) { try { Invoke-WebRequest -TimeoutSec 5 "http://127.0.0.1:$port/quit" | Out-Null } catch { Write-Output "Graceful quit failed: $_" } }
+            if (-not $process.WaitForExit(5000)) { Stop-Process -Id $process.Id -Force }
+            if (Test-Path $stdout) { Get-Content $stdout }
+            if (Test-Path $stderr) { Get-Content $stderr }
+          }
+          $logs = (Get-Content $stdout -Raw) + (Get-Content $stderr -Raw)
+          if ($logs -match 'Could not load resource|panicked at|Failed to save window state') { throw 'Desktop reported a startup or profile error' }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-ui-test-inspection
+          path: inspection/
+          if-no-files-found: ignore
+          retention-days: 2
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.build.outcome == 'success'
+        with:
+          name: hagency-desktop-webview-test-windows-x64-v2
+          path: bundle/
+          if-no-files-found: error
+          retention-days: 7
