@@ -1,0 +1,143 @@
+name: Temporary Windows WebView test build
+
+on:
+  push:
+    branches: [codex/windows-webview-test-exe-20261104]
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: stable
+  CARGO_BUILD_JOBS: 4
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  desktop:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Build the pinned desktop revision and stage resources
+        shell: pwsh
+        env:
+          MAKEPAD_PACKAGE_DIR: .
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone --depth 1 --branch codex/windows-system-browser-20261104 https://github.com/hagency-org/hagency-desktop.git desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop source clone failed' }
+          if ((git -C desktop rev-parse HEAD) -ne '8b7dda56ec172c0b98e84e802e4b33ac88fc2fbd') { throw 'Unexpected Desktop revision' }
+          rustc --version
+          if ($LASTEXITCODE -ne 0) { throw 'Preinstalled Rust is unavailable' }
+          cargo build --locked --release --bin rinx --manifest-path desktop/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw 'Windows desktop build failed' }
+          $bundle = Join-Path $env:GITHUB_WORKSPACE 'bundle'
+          New-Item -ItemType Directory -Force -Path "$bundle/rinx", "$bundle/makepad_widgets" | Out-Null
+          Copy-Item desktop/target/release/rinx.exe "$bundle/rinx.exe"
+          Copy-Item desktop/resources "$bundle/rinx/resources" -Recurse
+          $widgets = (Get-Content desktop/target/release/makepad-widgets.path -Raw).Trim()
+          if (-not (Test-Path "$widgets/resources")) { throw 'Makepad resources not found' }
+          Copy-Item "$widgets/resources" "$bundle/makepad_widgets/resources" -Recurse
+          New-Item -ItemType Directory -Force -Path "$bundle/licenses" | Out-Null
+          Copy-Item desktop/LICENSE,desktop/LICENSE-MIT,desktop/NOTICE "$bundle/licenses/"
+          @'
+          @echo off
+          setlocal
+          set "HAGENCY_DESKTOP_DATA_DIR=%LOCALAPPDATA%\HagencyDesktop-WebView-Test"
+          start "" "%~dp0rinx.exe"
+          '@ | Set-Content -Encoding ascii "$bundle/Start-WebView-Test.cmd"
+          Get-FileHash "$bundle/rinx.exe" -Algorithm SHA256 | Format-List
+
+      - name: Check packaged startup with an isolated profile
+        id: startup
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'bundle/rinx.exe'
+          $stdout = Join-Path $env:RUNNER_TEMP 'desktop-webview.stdout'
+          $stderr = Join-Path $env:RUNNER_TEMP 'desktop-webview.stderr'
+          $env:HAGENCY_DESKTOP_DATA_DIR = Join-Path $env:RUNNER_TEMP 'desktop-webview-profile'
+          $env:MAKEPAD_HIDE_WINDOWS = '1'
+          $env:MAKEPAD_NO_FOCUS = '1'
+          $process = Start-Process -FilePath $exe -ArgumentList '--remote' -WorkingDirectory $env:RUNNER_TEMP -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          $port = $null
+          try {
+            $end = [DateTime]::UtcNow.AddSeconds(120)
+            while ([DateTime]::UtcNow -lt $end -and -not $process.HasExited) {
+              if ((Test-Path $stdout) -and ((Get-Content $stdout -Raw) -match 'listening on 127\.0\.0\.1:(\d+)')) { $port = $Matches[1]; break }
+              Start-Sleep -Seconds 2
+              $process.Refresh()
+            }
+            if (-not $port) { throw 'Desktop did not start the remote endpoint' }
+            $status = Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 "http://127.0.0.1:$port/s"
+            if ($status.StatusCode -ne 200) { throw 'Desktop status endpoint failed' }
+            Write-Output "DESKTOP_STARTUP_PASS port=$port"
+          } finally {
+            if ($port) { try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 "http://127.0.0.1:$port/quit" | Out-Null } catch { Write-Output "Graceful quit failed: $_" } }
+            if (-not $process.WaitForExit(5000)) { Stop-Process -Id $process.Id -Force }
+            if (Test-Path $stdout) { Get-Content $stdout }
+            if (Test-Path $stderr) { Get-Content $stderr }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-webview-test-application
+          path: bundle/
+          if-no-files-found: error
+          retention-days: 7
+
+  octos:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Build the desktop's pinned local agent runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone --depth 1 --branch codex/windows-system-browser-20261104 https://github.com/hagency-org/hagency-desktop.git desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop source clone failed' }
+          if ((git -C desktop rev-parse HEAD) -ne '8b7dda56ec172c0b98e84e802e4b33ac88fc2fbd') { throw 'Unexpected Desktop revision' }
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE/runtime" | Out-Null
+          Push-Location desktop
+          try {
+            python tools/package-octos.py desktop --app-binary "$env:GITHUB_WORKSPACE/runtime/rinx.exe"
+            if ($LASTEXITCODE -ne 0) { throw 'Octos build failed' }
+            & "$env:GITHUB_WORKSPACE/runtime/octos.exe" --version
+            if ($LASTEXITCODE -ne 0) { throw 'Octos version check failed' }
+            Copy-Item dist/runtime/licenses/octos-LICENSE "$env:GITHUB_WORKSPACE/runtime/octos-LICENSE"
+          } finally { Pop-Location }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-webview-test-runtime
+          path: runtime/
+          if-no-files-found: error
+          retention-days: 7
+
+  bundle:
+    needs: [desktop, octos]
+    if: always() && needs.desktop.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-webview-test-application
+          path: bundle
+      - uses: actions/download-artifact@v4
+        if: needs.octos.result == 'success'
+        with:
+          name: desktop-webview-test-runtime
+          path: runtime
+      - name: Assemble the temporary build
+        shell: bash
+        run: |
+          if [ -f runtime/octos.exe ]; then
+            cp runtime/octos.exe bundle/octos.exe
+            cp runtime/octos-LICENSE bundle/licenses/octos-LICENSE
+          fi
+          (cd bundle && sha256sum rinx.exe > SHA256SUMS.txt && if [ -f octos.exe ]; then sha256sum octos.exe >> SHA256SUMS.txt; fi)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hagency-desktop-webview-test-windows-x64
+          path: bundle/
+          if-no-files-found: error
+          retention-days: 7
