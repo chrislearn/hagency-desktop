@@ -18,12 +18,30 @@ on:
         description: 'Include Hagency Hosting with the owner daemon on macOS'
         type: boolean
         default: true
+      verify_only:
+        description: 'Validate an existing source commit without rebuilding other platforms'
+        type: boolean
+        default: false
+      source_commit:
+        description: 'Exact binary source commit, required for verification only'
+        type: string
+      verify_platform:
+        type: choice
+        options: [windows-amd64, macos-arm64]
+        default: windows-amd64
+      artifact_run_id:
+        description: 'Reuse an installer artifact from this run; empty packages Windows from the source commit'
+        type: string
+      artifact_name:
+        type: string
+        default: candidate-installers-windows-amd64
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}-${{ inputs.verify_only && inputs.verify_platform || 'release' }}
   cancel-in-progress: false
 
 env:
@@ -37,7 +55,16 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: true
 
 jobs:
+  verify:
+    if: inputs.verify_only
+    uses: ./.github/workflows/release-verify.yml
+    with:
+      source_commit: ${{ inputs.source_commit }}
+      platform: ${{ inputs.verify_platform }}
+      artifact_run_id: ${{ inputs.artifact_run_id }}
+      artifact_name: ${{ inputs.artifact_name }}
   plan:
+    if: ${{ !inputs.verify_only }}
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -155,6 +182,13 @@ jobs:
           python3 tools/wechat-ux/check_i18n.py
           cargo test --locked -p octosense-app-contract --lib
           cargo test --locked --features agent_chat --lib
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Prepare rendered installer checks
+        run: |
+          python3 -m pip install -r tools/release-smoke-requirements.txt
+          python3 tools/test-release-image-check.py
       # Keep optimized dependencies separately: a failed test run can populate
       # the earlier immutable cache before any release compilation has happened.
       - name: Restore optimized build cache
@@ -194,7 +228,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           package=$(find dist -maxdepth 1 -name '*.exe' -print -quit)
-          python3 tools/release-desktop-smoke.py --package "$package" --output .run/release-desktop-smoke
+          python3 tools/release-desktop-smoke.py --package "$package" --output .run/release-desktop-smoke --software-rendering
       - uses: actions/checkout@v7
         if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
         with:

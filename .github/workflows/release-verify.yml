@@ -1,0 +1,151 @@
+name: Verify RC installer
+
+on:
+  workflow_call:
+    inputs:
+      source_commit:
+        description: 'Exact 40-character commit used to build the installer'
+        required: true
+        type: string
+      platform:
+        type: string
+        default: windows-amd64
+      artifact_run_id:
+        description: 'Reuse an existing candidate; leave empty to package Windows from the source commit'
+        type: string
+      artifact_name:
+        description: 'Existing artifact name, when reusing a candidate'
+        type: string
+        default: candidate-installers-windows-amd64
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUTF8: 1
+  PYTHONIOENCODING: utf-8
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  RUST_MIN_STACK: 16777216
+  CARGO_BUILD_JOBS: 2
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+  SOURCE_COMMIT: ${{ inputs.source_commit }}
+  PLATFORM: ${{ inputs.platform }}
+
+jobs:
+  # Match the release job ID and cache key to reuse its optimized dependencies.
+  package:
+    runs-on: ${{ inputs.platform == 'macos-arm64' && 'macos-14' || 'windows-2022' }}
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+      - name: Validate binary source
+        env:
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess
+          source = os.environ['SOURCE_COMMIT']
+          assert re.fullmatch('[0-9a-f]{40}', source), 'Use an exact source commit'
+          assert subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip() == source
+          assert os.environ['ARTIFACT_RUN_ID'] or os.environ['PLATFORM'] == 'windows-amd64', 'Mac validation reuses a built installer'
+          PY
+      - uses: dtolnay/rust-toolchain@master
+        if: inputs.artifact_run_id == ''
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@v2
+        if: inputs.artifact_run_id == ''
+        with:
+          shared-key: package
+          key: release-windows-amd64
+          cache-on-failure: true
+      - name: Prepare Windows packager
+        if: inputs.artifact_run_id == ''
+        run: |
+          choco install nsis --no-progress -y
+          cargo install cargo-packager --version 0.10.1 --locked
+          cargo install robius-packaging-commands --version 0.4.1 --locked
+      - name: Package the unchanged source commit
+        if: inputs.artifact_run_id == ''
+        run: |
+          cargo packager --manifest-path Cargo.toml --verbose --release --out-dir "$PWD/dist" --formats nsis
+          GITHUB_SHA="$SOURCE_COMMIT" python3 tools/release-assets.py collect --platform windows --arch amd64 --hosting false
+      - uses: actions/upload-artifact@v7
+        if: inputs.artifact_run_id == ''
+        with:
+          name: candidate-installers-windows-amd64
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/download-artifact@v8
+        if: inputs.artifact_run_id != ''
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.artifact_run_id }}
+          name: ${{ inputs.artifact_name }}
+          path: release-assets
+      - name: Verify candidate provenance and checksums
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path('release-assets')
+          report = json.loads((root / ('build-' + os.environ['PLATFORM'] + '.json')).read_text())
+          assert report['sourceCommit'] == os.environ['SOURCE_COMMIT']
+          for name, expected in report['assets'].items():
+              assert Path(name).name == name
+              assert hashlib.sha256((root/name).read_bytes()).hexdigest() == expected, name
+          PY
+      # Keep validation code separate from the source used by the binaries.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: .release/validation
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Prepare pixel checks
+        run: |
+          python3 -m pip install -r .release/validation/tools/release-smoke-requirements.txt
+          python3 .release/validation/tools/test-release-image-check.py
+      - name: Install and render the candidate
+        run: |
+          extra=()
+          if [[ "$PLATFORM" == windows-amd64 ]]; then
+            package=release-assets/hagency-desktop-windows-amd64.exe
+            extra+=(--software-rendering)
+          else
+            package=release-assets/hagency-desktop-macos-arm64.dmg
+          fi
+          python3 .release/validation/tools/release-desktop-smoke.py --source-root "$PWD" --package "$package" --output .run/verified-installer "${extra[@]}"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path('.run/verified-installer/provenance.json').write_text(json.dumps({
+              'sourceCommit': os.environ['SOURCE_COMMIT'],
+              'validationCommit': os.environ['GITHUB_SHA'],
+              'runId': os.environ['GITHUB_RUN_ID']}, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: installer-checks-${{ inputs.platform }}
+          path: .run/verified-installer
+          if-no-files-found: ignore
+          retention-days: 14
+      - uses: actions/upload-artifact@v7
+        with:
+          name: installers-${{ inputs.platform }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
