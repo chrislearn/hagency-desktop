@@ -111,7 +111,9 @@ async fn run_budget(
     let mut polling = super::shared_budget::Polling::default();
     let mut changes = None;
     while live() {
-        let next = tokio::time::Instant::now() + Duration::from_secs(1);
+        // Matrix messages and room keys wake this lane immediately. Use five
+        // seconds only as a fallback for server-side changes without a sync hint.
+        let next = tokio::time::Instant::now() + Duration::from_secs(5);
         if let Ok(executor) = acquire_executor(&weak, &owner, &selection, &control).await {
             let changes = changes.get_or_insert_with(|| executor.work_changes());
             changes.borrow_and_update();
