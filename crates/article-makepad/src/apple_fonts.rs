@@ -446,8 +446,19 @@ mod tests {
 
     #[test]
     fn collection_view_rejects_invalid_indices_and_truncated_directories() {
-        let mut face = load_system_face(REGULAR).unwrap();
-        face.index = u32::MAX;
+        // The directory checks run before any face is parsed, so a bare
+        // two-entry collection header exercises them on every machine.
+        let mut data = b"ttcf\x00\x01\x00\x00\x00\x00\x00\x02".to_vec();
+        data.extend_from_slice(&20u32.to_be_bytes());
+        data.extend_from_slice(&40u32.to_be_bytes());
+        let mut face = FontDefinition {
+            data: SharedBytes::from_vec(data),
+            index: u32::MAX,
+            ascender_fudge_in_ems: 0.0,
+            descender_fudge_in_ems: 0.0,
+            weight: None,
+            variations: Vec::new(),
+        };
         assert!(face_at_index_zero(&face).is_err());
         face.index = 0;
         face.data = SharedBytes::from_vec(b"ttcf".to_vec());
