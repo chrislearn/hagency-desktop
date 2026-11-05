@@ -439,6 +439,19 @@ fn static_code(code: &str) -> &'static str {
     KNOWN.iter().copied().find(|known| *known == code).unwrap_or("setup_failed")
 }
 
+/// Which setup steps run, decided on the registered root: `(sign out the
+/// stale enrollment, enroll)`. Registration alone can hand an enrolled root
+/// that holds the account's executor to the daemon; then neither runs.
+#[cfg(unix)]
+fn setup_steps(before: &Execution, after: &Execution) -> Result<(bool, bool), &'static str> {
+    match (before, after) {
+        (_, Execution::Setup(SetupReason::OtherOwner)) => Err("daemon_other_owner_enrolled"),
+        (Execution::Setup(_), Execution::Daemon { .. }) => Ok((false, false)),
+        (_, Execution::Setup(SetupReason::StaleRoot)) => Ok((true, true)),
+        _ => Ok((false, true)),
+    }
+}
+
 /// Wait until no daemon serves `home` and its lock is free.
 #[cfg(unix)]
 fn released(home: &Path, timeout: std::time::Duration) -> bool {
@@ -509,16 +522,23 @@ fn run_job(kind: JobKind, account: &Account, data_dir: &Path, cancel: &helper::C
         }
     }
     if kind == JobKind::Setup {
-        let stale = match execution(&locations, origin, owner) {
+        let before = match execution(&locations, origin, owner) {
             Ok(Execution::Setup(SetupReason::OtherOwner)) => return Progress::Failed("daemon_other_owner_enrolled"),
-            Ok(Execution::Setup(SetupReason::StaleRoot)) => true,
-            Ok(_) => false,
+            Ok(before) => before,
             Err(code) => return Progress::Failed(static_code(&code)),
         };
         // Only Desktop registers the root; the daemon only looks it up.
         if let Err(code) = select_root(&locations, data_dir, origin, owner) {
             return Progress::Failed(static_code(&code));
         }
+        let after = match execution(&locations, origin, owner) {
+            Ok(after) => after,
+            Err(code) => return Progress::Failed(static_code(&code)),
+        };
+        let (stale, enroll) = match setup_steps(&before, &after) {
+            Ok(steps) => steps,
+            Err(code) => return Progress::Failed(code),
+        };
         if stale {
             // The enrollment names another root: revoke its executor first, so
             // enrolling the registered root never leaves a second executor.
@@ -527,16 +547,18 @@ fn run_job(kind: JobKind, account: &Account, data_dir: &Path, cancel: &helper::C
                 return failed(failure);
             }
         }
-        report(Progress::SigningIn);
-        let enroll = command(&exe, &[
-            OsStr::new("enroll"), OsStr::new("--home"), home, OsStr::new("--server"), OsStr::new(origin),
-            OsStr::new("--owner"), OsStr::new(owner), OsStr::new("--cancel-on-stdin-close"),
-        ]);
-        match run(enroll, Duration::from_secs(300), cancel, true, || report(Progress::Cancelling)) {
-            Ok(stdout) => if let Some(code) = helper::pending_registration(&stdout) {
-                makepad_widgets::warning!("Hosting enrollment finished with a pending registration: {code}");
-            },
-            Err(failure) => return failed(failure),
+        if enroll {
+            report(Progress::SigningIn);
+            let enrollment = command(&exe, &[
+                OsStr::new("enroll"), OsStr::new("--home"), home, OsStr::new("--server"), OsStr::new(origin),
+                OsStr::new("--owner"), OsStr::new(owner), OsStr::new("--cancel-on-stdin-close"),
+            ]);
+            match run(enrollment, Duration::from_secs(300), cancel, true, || report(Progress::Cancelling)) {
+                Ok(stdout) => if let Some(code) = helper::pending_registration(&stdout) {
+                    makepad_widgets::warning!("Hosting enrollment finished with a pending registration: {code}");
+                },
+                Err(failure) => return failed(failure),
+            }
         }
     }
     report(Progress::Enabling);
@@ -945,6 +967,19 @@ mod tests {
         Enrollment::enroll(locations.daemon_home(), ORIGIN, OWNER, None, &registered).unwrap();
         assert_eq!(execution(&locations, ORIGIN, OWNER).unwrap(), daemon(&locations));
         assert_eq!(execution(&locations, ORIGIN.trim_end_matches('/'), OWNER).unwrap(), daemon(&locations));
+    }
+
+    #[test]
+    fn setup_signs_out_only_a_stale_enrollment_and_skips_what_registration_settled() {
+        let home = || Execution::Daemon { home: "/h".into() };
+        let setup = Execution::Setup;
+        assert_eq!(setup_steps(&setup(SetupReason::NotEnrolled), &setup(SetupReason::NotEnrolled)), Ok((false, true)));
+        assert_eq!(setup_steps(&setup(SetupReason::StaleRoot), &setup(SetupReason::StaleRoot)), Ok((true, true)));
+        // Registering the enrolled root resolved it: keep its executor.
+        assert_eq!(setup_steps(&setup(SetupReason::StaleRoot), &home()), Ok((false, false)));
+        // Already hosted: a renewed sign-in enrolls again without a sign-out.
+        assert_eq!(setup_steps(&home(), &home()), Ok((false, true)));
+        assert_eq!(setup_steps(&setup(SetupReason::NotEnrolled), &setup(SetupReason::OtherOwner)), Err("daemon_other_owner_enrolled"));
     }
 
     #[test]
