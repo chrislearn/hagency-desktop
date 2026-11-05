@@ -78,21 +78,53 @@ async fn run(
     selection: AdoptedManagementSelection,
     control: Arc<Control>,
 ) {
-    // Keep both futures inside the original retained task: retiring/draining
-    // still waits for every in-flight receipt. Housekeeping cannot delay a
-    // new encrypted message or a room key that just became available.
-    #[cfg(feature = "shared-budget-execution")]
+    // Keep every lane in the original retained task: retiring/draining still
+    // waits for each in-flight receipt. Both ordinary/successor intake and
+    // additive-budget work must wake independently of periodic maintenance.
     tokio::join!(
-        run_budget(
-            weak.clone(),
-            owner.clone(),
-            selection.clone(),
-            control.clone()
-        ),
-        run_maintenance(weak, owner, selection, control),
+        async {
+            #[cfg(any(feature = "shared-intake", feature = "shared-successors"))]
+            run_intake(weak.clone(), owner.clone(), selection.clone(), control.clone()).await;
+        },
+        async {
+            #[cfg(feature = "shared-budget-execution")]
+            run_budget(weak.clone(), owner.clone(), selection.clone(), control.clone()).await;
+        },
+        run_maintenance(weak.clone(), owner.clone(), selection.clone(), control.clone()),
     );
-    #[cfg(not(feature = "shared-budget-execution"))]
-    run_maintenance(weak, owner, selection, control).await;
+}
+
+#[cfg(any(feature = "shared-intake", feature = "shared-successors"))]
+async fn run_intake(
+    weak: Weak<Inner>,
+    owner: NativeOwner,
+    selection: AdoptedManagementSelection,
+    control: Arc<Control>,
+) {
+    let live = || {
+        !control.retired.load(Ordering::Acquire)
+            && weak.upgrade().is_some_and(|inner| Service(inner).check().is_ok())
+    };
+    #[cfg(feature = "shared-intake")]
+    let mut intake = super::shared_intake::Polling::default();
+    #[cfg(feature = "shared-successors")]
+    let mut successors = super::shared_successors::Polling::default();
+    let mut changes = None;
+    while live() {
+        let next = tokio::time::Instant::now() + Duration::from_secs(5);
+        if let Ok(executor) = acquire_executor(&weak, &owner, &selection, &control).await {
+            let changes = changes.get_or_insert_with(|| executor.work_changes());
+            changes.borrow_and_update();
+            // Retain Stop recovery before demand discovery and saved successor
+            // recovery. Never cancel a pass when another message arrives.
+            #[cfg(feature = "shared-intake")]
+            intake.poll(executor.as_ref(), live).await;
+            #[cfg(feature = "shared-successors")]
+            successors.poll(executor.as_ref(), live).await;
+        }
+        if !live() { break; }
+        wait_for_work(&control, changes.as_mut(), next).await;
+    }
 }
 
 #[cfg(feature = "shared-budget-execution")]
@@ -111,7 +143,9 @@ async fn run_budget(
     let mut polling = super::shared_budget::Polling::default();
     let mut changes = None;
     while live() {
-        let next = tokio::time::Instant::now() + Duration::from_secs(1);
+        // Matrix messages and room keys wake this lane immediately. Use five
+        // seconds only as a fallback for server-side changes without a sync hint.
+        let next = tokio::time::Instant::now() + Duration::from_secs(5);
         if let Ok(executor) = acquire_executor(&weak, &owner, &selection, &control).await {
             let changes = changes.get_or_insert_with(|| executor.work_changes());
             changes.borrow_and_update();
@@ -127,7 +161,7 @@ async fn run_budget(
     }
 }
 
-#[cfg(feature = "shared-budget-execution")]
+#[cfg(any(feature = "shared-budget-execution", feature = "shared-intake", feature = "shared-successors"))]
 async fn wait_for_work(
     control: &Control,
     changes: Option<&mut tokio::sync::watch::Receiver<()>>,
@@ -167,10 +201,8 @@ async fn run_maintenance(
     let mut matrix_cursor = None;
     let mut runtime_cursor = None;
     let mut settlement_cursor = None;
-    #[cfg(feature = "shared-successors")]
-    let mut successors = super::shared_successors::Polling::default();
     #[cfg(feature = "shared-intake")]
-    let mut intake = super::shared_intake::Polling::default();
+    let mut stop_cursor = None;
     loop {
         if control.retired.load(Ordering::Acquire) || !gate() {
             break;
@@ -182,17 +214,13 @@ async fn run_maintenance(
         // native engine retains spawned work, receipt retries and stop evidence;
         // this worker must never restart a model turn after a missing response.
         if let Some(executor) = executor.as_ref() {
-            // Recover explicit Stop before another intake operation. Native
-            // custody keeps its local restriction even if the POST was lost.
+            // Original provisioning still reconciles saved Stop commands first.
+            // Demand/successor recovery has its own cursors in the waking lane.
             #[cfg(feature = "shared-intake")]
-            intake
-                .poll(executor.as_ref(), || {
-                    !control.retired.load(Ordering::Acquire) && gate()
-                })
-                .await;
-            if control.retired.load(Ordering::Acquire) || !gate() {
-                break;
+            if let Ok(next) = executor.resume_next_demand_stop(stop_cursor.clone()).await {
+                stop_cursor = next.map(|saved| saved.command_id);
             }
+            if control.retired.load(Ordering::Acquire) || !gate() { break; }
             // Agent reserve/fence and Matrix readiness are prerequisites for
             // runtime delivery. Each uses its own original-command cursor.
             let result = executor.poll_agent(agent_cursor.clone()).await;
@@ -205,12 +233,6 @@ async fn run_maintenance(
                 let result = executor.poll(runtime_cursor.clone()).await;
                 advance(&mut runtime_cursor, result);
             }
-            #[cfg(feature = "shared-successors")]
-            successors
-                .poll(executor.as_ref(), || {
-                    !control.retired.load(Ordering::Acquire) && gate()
-                })
-                .await;
             // Observe only after the native fence/process reconciliation in this
             // pass. Each receipt belongs to its original settlement command;
             // closing the mini app does not interrupt this native worker.
@@ -361,6 +383,45 @@ impl Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(feature = "shared-intake", feature = "shared-budget-execution"))]
+    #[tokio::test]
+    async fn one_message_wakes_intake_and_budget_while_maintenance_receipt_stays_retained() {
+        let worker = Worker::default();
+        let control = worker.control.clone();
+        let (changed, mut intake) = tokio::sync::watch::channel(());
+        let mut budget = changed.subscribe();
+        intake.borrow_and_update();
+        budget.borrow_and_update();
+        let (intake_done, intake_ready) = tokio::sync::oneshot::channel();
+        let (budget_done, budget_ready) = tokio::sync::oneshot::channel();
+        let (finish_maintenance, maintenance) = tokio::sync::oneshot::channel();
+        *worker.task.lock().await = Some(tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            tokio::join!(
+                async {
+                    wait_for_work(&control, Some(&mut intake), deadline).await;
+                    intake_done.send(()).unwrap();
+                },
+                async {
+                    wait_for_work(&control, Some(&mut budget), deadline).await;
+                    budget_done.send(()).unwrap();
+                },
+                async { maintenance.await.unwrap(); },
+            );
+        }));
+        changed.send_replace(());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            intake_ready.await.unwrap();
+            budget_ready.await.unwrap();
+        }).await.unwrap();
+        assert!(!worker.task.lock().await.as_ref().unwrap().is_finished());
+        worker.retire();
+        assert!(tokio::time::timeout(Duration::from_millis(20), worker.drain()).await.is_err());
+        finish_maintenance.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), worker.drain()).await.unwrap();
+        assert!(worker.task.lock().await.is_none());
+    }
 
     #[cfg(feature = "shared-budget-execution")]
     #[tokio::test]
