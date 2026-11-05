@@ -163,6 +163,8 @@ pub struct OwnerDashboardHost {
     #[rust] job: Option<(JobKind, Progress)>,
     #[rust] page: Option<Page>,
     #[rust] last_need: Option<SetupNeed>,
+    /// The switch value the app has not applied yet.
+    #[rust] pending_keep: Option<bool>,
 }
 
 impl OwnerDashboardHost {
@@ -240,7 +242,12 @@ impl OwnerDashboardHost {
         self.page = Some(page);
     }
 
-    fn options(&mut self, cx: &mut Cx, keep_running: bool) {
+    fn options(&mut self, cx: &mut Cx, saved: bool) {
+        // Until the app applies a switch change, show what the owner chose.
+        let keep_running = match self.pending_keep {
+            Some(pending) if pending != saved => pending,
+            _ => { self.pending_keep = None; saved }
+        };
         let Some(page) = &self.page else { return };
         let options = page.hosted.then(|| HostOptions { keep_running, busy: page.busy, foreign_service: page.foreign_service });
         self.dashboard(cx).set_options(cx, options);
@@ -305,7 +312,11 @@ impl OwnerDashboardHost {
             DashboardAction::StartService => { self.start(cx, JobKind::StartService); None }
             DashboardAction::UninstallService => { self.start(cx, JobKind::Uninstall); None }
             DashboardAction::CancelSetup => { if !self.fixture { hosting::cancel(); } None }
-            DashboardAction::KeepRunning(keep) => { cx.action(HostingAction::KeepRunning(keep)); None }
+            DashboardAction::KeepRunning(keep) => {
+                self.pending_keep = Some(keep);
+                cx.action(HostingAction::KeepRunning(keep));
+                None
+            }
             DashboardAction::ReviewApprovals => {
                 if !self.fixture && let Some(account) = &self.account
                     && self.dashboard(cx).view_state(cx).owner_id.as_deref() == Some(account.owner.as_str())

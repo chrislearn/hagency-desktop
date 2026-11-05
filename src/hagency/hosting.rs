@@ -401,13 +401,28 @@ fn static_code(code: &str) -> &'static str {
     KNOWN.iter().copied().find(|known| *known == code).unwrap_or("setup_failed")
 }
 
+/// Wait until no daemon serves `home` and its lock is free.
+#[cfg(unix)]
+fn released(home: &Path, timeout: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if daemon::hello(home, std::time::Duration::from_secs(2)).is_none()
+            && !matches!(::hagency::daemon::DaemonHome::open(home), Err(::hagency::daemon::HomeError::AlreadyRunning))
+        {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    false
+}
+
 /// Wait until the service reports this owner in a settled hosting state.
 #[cfg(unix)]
 fn confirm(home: &Path, owner: &str, timeout: std::time::Duration, cancel: &helper::Cancellation) -> Progress {
     use owner_dashboard::dto::HostingState;
     let start = std::time::Instant::now();
     while start.elapsed() < timeout && !cancel.cancelled() {
-        if let Some((_, hello)) = daemon::hello(home)
+        if let Some((_, hello)) = daemon::hello(home, std::time::Duration::from_secs(5))
             && hello.owner_id.as_deref() == Some(owner)
             && matches!(hello.hosting, HostingState::Running | HostingState::Paused | HostingState::Stopped)
         {
@@ -441,6 +456,19 @@ fn run_job(kind: JobKind, account: &Account, data_dir: &Path, cancel: &helper::C
             Err(Failure::Code("setup_failed")) => Progress::Failed("service_remove_failed"),
             Err(failure) => failed(failure),
         };
+    }
+    if kind == JobKind::Setup && installed_service() == Service::OtherProgram {
+        // A service of the former Hosting app would otherwise enroll and sign
+        // out with its own code over the socket. Remove it and wait until its
+        // daemon has released the home; the install below replaces it.
+        match run(command(&exe, &[OsStr::new("uninstall")]), Duration::from_secs(30), &helper::Cancellation::default(), false, || {}) {
+            Ok(_) => {}
+            Err(Failure::Code("setup_failed")) => return Progress::Failed("service_remove_failed"),
+            Err(failure) => return failed(failure),
+        }
+        if !released(locations.daemon_home(), Duration::from_secs(20)) {
+            return Progress::Failed("daemon_service_stop_pending");
+        }
     }
     if kind == JobKind::Setup {
         let stale = match execution(&locations, origin, owner) {
@@ -495,10 +523,10 @@ mod daemon {
     };
     use std::{path::Path, time::Duration};
 
-    pub fn hello(home: &Path) -> Option<(DaemonConnection, Hello)> {
+    pub fn hello(home: &Path, timeout: Duration) -> Option<(DaemonConnection, Hello)> {
         let mut connection = DaemonConnection::connect(&DaemonEndpoint::new(home)).ok()?;
         let request = Request { version: API_VERSION, request_id: new_request_id("odq"), owner_id: None, expected_revision: None, command: Command::Hello };
-        let hello = connection.call(&request, READ_TIMEOUT).ok()?.hello().ok()?;
+        let hello = connection.call(&request, timeout.min(READ_TIMEOUT)).ok()?.hello().ok()?;
         Some((connection, hello))
     }
 
@@ -509,7 +537,7 @@ mod daemon {
     /// Pause hosting of `owner` before Desktop exits. True when this call
     /// paused it (or may have), so the next start resumes it.
     pub fn pause_for_quit(home: &Path, owner: &str, timeout: Duration) -> bool {
-        let Some((mut connection, hello)) = hello(home) else { return false };
+        let Some((mut connection, hello)) = hello(home, Duration::from_secs(3)) else { return false };
         if hello.owner_id.as_deref() != Some(owner) || !matches!(hello.hosting, HostingState::Running | HostingState::Starting) {
             return false;
         }
@@ -523,7 +551,7 @@ mod daemon {
     /// Resume hosting that Desktop paused when it quit. `false` asks to retry
     /// later: the service is not reachable or busy yet.
     pub fn resume_after_start(home: &Path, owner: &str) -> bool {
-        let Some((mut connection, hello)) = hello(home) else { return false };
+        let Some((mut connection, hello)) = hello(home, READ_TIMEOUT) else { return false };
         if hello.owner_id.as_deref() != Some(owner) {
             // Another owner, or none: nothing of this owner's is paused.
             return true;
