@@ -14,8 +14,8 @@ version = "0.5.0-rc.2"
 metadata.makepad-auto-version = "zqpv-Yj-K7WNVK2I8h5Okhho46Q="
 
 [dependencies]
-hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "e5438832d3b73d18a1afaf9cbbc3292586a05ed9" }
-hagency-core = { git = "https://github.com/hagency-org/hagency-client.git", rev = "e5438832d3b73d18a1afaf9cbbc3292586a05ed9" }
+hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "edfee315f92efe5bf2ac201ffa2e59b293c542c6" }
+hagency-core = { git = "https://github.com/hagency-org/hagency-client.git", rev = "edfee315f92efe5bf2ac201ffa2e59b293c542c6" }
 hagency-owner-dashboard = { path = "crates/owner-dashboard" }
 octosense-theme-contract = { path = "crates/theme-contract", version = "0.1.0" }
 rinx-system-apps = { path = "crates/system-apps" }
@@ -154,7 +154,7 @@ reqwest = { version = "0.12", default-features = false, optional = true, feature
 # Host unit tests use dashboard snapshots without enabling fixtures in production.
 hagency-owner-dashboard = { path = "crates/owner-dashboard", features = ["fixtures"] }
 # Native writer fixtures must never acquire the user's installation authority.
-hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "e5438832d3b73d18a1afaf9cbbc3292586a05ed9", features = ["test-support"] }
+hagency = { git = "https://github.com/hagency-org/hagency-client.git", rev = "edfee315f92efe5bf2ac201ffa2e59b293c542c6", features = ["test-support"] }
 
 [[example]]
 name = "article_editor_review"
