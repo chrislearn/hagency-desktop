@@ -1,0 +1,94 @@
+name: Temporary Windows single-file launcher
+
+on:
+  push:
+    branches: [codex/windows-single-exe-prototype-20261105]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hagency-desktop-webview-test-windows-x64-v2
+          path: bundle
+          run-id: 41936936335
+          github-token: ${{ github.token }}
+
+      - name: Package the standalone launcher
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone --depth 1 --branch codex/windows-single-exe-prototype-20261105 https://github.com/hagency-org/hagency-desktop.git source
+          if ($LASTEXITCODE -ne 0) { throw 'Launcher checkout failed' }
+          if (-not (Test-Path bundle/rinx.exe) -or -not (Test-Path bundle/rinx/resources) -or -not (Test-Path bundle/makepad_widgets/resources)) { throw 'Incomplete application bundle' }
+          Compress-Archive -Path bundle/* -DestinationPath payload.zip -CompressionLevel Optimal
+          $env:HAGENCY_TEST_BUNDLE = (Resolve-Path payload.zip).Path
+          rustc --edition=2021 -C opt-level=1 -o Hagency-Desktop-WebView-Test.exe source/.github/windows-single-launcher.rs
+          if ($LASTEXITCODE -ne 0) { throw 'Launcher compilation failed' }
+          Get-FileHash Hagency-Desktop-WebView-Test.exe -Algorithm SHA256
+
+      - name: Test the copied executable on its own
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $standalone = Join-Path $env:RUNNER_TEMP 'standalone-test'
+          New-Item -ItemType Directory -Force -Path $standalone | Out-Null
+          Copy-Item Hagency-Desktop-WebView-Test.exe $standalone
+          $env:HAGENCY_DESKTOP_DATA_DIR = Join-Path $env:RUNNER_TEMP 'standalone-profile'
+          $env:MAKEPAD_NO_FOCUS = '1'
+          $stdout = Join-Path $env:RUNNER_TEMP 'standalone.stdout'
+          $stderr = Join-Path $env:RUNNER_TEMP 'standalone.stderr'
+          $exe = Join-Path $standalone 'Hagency-Desktop-WebView-Test.exe'
+          $process = Start-Process -FilePath $exe -ArgumentList '--remote' -WorkingDirectory $standalone -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          $port = $null
+          $childPid = $null
+          try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(360)
+            while ([DateTime]::UtcNow -lt $deadline -and -not $process.HasExited) {
+              if ((Test-Path $stdout) -and ((Get-Content $stdout -Raw) -match 'listening on 127\.0\.0\.1:(\d+) pid=(\d+)')) {
+                $port = $Matches[1]
+                $childPid = [int]$Matches[2]
+                break
+              }
+              Start-Sleep -Seconds 2
+              $process.Refresh()
+            }
+            if (-not $port) { throw 'Standalone application did not start' }
+            $root = "http://127.0.0.1:$port"
+            $ready = $false
+            $deadline = [DateTime]::UtcNow.AddSeconds(60)
+            while ([DateTime]::UtcNow -lt $deadline) {
+              try {
+                $snapshot = Invoke-RestMethod -TimeoutSec 5 "$root/snap?all=1"
+                if ($snapshot.s.Count -gt 0) { $ready = $true; break }
+              } catch { }
+              Start-Sleep -Seconds 2
+            }
+            if (-not $ready) { throw 'Standalone application window did not become ready' }
+            Invoke-WebRequest -TimeoutSec 5 "$root/quit" | Out-Null
+            if (-not $process.WaitForExit(60000)) { throw 'Standalone launcher did not exit cleanly' }
+            $process.Refresh()
+            if ($process.ExitCode -ne 0) { throw "Standalone launcher exited with $($process.ExitCode)" }
+            $logs = (Get-Content $stdout -Raw) + (Get-Content $stderr -Raw)
+            if ($logs -match 'Could not load resource|panicked at|Failed to save window state') { throw 'Standalone application reported an error' }
+            if (-not (Test-Path $env:HAGENCY_DESKTOP_DATA_DIR)) { throw 'Isolated profile was not created' }
+            Write-Output 'STANDALONE_APPLICATION_PASS'
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+            if ($childPid) { Stop-Process -Id $childPid -Force -ErrorAction SilentlyContinue }
+            if (Test-Path $stdout) { Get-Content $stdout }
+            if (Test-Path $stderr) { Get-Content $stderr }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hagency-desktop-webview-single-exe-prototype
+          path: Hagency-Desktop-WebView-Test.exe
+          if-no-files-found: error
+          retention-days: 3
