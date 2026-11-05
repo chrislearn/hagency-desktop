@@ -2,7 +2,7 @@ name: Temporary Windows single-file launcher
 
 on:
   push:
-    branches: [codex/windows-single-exe-prototype-20261105]
+    branches: [codex/windows-single-exe-pixels-20261105]
 
 permissions:
   contents: read
@@ -24,7 +24,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          git clone --depth 1 --branch codex/windows-single-exe-prototype-20261105 https://github.com/hagency-org/hagency-desktop.git source
+          git clone --depth 1 --branch codex/windows-single-exe-pixels-20261105 https://github.com/hagency-org/hagency-desktop.git source
           if ($LASTEXITCODE -ne 0) { throw 'Launcher checkout failed' }
           if (-not (Test-Path bundle/rinx.exe) -or -not (Test-Path bundle/rinx/resources) -or -not (Test-Path bundle/makepad_widgets/resources)) { throw 'Incomplete application bundle' }
           Compress-Archive -Path bundle/* -DestinationPath payload.zip -CompressionLevel Optimal
@@ -71,6 +71,40 @@ jobs:
               Start-Sleep -Seconds 2
             }
             if (-not $ready) { throw 'Standalone application window did not become ready' }
+            # Expose the real navigation rail without connecting an account.
+            foreach ($edit in @(@{path='login_screen_view';prop='visible';value='false'}, @{path='home_screen_view';prop='visible';value='true'})) {
+              $result = Invoke-RestMethod -Method Post -Uri "$root/tweak/apply" -ContentType 'application/json' -Body ($edit | ConvertTo-Json -Compress)
+              if ($result.err) { throw "Cannot prepare offline navigation: $($result.err)" }
+            }
+            Invoke-RestMethod "$root/tweak?on=0" | Out-Null
+            Start-Sleep -Seconds 3
+            $snapshot = Invoke-RestMethod "$root/snap?all=1"
+            $icons = @($snapshot.s | Where-Object { $_.ty -eq 'Icon' -and $_.r[2] -gt 0 -and $_.r[0] -lt 76 -and $_.r[1] -gt 110 -and $_.r[1] -lt 510 })
+            if ($icons.Count -lt 5) { throw 'Navigation icon areas are missing' }
+            $capture = Join-Path $env:RUNNER_TEMP 'standalone-navigation.png'
+            Invoke-WebRequest -TimeoutSec 30 "$root/g?raw=1" -OutFile $capture
+            Add-Type -AssemblyName System.Drawing
+            $bitmap = [System.Drawing.Bitmap]::new($capture)
+            try {
+              $dpi = (Invoke-RestMethod "$root/s").w[0].dpi
+              $visible = 0
+              foreach ($icon in $icons) {
+                $left = [int][Math]::Round($icon.r[0] * $dpi)
+                $top = [int][Math]::Round($icon.r[1] * $dpi)
+                $right = [Math]::Min($bitmap.Width, [int][Math]::Round(($icon.r[0] + $icon.r[2]) * $dpi))
+                $bottom = [Math]::Min($bitmap.Height, [int][Math]::Round(($icon.r[1] + $icon.r[3]) * $dpi))
+                $light = 0
+                for ($y = $top; $y -lt $bottom; $y++) {
+                  for ($x = $left; $x -lt $right; $x++) {
+                    $pixel = $bitmap.GetPixel($x, $y)
+                    if ($pixel.R -gt 130 -and $pixel.G -gt 130 -and $pixel.B -gt 130) { $light++ }
+                  }
+                }
+                if ($light -gt 15) { $visible++ }
+              }
+              if ($visible -lt 5) { throw "Only $visible navigation icons rendered" }
+              Write-Output "STANDALONE_NAVIGATION_ICONS_PASS count=$visible"
+            } finally { $bitmap.Dispose() }
             Invoke-WebRequest -TimeoutSec 5 "$root/quit" | Out-Null
             if (-not $process.WaitForExit(60000)) { throw 'Standalone launcher did not exit cleanly' }
             $process.Refresh()
@@ -88,7 +122,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: hagency-desktop-webview-single-exe-prototype
+          name: hagency-desktop-webview-single-exe-pixels-probe
           path: Hagency-Desktop-WebView-Test.exe
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7
