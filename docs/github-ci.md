@@ -161,3 +161,16 @@ PR #132 and a fix for software adapters that reject video acceleration.
 All Makepad crates, standalone tools, dashboard and
 controller workspaces resolve to that commit. The tracked accessibility
 patch is applied to an isolated checkout of the same revision.
+
+## 0.5.0-rc.2 packaging
+
+The regression gate and the macOS installer job run on `macos-15`, whose image
+has no downloadable PingFang asset: CoreText resolves `PingFangSC-Regular` to
+the hidden `PingFangUI.ttc`, whose faces carry other names, so the loader keeps
+the bundled fonts by design. Tests that assert PingFang selection skip with a
+printed reason when `article_makepad::apple_fonts::installed()` is false;
+developer Macs with the asset still run them. Makepad is pinned to
+`a0ad1839c61cecbd7e83251cfb7d50d7a725ee48` (`fix/hagency-windows-platform-tests`
+in `OctoSense-org/makepad`): the Windows system-browser revision `7c6f6cc8` plus
+a typed `sum::<usize>()` in `platform/src/retained_instances.rs`, which Windows
+needs because WebView2 brings `serde_json` into makepad-platform's test build.

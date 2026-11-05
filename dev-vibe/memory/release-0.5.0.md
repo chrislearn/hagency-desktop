@@ -1,6 +1,18 @@
 # Desktop 0.5.0 发布
 
-更新：2026-11-04。
+更新：2026-11-05。
+
+## 2026-11-05 rc.2 发布
+
+用户要求重新发布，包含最新的 Windows 工作和聊天历史的本地修复，并要求快速完成；由 Claude 执行。
+
+- [v0.5.0-rc.2](https://github.com/hagency-org/hagency-desktop/releases/tag/v0.5.0-rc.2) 于 2026-11-05 06:16:32 UTC 公开为 prerelease，没有替换 stable latest。标签和全部二进制源码统一为 Desktop `b00459166744dab2ec8433da8176b1521f064e21`（`work/hagency-desktop-local-20261028` 顶端）。
+- Client 固定为 `19539818e927a2a2328eebba91d8736fab22c9c6`：Codex 的 agent-startup-history 分支（加密房间分页读取历史、原始／继任／预算三种执行驱动接入、消息和密钥事件唤醒加五秒兜底），含 Claude 的历史硬化修复 94850cad。Codex 通过 PR #4（763b5a7e）合入的内容与 Claude 的直接合并逐字节一致。
+- Makepad 固定为 `a0ad1839c61cecbd7e83251cfb7d50d7a725ee48`（OctoSense fork 分支 `fix/hagency-windows-platform-tests`）：即 Codex 的 Windows 系统浏览器分支 `codex/windows-system-browser-20261104` 顶端 7c6f6cc8 加一行测试修复——`platform/src/retained_instances.rs` 的 `sum()` 在 Windows 上因 WebView2 把 serde_json 带入依赖图而类型歧义，makepad-platform 的 lib 测试无法编译，release.yml 的 Windows 图形启动检查因此失败。Codex 若继续该 fork 分支，请基于 a0ad1839。
+- 桌面侧还包含待批 Agent 权限请求的应用内提醒、房间角标、Agent 标签提示和原位置卡片（859adaca），以及 Windows 系统浏览器、分隔条命中范围和光标可见性（66515d20）。`windows-single-exe-*` 分支是测试启动器，未纳入。
+- 发布由 release.yml 第四次 dispatch（run 41966327510，publish=true，macos-arm64-windows，hosting=true）自动打标签并发布。前三次失败：(1) 待批提醒三条文案未进翻译目录；(2) 门禁自 1827126e 起改在 macOS 15 机器运行，`apple-chat-fonts`／`apple-system-fonts` 失败——探针（临时 probe 分支，run 41964220918，已删除）证实 macOS 15.8.2 镜像没有 PingFang 字体资产，CoreText 把 PingFangSC-Regular 指向 PingFangUI.ttc，其中只有 `.PingFangUIText…-Default` 变量字体和 Medium 字重；现在 `article_makepad::apple_fonts::installed()` 为假时相关断言测试显式跳过并打印原因，目录错误用例改为不依赖系统字体；(3) 上述 Makepad 编译错误。
+- 恰好三个安装包：`hagency-desktop-macos-arm64.dmg`（154,623,798 字节）、`hagency-desktop-windows-amd64.exe`（116,828,093）、`hagency-hosting-macos-arm64.dmg`（91,986,406），附两个 build report 和三个 SHA256SUMS。回归门禁在 macOS 15 机器上全部通过；两平台打包任务内的安装启动冒烟、Windows 图形启动检查、Hosting 生命周期和语言切换检查全部通过。rc.1 额外做过的独立 verify_only 验证和人工截图检查本次没有做；Mac 仍为 ad-hoc 签名，Windows 未签名。
+- 本地证据在 `hagency-desktop-context-20261104/.rc2-*.log`（按 CI 原命令复现：桌面 766 单测、契约 10、字体 7、makepad-platform 3）。Codex 历史修复的 River 真机复测仍未做，仍待用户授权。macOS 打包任务在 GitHub 2 核机器上耗时约 2 小时；用户问能否自建，River 主机（M2 Pro 10 核，macOS 14.8.5，未装 Rust）可注册为 self-hosted runner 承担 macOS 任务，Linux 机器做不了 Windows 和 macOS 包。
 
 ## 2026-11-04 RC 发布
 
