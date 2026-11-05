@@ -1,10 +1,9 @@
-//! Owner-daemon connector shared by the standalone controller and Hagency.
+//! Owner-daemon connector of the hosting dashboard.
 //!
 //! Wire format follows `hagency::daemon::protocol` (API version 1): a 4-byte
 //! big-endian length, then one UTF-8 JSON object of at most 64 KiB, over the
 //! private socket `<daemon home>/control.sock`. This module depends only on
-//! `std`, `libc` and serde so the standalone controller links no Matrix SDK,
-//! async runtime or Hagency engine.
+//! `std`, `libc` and serde: it never blocks the UI thread on an async runtime.
 //!
 //! Safety checks mirror the daemon's `DaemonClient`: the home directory and
 //! socket must belong to this user with no group/other access, and the peer
@@ -439,9 +438,9 @@ pub fn status_for_transport(error: &TransportError) -> ConnectionStatus {
 /// Which owner the connector scopes requests to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OwnerScope {
-    /// Standalone: adopt the daemon's enrolled owner reported by `hello`.
+    /// Adopt the daemon's enrolled owner reported by `hello` (diagnostics).
     Discover,
-    /// Embedded: the host's signed-in account. A different daemon owner is
+    /// The host's signed-in account. A different daemon owner is
     /// reported as [`ConnectionStatus::OwnerMismatch`] and never displayed.
     Fixed(String),
 }

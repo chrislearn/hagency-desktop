@@ -43,14 +43,64 @@ impl Tab {
     }
 }
 
-/// Which shell hosts the widget. Only changes the cross-host "open" action
-/// and keyboard shortcut ownership.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HostMode {
+/// Why hosting must be set up on this computer before anything runs for the
+/// signed-in owner (ADR-192). The host decides it from durable state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetupNeed {
+    /// Hosting has not been set up for this account on this computer.
+    NotSetUp,
+    /// An earlier hosting sign-in names another owner root. Setting up again
+    /// signs it out and hosts the account's one registered root.
+    Replace,
+    /// The hosting service on this computer serves another account. One user
+    /// of a computer can host one account's resource pool at a time.
+    OtherOwner,
+}
+
+/// Progress of the host's setup job.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SetupProgress {
     #[default]
-    Standalone,
-    Embedded,
+    Idle,
+    /// Registering the owner root and clearing an earlier sign-in.
+    Preparing,
+    /// The owner signs this computer in through the browser. Cancellable.
+    SigningIn,
+    /// Cancellation was requested; the helper finishes it safely first.
+    Cancelling,
+    /// Installing and starting the background service.
+    Enabling,
+    /// The service is installed; waiting for it to report hosting.
+    Confirming,
+    /// A static failure code, presented by [`crate::i18n::phrase::setup_failure`].
+    Failed { code: String },
+}
+
+/// The setup page shown instead of the dashboard while `need` applies, or
+/// while the host's setup job is still running.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SetupView {
+    pub need: SetupNeed,
+    pub progress: SetupProgress,
+}
+
+impl SetupView {
+    pub fn running(&self) -> bool {
+        matches!(self.progress, SetupProgress::Preparing | SetupProgress::SigningIn | SetupProgress::Cancelling
+            | SetupProgress::Enabling | SetupProgress::Confirming)
+    }
+}
+
+/// Host controls shown with a hosted owner's dashboard.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HostOptions {
+    /// Keep the resource pool running after the host app quits.
+    pub keep_running: bool,
+    /// A service installation or removal is in progress.
+    pub busy: bool,
+    /// The installed service runs another program than this app (for
+    /// example an earlier separate Hosting app). Reinstalling moves it here.
+    pub foreign_service: bool,
 }
 
 /// The host's view of its daemon connection. Reported by the host; the
@@ -174,7 +224,7 @@ impl PendingCommand {
     }
 }
 
-/// Scoped, credential-free UI state used for restore and host handover.
+/// Scoped, credential-free UI state (navigation, filters and paging).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ViewState {
@@ -192,15 +242,7 @@ pub struct ViewState {
     pub period: Option<UsagePeriod>,
     pub scroll_y: f64,
     pub pages: std::collections::BTreeMap<String, usize>,
-    /// Ephemeral handover destination, consumed by the receiving host. Never
-    /// retained as a dashboard preference or used to make an approval decision.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub intent: Option<NavigationIntent>,
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum NavigationIntent { ReviewApprovals }
 
 impl ViewState {
     pub fn usage_filter(&self) -> crate::dto::UsageFilter {
@@ -223,10 +265,16 @@ pub enum DashboardAction {
     StopHosting(CommandTicket),
     /// Re-send the original command ID to look up an uncertain outcome.
     CheckCommand { kind: CommandKind, ticket: CommandTicket },
-    OpenInHagency(ViewState),
-    OpenStandalone(ViewState),
-    /// Daemon absent, unconfigured, or sign-in renewal.
+    /// Set up hosting for this owner (or retry it), including a renewed sign-in.
     OpenSetup,
+    /// Stop waiting for the browser sign-in of a running setup.
+    CancelSetup,
+    /// Install and start the background service of an enrolled owner.
+    StartService,
+    /// Keep the resource pool running after the host app quits.
+    KeepRunning(bool),
+    /// Remove the background service; its sign-in and resources are kept.
+    UninstallService,
     /// Open the owner's shared tool approvals and resource Agent requests.
     ReviewApprovals,
     /// Read-only navigation notifications for hosts that mirror location.
@@ -314,15 +362,20 @@ pub struct DashboardState {
     pub command: Option<PendingCommand>,
     pub confirm_stop: bool,
     pub view: ViewState,
-    pub host: HostMode,
     pub locale: Locale,
+    /// `Some` while hosting must be set up (or setup is running): the setup
+    /// page replaces the dashboard.
+    pub setup: Option<SetupView>,
+    /// Host controls for a hosted owner, when the host offers them.
+    pub options: Option<HostOptions>,
+    pub confirm_uninstall: bool,
     /// Deterministic request IDs for tests and fixtures.
     pub request_ids: Option<Vec<String>>,
 }
 
 impl DashboardState {
-    pub fn new(host: HostMode, locale: Locale) -> Self {
-        Self { host, locale, view: ViewState { version: 1, ..Default::default() }, ..Default::default() }
+    pub fn new(locale: Locale) -> Self {
+        Self { locale, view: ViewState { version: 1, ..Default::default() }, ..Default::default() }
     }
 
     fn new_ticket(&mut self, now_ms: u64) -> CommandTicket {
@@ -394,8 +447,56 @@ impl DashboardState {
         self.confirm_stop = false;
         self.refreshing = false;
         self.connection = ConnectionStatus::Connecting;
+        self.setup = None;
+        self.options = None;
+        self.confirm_uninstall = false;
         self.view = ViewState { version: 1, owner_id: self.owner_scope.clone(), tab: keep_tab, ..Default::default() };
         true
+    }
+
+    /// Show the setup page (`Some`) or the dashboard (`None`).
+    pub fn set_setup(&mut self, setup: Option<SetupView>) -> bool {
+        if self.setup == setup {
+            return false;
+        }
+        if setup.is_some() {
+            self.confirm_stop = false;
+            self.confirm_uninstall = false;
+        }
+        self.setup = setup;
+        true
+    }
+
+    pub fn set_options(&mut self, options: Option<HostOptions>) -> bool {
+        if self.options == options {
+            return false;
+        }
+        if options.as_ref().is_none_or(|o| o.busy) {
+            self.confirm_uninstall = false;
+        }
+        self.options = options;
+        true
+    }
+
+    /// Ask for confirmation before removing the background service.
+    pub fn request_uninstall(&mut self) -> bool {
+        if self.options.as_ref().is_none_or(|o| o.busy) || self.setup.is_some() {
+            return false;
+        }
+        self.confirm_stop = false;
+        self.confirm_uninstall = true;
+        true
+    }
+
+    pub fn cancel_uninstall(&mut self) {
+        self.confirm_uninstall = false;
+    }
+
+    /// The confirmed removal, or `None` when it is no longer allowed.
+    pub fn confirm_uninstall(&mut self) -> Option<DashboardAction> {
+        let allowed = self.confirm_uninstall && self.options.as_ref().is_some_and(|o| !o.busy) && self.setup.is_none();
+        self.confirm_uninstall = false;
+        allowed.then_some(DashboardAction::UninstallService)
     }
 
     pub fn recover_command(&mut self, mut command: PendingCommand) {
@@ -555,15 +656,8 @@ impl DashboardState {
         if state.owner_id.is_some() && state.owner_id != self.owner_scope {
             return false;
         }
-        self.view = ViewState { owner_id: self.owner_scope.clone(), version: 1, intent: None, ..state };
+        self.view = ViewState { owner_id: self.owner_scope.clone(), version: 1, ..state };
         true
-    }
-
-    pub fn open_other_host(&self) -> DashboardAction {
-        match self.host {
-            HostMode::Standalone => DashboardAction::OpenInHagency(self.view.clone()),
-            HostMode::Embedded => DashboardAction::OpenStandalone(self.view.clone()),
-        }
     }
 
     // ----- presentation -------------------------------------------------
@@ -584,7 +678,6 @@ pub struct Presentation {
     pub hosting: Option<HostingCard>,
     pub command: Option<CommandLine>,
     pub stop_confirm: bool,
-    pub open_other_label: &'static str,
     pub attention: Vec<AttentionItem>,
     pub accounts: Vec<AccountCard>,
     pub unassigned: Vec<ResourceRow>,
@@ -594,14 +687,53 @@ pub struct Presentation {
     pub activities: Vec<ActivityRow>,
     pub detail: Option<ResourceDetail>,
     pub empty_page: Option<EmptyPage>,
+    pub setup_page: Option<SetupPage>,
+    pub options: Option<OptionsCard>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BannerAction {
     Retry,
     Setup,
+    StartService,
     SignIn,
     None,
+}
+
+impl BannerAction {
+    /// The host action this banner button requests, if any.
+    pub fn action(self) -> Option<DashboardAction> {
+        match self {
+            Self::Setup | Self::SignIn => Some(DashboardAction::OpenSetup),
+            Self::StartService => Some(DashboardAction::StartService),
+            Self::Retry | Self::None => None,
+        }
+    }
+}
+
+/// The page shown instead of the dashboard while hosting must be set up.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SetupPage {
+    pub status: Status,
+    pub title: String,
+    pub body: String,
+    /// Progress or failure of the running setup.
+    pub progress: Option<Status>,
+    pub busy: bool,
+    /// Label of the start/retry button, when setup may start.
+    pub start: Option<&'static str>,
+    pub can_cancel: bool,
+}
+
+/// Host controls under the hosting card.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OptionsCard {
+    pub keep_running: bool,
+    pub keep_running_title: &'static str,
+    pub keep_running_body: &'static str,
+    pub busy: bool,
+    pub foreign_service: Option<&'static str>,
+    pub uninstall_confirm: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1067,6 +1199,10 @@ pub fn rejection_reason(code: &str, locale: Locale) -> &'static str {
 }
 
 fn banner(state: &DashboardState, locale: Locale) -> Option<Banner> {
+    // The setup page explains a missing setup itself.
+    if state.setup.is_some() {
+        return None;
+    }
     let has_data = state.snapshot.is_some();
     let last_known = if has_data { format!(" {}", tr(locale, Msg::ShowingLastKnown)) } else { String::new() };
     let make = |tone, glyph, title: Msg, body: String, primary, secondary| Banner {
@@ -1083,7 +1219,7 @@ fn banner(state: &DashboardState, locale: Locale) -> Option<Banner> {
         ConnectionStatus::DaemonUnavailable => Some(make(
             Tone::Caution, Glyph::Offline, Msg::DaemonAbsentTitle,
             format!("{}{last_known}", tr(locale, Msg::DaemonAbsentBody)),
-            BannerAction::Setup, BannerAction::Retry,
+            BannerAction::StartService, BannerAction::Retry,
         )),
         ConnectionStatus::Incompatible { daemon_version } => Some(make(
             Tone::Critical, Glyph::Warning, Msg::IncompatibleTitle,
@@ -1098,7 +1234,7 @@ fn banner(state: &DashboardState, locale: Locale) -> Option<Banner> {
         ConnectionStatus::OwnerMismatch => Some(make(
             Tone::Caution, Glyph::Warning, Msg::OwnerMismatchTitle,
             tr(locale, Msg::OwnerMismatchBody).to_owned(),
-            BannerAction::Setup, BannerAction::Retry,
+            BannerAction::Retry, BannerAction::None,
         )),
         ConnectionStatus::UnsupportedPlatform => Some(make(
             Tone::Neutral, Glyph::Info, Msg::UnsupportedPlatformTitle,
@@ -1114,7 +1250,7 @@ fn banner(state: &DashboardState, locale: Locale) -> Option<Banner> {
 }
 
 fn empty_page(state: &DashboardState, locale: Locale) -> Option<EmptyPage> {
-    if state.snapshot.is_some() {
+    if state.snapshot.is_some() || state.setup.is_some() {
         return None;
     }
     // With a banner (daemon absent, incompatible, sign-in, failure) the banner
@@ -1220,7 +1356,7 @@ fn present(state: &DashboardState, clock: Clock) -> Presentation {
             show_pause: matches!(st, HostingState::Running | HostingState::Starting),
             show_resume: matches!(st, HostingState::Paused | HostingState::Draining | HostingState::Stopped | HostingState::Failed | HostingState::Offline),
             show_stop: matches!(st, HostingState::Running | HostingState::Starting | HostingState::Paused | HostingState::Draining),
-            show_setup: matches!(st, HostingState::Unconfigured | HostingState::Failed),
+            show_setup: st == HostingState::Unconfigured,
         }
     });
     let accounts = snapshot
@@ -1301,10 +1437,6 @@ fn present(state: &DashboardState, clock: Clock) -> Presentation {
         hosting,
         command: command_line(state, clock, locale),
         stop_confirm: state.confirm_stop,
-        open_other_label: tr(locale, match state.host {
-            HostMode::Standalone => Msg::OpenInHagency,
-            HostMode::Embedded => Msg::OpenStandalone,
-        }),
         attention: snapshot.map(|s| attention(state, s, locale)).unwrap_or_default(),
         accounts,
         unassigned,
@@ -1324,7 +1456,54 @@ fn present(state: &DashboardState, clock: Clock) -> Presentation {
         activities,
         detail,
         empty_page: empty_page(state, locale),
+        setup_page: setup_page(state, locale),
+        options: options_card(state, locale),
     }
+}
+
+fn setup_page(state: &DashboardState, locale: Locale) -> Option<SetupPage> {
+    let setup = state.setup.as_ref()?;
+    let (glyph, tone, title, body) = match setup.need {
+        SetupNeed::NotSetUp => (Glyph::Setup, Tone::Neutral, Msg::SetupTitle, Msg::SetupBody),
+        SetupNeed::Replace => (Glyph::Setup, Tone::Caution, Msg::SetupReplaceTitle, Msg::SetupReplaceBody),
+        SetupNeed::OtherOwner => (Glyph::Warning, Tone::Caution, Msg::SetupOtherOwnerTitle, Msg::SetupOtherOwnerBody),
+    };
+    let progress = match &setup.progress {
+        SetupProgress::Idle => None,
+        SetupProgress::Preparing => Some(Status::new(Tone::Progress, Glyph::Clock, tr(locale, Msg::SetupPreparing))),
+        SetupProgress::SigningIn => Some(Status::new(Tone::Progress, Glyph::Clock, tr(locale, Msg::SetupSigningIn))),
+        SetupProgress::Cancelling => Some(Status::new(Tone::Progress, Glyph::Clock, tr(locale, Msg::SetupCancelling))),
+        SetupProgress::Enabling => Some(Status::new(Tone::Progress, Glyph::Clock, tr(locale, Msg::SetupEnabling))),
+        SetupProgress::Confirming => Some(Status::new(Tone::Progress, Glyph::Clock, tr(locale, Msg::SetupConfirming))),
+        SetupProgress::Failed { code } => Some(Status::new(Tone::Critical, Glyph::Cross, phrase::setup_failure(locale, code))),
+    };
+    let start = match (&setup.need, &setup.progress) {
+        (SetupNeed::OtherOwner, _) => None,
+        (_, SetupProgress::Idle) => Some(tr(locale, Msg::SetUpHosting)),
+        (_, SetupProgress::Failed { .. }) => Some(tr(locale, Msg::TryAgain)),
+        _ => None,
+    };
+    Some(SetupPage {
+        status: Status::new(tone, glyph, tr(locale, title)),
+        title: tr(locale, title).into(),
+        body: tr(locale, body).into(),
+        busy: setup.running(),
+        progress,
+        start,
+        can_cancel: setup.progress == SetupProgress::SigningIn,
+    })
+}
+
+fn options_card(state: &DashboardState, locale: Locale) -> Option<OptionsCard> {
+    let options = state.options.as_ref().filter(|_| state.setup.is_none() && state.snapshot.is_some())?;
+    Some(OptionsCard {
+        keep_running: options.keep_running,
+        keep_running_title: tr(locale, Msg::KeepRunningTitle),
+        keep_running_body: tr(locale, if options.keep_running { Msg::KeepRunningOn } else { Msg::KeepRunningOff }),
+        busy: options.busy,
+        foreign_service: options.foreign_service.then(|| tr(locale, Msg::ForeignService)),
+        uninstall_confirm: state.confirm_uninstall,
+    })
 }
 
 #[cfg(test)]

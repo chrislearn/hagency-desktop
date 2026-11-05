@@ -4,7 +4,9 @@
 //! synthetic and labeled `example.test`; no production code path reads it and
 //! no fixture is presented as live data.
 use crate::format::Clock;
-use crate::model::{CommandKind, CommandResult, ConnectionStatus, DashboardState};
+use crate::model::{
+    CommandKind, CommandResult, ConnectionStatus, DashboardState, HostOptions, SetupNeed, SetupProgress, SetupView,
+};
 use hagency_metering::TokenCounts;
 use hagency_metering::dashboard::{
     Activity, DASHBOARD_API_VERSION, DashboardSnapshot, HostingState, HostingStatus, OwnerIdentity, ProviderAccount,
@@ -27,7 +29,17 @@ pub const SCENARIOS: &[&str] = &[
     "connecting", "daemon-absent", "incompatible", "auth-expired", "failed", "unconfigured", "starting",
     "running", "paused", "draining", "stopped", "offline", "hosting-failed", "empty", "large", "long-names",
     "shared-account", "unknown", "stale", "rejected", "uncertain", "awaiting", "stop-confirm", "disconnected",
+    "setup", "setup-replace", "setup-other-owner", "setup-signing-in", "setup-confirming", "setup-failed",
+    "hosted", "hosted-off", "hosted-stopped", "uninstall-confirm", "foreign-service",
 ];
+
+fn setup(need: SetupNeed, progress: SetupProgress) -> Option<SetupView> {
+    Some(SetupView { need, progress })
+}
+
+fn options(keep_running: bool) -> Option<HostOptions> {
+    Some(HostOptions { keep_running, busy: false, foreign_service: false })
+}
 
 fn counts(input: u64, output: u64, read: u64, write: u64) -> TokenCounts {
     TokenCounts { input: Some(input), output: Some(output), cache_read: Some(read), cache_write: Some(write) }
@@ -223,7 +235,7 @@ fn shared_account() -> DashboardSnapshot {
 
 /// Build a state for a named scenario. Unknown names return `None`.
 pub fn scenario(name: &str) -> Option<DashboardState> {
-    let mut state = DashboardState::new(crate::model::HostMode::Standalone, crate::i18n::Locale::En);
+    let mut state = DashboardState::new(crate::i18n::Locale::En);
     state.request_ids = Some((1..=8).map(|i| format!("fixture-{i}")).collect());
     state.set_owner_scope(Some(OWNER));
     let apply = |state: &mut DashboardState, s: DashboardSnapshot| {
@@ -296,6 +308,24 @@ pub fn scenario(name: &str) -> Option<DashboardState> {
         "disconnected" => {
             apply(&mut state, ordinary(HostingState::Running));
             state.connection_failed("The hosting service closed the connection.");
+        }
+        "setup" => { state.set_setup(setup(SetupNeed::NotSetUp, SetupProgress::Idle)); }
+        "setup-replace" => { state.set_setup(setup(SetupNeed::Replace, SetupProgress::Idle)); }
+        "setup-other-owner" => { state.set_setup(setup(SetupNeed::OtherOwner, SetupProgress::Idle)); }
+        "setup-signing-in" => { state.set_setup(setup(SetupNeed::NotSetUp, SetupProgress::SigningIn)); }
+        "setup-confirming" => { state.set_setup(setup(SetupNeed::NotSetUp, SetupProgress::Confirming)); }
+        "setup-failed" => {
+            state.set_setup(setup(SetupNeed::NotSetUp, SetupProgress::Failed { code: "daemon_sign_in_cancelled".into() }));
+        }
+        "hosted" | "hosted-off" | "uninstall-confirm" | "foreign-service" => {
+            apply(&mut state, ordinary(HostingState::Running));
+            state.set_options(options(name != "hosted-off"));
+            if name == "uninstall-confirm" { state.request_uninstall(); }
+            if name == "foreign-service" { state.options.as_mut()?.foreign_service = true; }
+        }
+        "hosted-stopped" => {
+            apply(&mut state, ordinary(HostingState::Stopped));
+            state.set_options(options(true));
         }
         _ => return None,
     }
