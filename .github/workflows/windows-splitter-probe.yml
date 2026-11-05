@@ -59,6 +59,18 @@ jobs:
             if ($process.MainWindowHandle -eq [IntPtr]::Zero -or -not [CursorProbe]::ClientToScreen($process.MainWindowHandle, [ref]$origin)) { throw 'Window coordinates unavailable' }
             $dpi = $status.w[0].dpi
             $expected = [CursorProbe]::LoadCursorW([IntPtr]::Zero, [IntPtr]32644)
+            function Read-ProbeCount([int]$previous) {
+              Invoke-RestMethod "$root/event?data=cursor-count" | Out-Null
+              for ($attempt = 0; $attempt -lt 20; $attempt++) {
+                $observations = [regex]::Matches((Get-Content $stdout -Raw), 'CURSOR_DISPLAY_COUNT=(-?\d+)')
+                if ($observations.Count -gt $previous) { return [int]$observations[$observations.Count - 1].Groups[1].Value }
+                Start-Sleep -Milliseconds 250
+              }
+              throw 'Cursor counter response unavailable'
+            }
+            if (-not [CursorProbe]::SetCursorPos(($origin.x + [int][Math]::Round(220 * $dpi)), ($origin.y + [int][Math]::Round(180 * $dpi)))) { throw 'Cannot move pointer' }
+            Start-Sleep -Milliseconds 500
+            $initialCount = Read-ProbeCount 0
             foreach ($x in @(255, 256, 260, 261, 262, 263, 264, 268, 269)) {
               if (-not [CursorProbe]::SetCursorPos(($origin.x + [int][Math]::Round($x * $dpi)), ($origin.y + [int][Math]::Round(180 * $dpi)))) { throw 'Cannot move pointer' }
               Start-Sleep -Milliseconds 500
@@ -68,18 +80,17 @@ jobs:
               Write-Output "CURSOR_PROBE x=$x resize=$($info.cursor -eq $expected)"
               if ($info.cursor -ne $expected) { throw "Resize cursor missing at x=$x" }
             }
+            $hoverCount = Read-ProbeCount 1
+            if ($hoverCount -ne $initialCount) { throw "Mouse movement changed display count: $initialCount -> $hoverCount" }
             Invoke-RestMethod "$root/event?data=hide-cursor" | Out-Null
             Start-Sleep -Milliseconds 500
-            $info = New-Object CursorProbe+CursorInfo
-            $info.size = [Runtime.InteropServices.Marshal]::SizeOf($info)
-            if (-not [CursorProbe]::GetCursorInfo([ref]$info)) { throw 'Cannot inspect hidden cursor' }
-            if (($info.flags -band 1) -ne 0) { throw 'Cursor remained visible after hide' }
+            $hiddenCount = Read-ProbeCount 2
+            if ($hiddenCount -ne ($hoverCount - 1)) { throw "Hide changed count unexpectedly: $hoverCount -> $hiddenCount" }
             Invoke-RestMethod "$root/event?data=show-cursor" | Out-Null
             Start-Sleep -Milliseconds 500
-            $info = New-Object CursorProbe+CursorInfo
-            $info.size = [Runtime.InteropServices.Marshal]::SizeOf($info)
-            if (-not [CursorProbe]::GetCursorInfo([ref]$info)) { throw 'Cannot inspect restored cursor' }
-            if (($info.flags -band 1) -eq 0) { throw 'Cursor remained hidden after show' }
+            $restoredCount = Read-ProbeCount 3
+            if ($restoredCount -ne $hoverCount) { throw "Show did not restore count: $hiddenCount -> $restoredCount" }
+            Write-Output "CURSOR_COUNTS initial=$initialCount hover=$hoverCount hidden=$hiddenCount restored=$restoredCount"
             Write-Output 'CURSOR_VISIBILITY_PASS'
             Write-Output 'SPLITTER_CURSOR_PASS'
           } finally {

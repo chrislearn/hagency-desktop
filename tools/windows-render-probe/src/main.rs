@@ -1,6 +1,12 @@
 pub use makepad_widgets;
 use makepad_widgets::*;
 
+#[cfg(target_os = "windows")]
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn ShowCursor(show: i32) -> i32;
+}
+
 app_main!(App);
 
 script_mod! {
@@ -44,6 +50,13 @@ impl AppMain for App {
             match command.as_str() {
                 "hide-cursor" => cx.set_cursor(MouseCursor::Hidden),
                 "show-cursor" => cx.set_cursor(MouseCursor::Default),
+                #[cfg(target_os = "windows")]
+                "cursor-count" => unsafe {
+                    // Probe this UI thread's counter without changing it.
+                    ShowCursor(1);
+                    let count = ShowCursor(0);
+                    println!("CURSOR_DISPLAY_COUNT={count}");
+                },
                 _ => {}
             }
         }
