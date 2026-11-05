@@ -570,6 +570,8 @@ pub struct NavigationTabBar {
     /// The tab currently visually marked as selected.
     #[rust] selected_tab: SelectedTab,
     #[rust] mobile_palette: Option<(WidgetUid, SelectedTab)>,
+    /// Whether the Agent tab currently shows the pending-permission alert.
+    #[rust] approval_alert: Option<bool>,
 }
 
 impl ScriptHook for NavigationTabBar {
@@ -639,6 +641,27 @@ impl NavigationTabBar {
             }
         }
         self.mobile_palette = Some(palette);
+    }
+}
+
+impl NavigationTabBar {
+    /// A permission request that waits for this account turns the Agent tab
+    /// red, with a dot after its label, until the request is decided or gone.
+    fn apply_approval_alert(&mut self, cx: &mut Cx) {
+        let pending = crate::hagency::pending_approvals::total();
+        let alert = pending > 0;
+        let label = self.view.label(cx, ids!(agent_button.label));
+        let text = if alert { format!("{} ●", crate::i18n::tr("Agent")) } else { crate::i18n::tr("Agent").to_owned() };
+        if self.approval_alert == Some(alert) && label.text() == text {
+            return;
+        }
+        self.approval_alert = Some(alert);
+        let color = if alert { self.appearance.role("color.status.danger.foreground") } else { self.appearance.ink };
+        let mut icon = self.view.icon(cx, ids!(agent_button.icon));
+        script_apply_eval!(cx, icon, {draw_icon +: {color: #(color)}});
+        label.set_text(cx, &text);
+        label.set_text_color(cx, color);
+        self.view.redraw(cx);
     }
 }
 
@@ -740,6 +763,7 @@ impl Widget for NavigationTabBar {
         // first draw so a new mobile bar doesn't remain visually unselected
         // until a tap or an unrelated sync signal arrives.
         self.apply_selected_tab(cx, None);
+        self.apply_approval_alert(cx);
         // Every rail tooltip follows the interface language, including after a switch.
         for (id, tooltip) in [
             (ids!(home_button), crate::i18n::tr("All Rooms")),

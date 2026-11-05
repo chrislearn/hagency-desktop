@@ -640,14 +640,18 @@ impl RoomsListEntryContent {
             latest_message.show_plaintext(cx, crate::i18n::tr("[No recent messages]"));
         }
 
+        // A permission request waiting for this account counts like a mention:
+        // the Agent is blocked until someone decides, usually within two minutes.
+        let pending_approvals = crate::hagency::pending_approvals::count_for_room(room_info.room_name_id.room_id());
+        let mentions = room_info.num_unread_mentions.saturating_add(pending_approvals);
         self.view.unread_badge(cx, ids!(unread_badge)).update_counts(
-            room_info.is_marked_unread,
-            room_info.num_unread_mentions,
+            room_info.is_marked_unread || pending_approvals > 0,
+            mentions,
             room_info.num_unread_messages,
         );
         if self.mobile {
             self.view.view(cx, ids!(muted_indicator)).set_visible(cx, room_info.notification_mode == Some(matrix_sdk::notification_settings::RoomNotificationMode::Mute));
-            let count = room_info.num_unread_messages.max(room_info.num_unread_mentions);
+            let count = room_info.num_unread_messages.max(mentions);
             self.view.view(cx, ids!(mobile_badge)).set_visible(cx, room_info.is_marked_unread || count > 0);
             let text = if count > 99 { "99+".into() } else if count == 0 { "•".into() } else { count.to_string() };
             self.view.label(cx, ids!(count)).set_text(cx, &text);

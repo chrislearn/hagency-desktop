@@ -244,10 +244,13 @@ impl ApprovalCardState {
     }
 }
 
-/// The four button slots, in the order hagency lists them.
-const BUTTON_SLOTS: [(&str, &[LiveId]); 4] = [
+/// The button slots, in the order hagency lists them. A shared-execution
+/// request offers `approve_session` instead of `approve_task`; both share the
+/// second slot because no request ever offers both.
+const BUTTON_SLOTS: [(&str, &[LiveId]); 5] = [
     ("approve_once", ids!(button_row.approve_once_button)),
     ("approve_task", ids!(button_row.approve_task_button)),
+    ("approve_session", ids!(button_row.approve_task_button)),
     ("approve_always", ids!(button_row.approve_always_button)),
     ("deny", ids!(button_row.deny_button)),
 ];
