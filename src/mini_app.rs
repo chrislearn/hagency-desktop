@@ -1,6 +1,7 @@
 //! Matrix mini-app cards: native article packages and separate WebKit link apps.
 
 use makepad_widgets::*;
+use makepad_widgets::makepad_platform::event::NativeSystemBrowserNavigation;
 use ruma::{
     OwnedTransactionId, OwnedUserId, TransactionId,
     events::room::message::{MessageType, RoomMessageEventContent},
@@ -409,6 +410,8 @@ pub struct MiniAppPanel {
     #[rust]
     browser_open: bool,
     #[rust]
+    browser_error: bool,
+    #[rust]
     pending: bool,
     #[rust]
     transaction: Option<OwnedTransactionId>,
@@ -466,13 +469,19 @@ impl MiniAppPanel {
         self.view(cx, ids!(chat_picker)).set_visible(cx, false);
         self.view(cx, ids!(viewer)).set_visible(cx, true);
         self.button(cx, ids!(mini_share)).set_visible(cx, true);
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows"))]
         {
+            #[cfg(not(target_os = "windows"))]
             cx.system_browser(BROWSER).spawn(&app.url);
+            #[cfg(target_os = "windows")]
+            if let Ok(url) = url::Url::parse(&app.url) {
+                crate::shared::web_browser::WebBrowser::spawn_webview(cx, BROWSER, &url, self.owner.as_ref());
+            }
             self.browser_open = true;
+            self.browser_error = false;
             self.status(cx, "");
         }
-        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
         self.status(
             cx,
             crate::i18n::tr("Use Open in browser to view this mini app on this platform."),
@@ -576,6 +585,18 @@ impl Widget for MiniAppPanel {
         self.view.handle_event(cx, event, scope);
         if let Event::Actions(actions) = event {
             for action in actions {
+                if let Some(navigation) = action.downcast_ref::<NativeSystemBrowserNavigation>() {
+                    if navigation.browser_id == BROWSER.0 && self.browser_open {
+                        if navigation.error.is_some() {
+                            self.browser_error = true;
+                            self.status(cx, crate::i18n::tr("Unable to load this page in the app. Use Open in browser."));
+                        } else if navigation.loading {
+                            self.browser_error = false;
+                            self.status(cx, "");
+                        }
+                        self.redraw(cx);
+                    }
+                }
                 if let Some(sent) = action.downcast_ref::<MiniAppSent>() {
                     if self.owner.as_ref() == Some(&sent.owner)
                         && self.transaction.as_ref() == Some(&sent.transaction)
@@ -696,7 +717,7 @@ impl Widget for MiniAppPanel {
         }
         if self.browser_open {
             let area = self.view(cx, ids!(web_surface)).area();
-            cx.system_browser(BROWSER).update(area, true);
+            cx.system_browser(BROWSER).update(area, !self.browser_error);
         }
         DrawStep::done()
     }

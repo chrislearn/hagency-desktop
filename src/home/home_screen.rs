@@ -1623,10 +1623,10 @@ mod mini_apps_side_tests {
         let browser = reader.browser_id();
         assert_eq!(
             browser.is_some(),
-            cfg!(any(target_os = "macos", target_os = "ios", target_os = "android")),
+            cfg!(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "windows")),
             "the web tab has a native browser only on supported platforms"
         );
-        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "windows")))]
         assert_eq!(
             reader.borrow().unwrap().label(&mut cx, ids!(web_status)).text(),
             crate::i18n::tr("In-app browsing is unavailable on this platform. Use Open in browser."),

@@ -1,5 +1,6 @@
 //! In-app reader for ordinary chat links, backed by the platform browser.
 use makepad_widgets::*;
+use makepad_widgets::makepad_platform::event::NativeSystemBrowserNavigation;
 use url::Url;
 use std::sync::Arc;
 use ruma::{OwnedEventId, OwnedRoomId, OwnedUserId};
@@ -210,6 +211,18 @@ impl WebTab {
 }
 
 impl WebBrowser {
+    pub(crate) fn spawn_webview(cx: &mut Cx, id: LiveId, url: &Url, _account: Option<&OwnedUserId>) {
+        #[cfg(target_os = "windows")]
+        {
+            let root = crate::app_data_dir();
+            let account = _account
+                .map(|user| crate::accounts::account_dir(root, user.as_ref()))
+                .unwrap_or_else(|| root.join("webview-unattached"));
+            cx.system_browser(id).set_data_directory(account.join("webview2"));
+        }
+        cx.system_browser(id).spawn_navigable(url.as_str());
+    }
+
     fn session(&self) -> ReaderSession {
         let mut session = ReaderSession::default();
         for (index, tab) in self.tabs.iter().enumerate() {
@@ -272,10 +285,11 @@ impl WebBrowser {
         let spawned = cfg!(any(
             target_os = "macos",
             target_os = "ios",
-            target_os = "android"
+            target_os = "android",
+            target_os = "windows"
         ));
         if spawned {
-            cx.system_browser(id).spawn_navigable(url.as_str());
+            Self::spawn_webview(cx, id, &url, self.session_account.as_ref());
         }
         self.tabs.push(WebTab {
             id,
@@ -524,7 +538,11 @@ impl WebBrowser {
             cx,
             &crate::i18n::format("Opened link: {0}", &[("0", url.to_string())]),
         );
-        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+        if let Some(status) = status {
+            self.label(cx, ids!(web_status)).set_visible(cx, true);
+            self.label(cx, ids!(web_status)).set_text(cx, &status);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "windows")))]
         {
             self.label(cx, ids!(web_status)).set_visible(cx, true);
             self.label(cx, ids!(web_status)).set_text(
@@ -607,6 +625,18 @@ impl Widget for WebBrowser {
                 if let Some(result) = action.downcast_ref::<RestoredMarkdown>() {
                     self.finish_markdown_restore(cx, result);
                 }
+                if let Some(navigation) = action.downcast_ref::<NativeSystemBrowserNavigation>() {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id.0 == navigation.browser_id) {
+                        if let Some(error) = &navigation.error {
+                            log!("In-app browser failed: {}", error);
+                            tab.status = Some(crate::i18n::tr("Unable to load this page in the app. Use Open in browser.").to_string());
+                        } else if navigation.loading {
+                            tab.status = None;
+                        }
+                        self.update_header(cx);
+                        self.redraw(cx);
+                    }
+                }
             }
             if self.active().is_some_and(|tab| tab.article.is_some()) {
                 self.update_header(cx);
@@ -686,10 +716,14 @@ impl Widget for WebBrowser {
                 if let Some(tab) = self.active().filter(|tab| tab.spawned) {
                     // Apple's backend ignores set_url when it equals the last
                     // requested URL, even after a page navigates itself.
-                    cx.system_browser(tab.id).close();
-                    if let Some(url) = &tab.original_url {
-                        cx.system_browser(tab.id).spawn_navigable(url.as_str());
+                    let id = tab.id;
+                    let url = tab.original_url.clone();
+                    cx.system_browser(id).close();
+                    if let Some(url) = &url {
+                        Self::spawn_webview(cx, id, url, self.session_account.as_ref());
                     }
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) { tab.status = None; }
+                    self.update_header(cx);
                     self.redraw(cx);
                 }
             }
@@ -732,7 +766,8 @@ impl Widget for WebBrowser {
         }
         if let Some(id) = self.browser_id() {
             let area = self.view(cx, ids!(web_surface)).area();
-            cx.system_browser(id).update(area, !self.host_hidden);
+            let visible = !self.host_hidden && self.active().is_some_and(|tab| tab.status.is_none());
+            cx.system_browser(id).update(area, visible);
         }
         DrawStep::done()
     }
@@ -914,6 +949,34 @@ mod session_tests {
             },
         );
         assert!(browser.session().tabs.is_empty());
+    }
+
+    #[test]
+    fn browser_failure_is_scoped_to_its_tab_and_a_new_navigation_clears_it() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let browser = browser(&mut cx);
+        let mut inner = browser.borrow_mut().unwrap();
+        inner.open(&mut cx, "https://example.org/first".parse().unwrap());
+        inner.open(&mut cx, "https://example.org/second".parse().unwrap());
+        let first = inner.tabs[0].id;
+        let actions = cx.capture_actions(|cx| cx.action(NativeSystemBrowserNavigation {
+            browser_id: first.0,
+            error: Some("runtime unavailable".into()),
+            ..Default::default()
+        }));
+        inner.handle_event(&mut cx, &Event::Actions(actions), &mut Scope::empty());
+        assert!(inner.tabs[0].status.is_some());
+        assert!(inner.tabs[1].status.is_none());
+        inner.select_tab(&mut cx, 0);
+        assert_eq!(inner.label(&mut cx, ids!(web_status)).text(),
+            crate::i18n::tr("Unable to load this page in the app. Use Open in browser."));
+        let actions = cx.capture_actions(|cx| cx.action(NativeSystemBrowserNavigation {
+            browser_id: first.0,
+            loading: true,
+            ..Default::default()
+        }));
+        inner.handle_event(&mut cx, &Event::Actions(actions), &mut Scope::empty());
+        assert!(inner.tabs[0].status.is_none());
     }
 
     #[test]
