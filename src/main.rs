@@ -20,6 +20,13 @@ fn main() {
         }
         return;
     }
+    // The per-user owner daemon runs from this binary (ADR-192): the
+    // LaunchAgent starts `<this executable> daemon run --home <home>`, and
+    // Desktop's hosting setup runs `daemon enroll` and `daemon install`.
+    // It never starts the UI.
+    if let Some(status) = hagency::daemon::cli::run_if_requested() {
+        std::process::exit(status);
+    }
     #[cfg(feature = "onboarding-test-support")]
     {
         let args: Vec<_> = std::env::args_os().collect();
