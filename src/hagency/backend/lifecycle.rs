@@ -13,7 +13,7 @@ impl Service {
     pub(super) fn revoke_resumption(&self) -> Result<(), String> {
         self.0.logout_requested.store(true, Ordering::Release);
         self.retire();
-        if let Some(home)=self.daemon_assignment()? {
+        if let Some(home)=self.daemon_home()? {
             return ::hagency::daemon::revocation::request(&home,&self.0.origin,&self.0.owner).map_err(str::to_owned);
         }
         if self.0.remote.lock().unwrap_or_else(|p|p.into_inner()).is_some() {return Ok(());}
@@ -25,7 +25,7 @@ impl Service {
         if let Some(owner) = registered.as_ref() {
             owner.retire_and_revoke_resumption().map_err(|e| e.code)?;
         } else {
-            NativeOwner::revoke_saved_matrix_resumption(&self.0.state, &self.0.origin, &self.0.owner)
+            NativeOwner::revoke_saved_matrix_resumption(self.root()?, &self.0.origin, &self.0.owner)
                 .map_err(|e| e.code)?;
         }
         Ok(())
@@ -41,10 +41,11 @@ impl Service {
         } else if let Some(client) = crate::sliding_sync::get_client() {
             let owner = client.user_id().ok_or("matrix_sign_in_required")?;
             let origin = client.homeserver().to_string();
-            let state = Self::state_for(&origin, owner.as_str())?;
-            if let Some(home)=Self::assignment_for(&origin,owner.as_str(),&state)? {
+            if let Some(home)=Self::daemon_home_for(&origin,owner.as_str())? {
                 ::hagency::daemon::revocation::request(&home,&origin,owner.as_str()).map_err(str::to_owned)?;
             } else {
+                let locations = crate::hagency::hosting::Locations::system()?;
+                let state = Self::state_for(&locations, &origin, owner.as_str())?;
                 NativeOwner::revoke_saved_matrix_resumption(&state, &origin, owner.as_str()).map_err(|e| e.code)?;
             }
         }
@@ -67,7 +68,7 @@ impl Service {
     async fn finish_close(&self) -> Result<(), String> {
         self.retire();
         if self.0.logout_requested.load(Ordering::Acquire) {
-            if let Some(home)=self.daemon_assignment()? {
+            if let Some(home)=self.daemon_home()? {
                 let remote=::hagency::daemon::bridge::ControllerClient::new(home,self.0.owner.clone(),self.0.origin.clone(),self.0.epoch+1);
                 // The client persists the owner-scoped revocation fence before
                 // socket IO. Offline delivery may finish later; a persistence
@@ -142,8 +143,7 @@ impl Service {
             if let Some(client)=crate::sliding_sync::get_client() {
                 let owner=client.user_id().ok_or("matrix_sign_in_required")?.to_string();
                 let origin=client.homeserver().to_string();
-                let state=Self::state_for(&origin,&owner)?;
-                if let Some(home)=Self::assignment_for(&origin,&owner,&state)? {
+                if let Some(home)=Self::daemon_home_for(&origin,&owner)? {
                     let remote=::hagency::daemon::bridge::ControllerClient::new(home,owner,origin,crate::account_session::epoch()+1);
                     // The client persists the owner-scoped revocation fence before
                 // socket IO. Offline delivery may finish later; a persistence
