@@ -1,0 +1,74 @@
+name: Compare copied Windows executable with its resource bundle
+
+on:
+  push:
+    branches: [codex/windows-copy-only-probe-20261105]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe:
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hagency-desktop-webview-test-windows-x64
+          path: bundle
+          run-id: 41931366072
+          github-token: ${{ github.token }}
+
+      - name: Compare the original application in isolated directories
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:GITHUB_WORKSPACE 'inspection'
+          $solo = Join-Path $env:RUNNER_TEMP 'exe-only'
+          New-Item -ItemType Directory -Force -Path $out, $solo | Out-Null
+          Copy-Item bundle/rinx.exe "$solo/rinx.exe"
+          $env:MAKEPAD_NO_FOCUS = '1'
+          foreach ($case in @('solo', 'bundle')) {
+            $exe = if ($case -eq 'solo') { "$solo/rinx.exe" } else { Join-Path $env:GITHUB_WORKSPACE 'bundle/rinx.exe' }
+            $cwd = if ($case -eq 'solo') { $solo } else { Join-Path $env:GITHUB_WORKSPACE 'bundle' }
+            $env:HAGENCY_DESKTOP_DATA_DIR = Join-Path $env:RUNNER_TEMP "profile-$case"
+            New-Item -ItemType Directory -Force -Path $env:HAGENCY_DESKTOP_DATA_DIR | Out-Null
+            $stdout = Join-Path $out "$case.stdout"
+            $stderr = Join-Path $out "$case.stderr"
+            $process = Start-Process -FilePath $exe -ArgumentList '--remote' -WorkingDirectory $cwd -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+            $port = $null
+            try {
+              $deadline = [DateTime]::UtcNow.AddSeconds(75)
+              while ([DateTime]::UtcNow -lt $deadline -and -not $process.HasExited) {
+                if ((Test-Path $stdout) -and ((Get-Content $stdout -Raw) -match 'listening on 127\.0\.0\.1:(\d+)')) { $port = $Matches[1]; break }
+                Start-Sleep -Seconds 2
+                $process.Refresh()
+              }
+              if (-not $port) { Write-Output "CASE ${case}: application endpoint unavailable"; continue }
+              $root = "http://127.0.0.1:$port"
+              Start-Sleep -Seconds 4
+              foreach ($edit in @(@{path='login_screen_view';prop='visible';value='false'}, @{path='home_screen_view';prop='visible';value='true'})) {
+                $result = Invoke-RestMethod -Method Post -Uri "$root/tweak/apply" -ContentType 'application/json' -Body ($edit | ConvertTo-Json -Compress)
+                if ($result.err) { throw "Cannot prepare navigation for ${case}: $($result.err)" }
+              }
+              Invoke-RestMethod "$root/tweak?on=0" | Out-Null
+              Start-Sleep -Seconds 3
+              Invoke-RestMethod "$root/snap?all=1" | ConvertTo-Json -Depth 20 | Set-Content "$out/$case.snapshot.json"
+              Invoke-WebRequest -TimeoutSec 30 "$root/g?raw=1" -OutFile "$out/$case.png"
+              Write-Output "CASE ${case}: capture ready"
+            } catch {
+              Write-Output "CASE ${case}: $_"
+            } finally {
+              if ($port) { try { Invoke-WebRequest -TimeoutSec 5 "http://127.0.0.1:$port/quit" | Out-Null } catch { } }
+              if (-not $process.WaitForExit(5000)) { Stop-Process -Id $process.Id -Force }
+            }
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-copy-only-inspection
+          path: inspection/
+          if-no-files-found: error
+          retention-days: 3
