@@ -76,7 +76,7 @@ pub enum MiniAppsAction {
     /// The Agent sidebar entry: open or focus Hagency without notification routing.
     OpenAgent,
     /// Read-only owner review landing; never a personal marker-inbox route.
-    ReviewOwnerApprovals { owner: String, handover_id: Option<u64> },
+    ReviewOwnerApprovals { owner: String },
     /// The assistant opened the reviewed app: show its review; Run grants it.
     OpenReviewed,
     /// Untrusted notification routing hint; backend authorization remains mandatory.
@@ -2183,8 +2183,8 @@ impl MiniAppsPanelRef {
                     }
                     modal.open(cx);
                 }
-                MiniAppsAction::ReviewOwnerApprovals { owner, handover_id } => {
-                    inner.open_owner_approvals(cx, owner, *handover_id);
+                MiniAppsAction::ReviewOwnerApprovals { owner } => {
+                    inner.open_owner_approvals(cx, owner);
                     modal.open(cx);
                 }
                 MiniAppsAction::OpenPalpo(id) => {

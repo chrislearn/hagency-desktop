@@ -36,7 +36,6 @@ use crate::octoscript_apps::{MiniAppsAction, MiniAppsPanelWidgetRefExt};
 use crate::miniapps::window::MiniAppsWindowHostWidgetRefExt;
 use crate::miniapps::side::MiniAppsSideRegionWidgetRefExt;
 use crate::hagency::ui::{HagencyAction, HagencyPanelWidgetRefExt};
-use crate::hagency::owner_dashboard::Coordinator as OwnerDashboardCoordinator;
 use crate::settings::theme_studio::{ThemeStudioAction, ThemeStudioWidgetRefExt};
 use crate::article_app::{ArticleAction, ArticlePanelWidgetRefExt};
 use crate::mini_app::{MiniAppAction, MiniAppPanelWidgetRefExt};
@@ -254,7 +253,8 @@ pub struct App {
     /// is told within the request's two-minute window wherever they are.
     #[rust] approvals_timer: Timer,
     #[rust] lifecycle: AppLifecycle,
-    #[rust] owner_dashboard: OwnerDashboardCoordinator,
+    /// A resume of hosting that Desktop paused at its last quit is running.
+    #[rust] hosting_resume: bool,
     /// The details of a room we're waiting on to be loaded so that we can navigate to it.
     /// This can be either a room we're waiting to join, or one we're waiting to be invited to.
     /// Also includes an optional room ID to be closed once the awaited room has been loaded.
@@ -346,6 +346,22 @@ impl MatchEvent for App {
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         if self.ui.button(cx, ids!(hagency_management_modal.content.close)).clicked(actions) {
             cx.action(HagencyAction::Close);
+        }
+        for action in actions {
+            match action.downcast_ref::<crate::hagency::owner_dashboard::HostingAction>() {
+                Some(crate::hagency::owner_dashboard::HostingAction::KeepRunning(keep)) => {
+                    self.app_state.app_prefs.keep_hosting_after_quit = *keep;
+                    self.app_state.app_prefs.on_hosting_changed(cx);
+                }
+                Some(crate::hagency::owner_dashboard::HostingAction::Resumed { owner, settled }) => {
+                    self.hosting_resume = false;
+                    if *settled && current_user_id().is_some_and(|id| id.as_str() == owner) {
+                        self.app_state.app_prefs.hosting_paused_on_quit = false;
+                        self.app_state.app_prefs.on_hosting_changed(cx);
+                    }
+                }
+                None => {}
+            }
         }
         let invite_confirmation_modal_content = self.ui.confirmation_modal(cx, ids!(invite_confirmation_modal.content));
         if let Some(_accepted) = invite_confirmation_modal_content.closed(actions) {
@@ -1368,19 +1384,7 @@ impl AppMain for App {
         crate::theme::system::handle_event(cx, event);
         if self.approvals_timer.is_event(event).is_some() {
             crate::hagency::pending_approvals::poll();
-        }
-        if let Some(restore) = self.owner_dashboard.handle_event(cx, event) {
-            if let crate::hagency::owner_dashboard::EmbeddedAction::Restore { id, ref view } = restore
-                && view.intent == Some(owner_dashboard::NavigationIntent::ReviewApprovals)
-                && let Some(owner) = view.owner_id.clone()
-            {
-                // The MiniApp acknowledges only after its same-owner landing
-                // is installed. Restoring Hosting alone is not acceptance.
-                self.dock_mini_apps_action(cx, &MiniAppsAction::ReviewOwnerApprovals { owner, handover_id: Some(id) });
-            } else {
-                self.dock_mini_apps_action(cx, &MiniAppsAction::OpenAgent);
-                cx.action(restore);
-            }
+            self.resume_hosting_paused_at_quit();
         }
         // Peek at Back instead of `back_pressed()`, which marks it handled: Back
         // is taken only when it closes one of these modals. Otherwise it goes on
@@ -1874,6 +1878,20 @@ impl App {
         }
     }
 
+    /// Resume hosting that Desktop paused at its last quit, off the UI thread.
+    /// A service that is not reachable yet is retried on the next tick.
+    fn resume_hosting_paused_at_quit(&mut self) {
+        if !self.app_state.app_prefs.hosting_paused_on_quit || self.hosting_resume || self.lifecycle.shutdown_started {
+            return;
+        }
+        let Some(owner) = current_user_id() else { return };
+        let owner = owner.to_string();
+        self.hosting_resume = std::thread::Builder::new().name("owner-hosting-resume".into()).spawn(move || {
+            let settled = crate::hagency::hosting::resume_after_start(&owner);
+            Cx::post_action(crate::hagency::owner_dashboard::HostingAction::Resumed { owner, settled });
+        }).is_ok();
+    }
+
     fn handle_shutdown(&mut self, cx: &mut Cx) {
         if self.lifecycle.shutdown_started {
             // log!("Ignoring duplicate shutdown lifecycle event.");
@@ -1881,6 +1899,15 @@ impl App {
         }
         self.lifecycle.shutdown_started = true;
         crate::hagency::backend::Service::begin_process_shutdown();
+
+        // The owner chose not to keep the resource pool running after Desktop
+        // quits: pause hosting now, and resume it at the next start.
+        if !self.app_state.app_prefs.keep_hosting_after_quit
+            && let Some(owner) = current_user_id()
+            && crate::hagency::hosting::pause_for_quit(owner.as_str(), Duration::from_secs(10))
+        {
+            self.app_state.app_prefs.hosting_paused_on_quit = true;
+        }
 
         self.persist_runtime_state(cx, "shutdown");
 

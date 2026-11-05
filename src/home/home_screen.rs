@@ -1300,25 +1300,30 @@ mod mini_apps_side_tests {
         deliver(cx, home, state, clicked);
     }
 
+    /// The Agent tab's Hosting page, through the production dock: setup
+    /// replaces the dashboard until the daemon hosts the owner (ADR-192).
     #[cfg(feature = "onboarding-test-support")]
     #[test]
-    fn closed_agent_tab_restores_before_the_next_draw() {
-        use crate::hagency::owner_dashboard::EmbeddedAction;
+    fn agent_tab_hosting_page_shows_setup_until_the_daemon_hosts() {
+        use crate::hagency::hosting::{Execution, SetupReason, View};
         let (mut cx, mut home, mut state) = home(1440.0);
         frame(&mut cx, &mut home, &mut state, 1440.0);
         let region = side(&mut cx, &home);
-        region.close_all(&mut cx);
-        frame(&mut cx, &mut home, &mut state, 1440.0);
-        // Match production ordering: OpenAgent, then the queued Restore,
-        // with no layout/prepare/draw in between.
         region.open(&mut cx, &MiniAppsAction::OpenAgent);
         let surface = region.surface(&mut cx, region.selected().unwrap());
-        surface.owner_fixture(&mut cx, owner_dashboard::fixtures::scenario("running").unwrap());
-        let view = owner_dashboard::ViewState { version: 1, owner_id: Some(owner_dashboard::fixtures::OWNER.into()), tab: owner_dashboard::Tab::Usage, ..Default::default() };
-        let actions = cx.capture_actions(|cx| cx.action(EmbeddedAction::Restore { id: 17, view }));
-        let emitted = cx.capture_actions(|cx| home.handle_event(cx, &Event::Actions(actions), &mut Scope::with_data(&mut state)));
-        assert!(emitted.iter().any(|action| matches!(action.downcast_ref::<EmbeddedAction>(), Some(EmbeddedAction::Restored { id: 17, accepted: true, .. }))));
-        assert_eq!(surface.owner_fixture_view(&mut cx).unwrap().tab, owner_dashboard::Tab::Usage);
+        let setup = View { execution: Some(Ok(Execution::Setup(SetupReason::NotEnrolled))), service: None, job: None, generation: 1 };
+        surface.owner_fixture_hosting(&mut cx, &setup, true);
+        frame(&mut cx, &mut home, &mut state, 1440.0);
+        assert_eq!(surface.hosting_state(&mut cx), Some(true), "the Hosting tab is in front");
+        let visible = |cx: &Cx, path: &[LiveId]| surface.widget(cx, path).visible();
+        assert!(visible(&cx, ids!(owner_host.dashboard.od_setup_page)));
+        assert!(!visible(&cx, ids!(owner_host.dashboard.od_overview)));
+        let hosted = View { execution: Some(Ok(Execution::Daemon { home: "/h".into() })), service: None, job: None, generation: 2 };
+        surface.owner_fixture_hosting(&mut cx, &hosted, true);
+        surface.update_owner_fixture(&mut cx, owner_dashboard::fixtures::ordinary(owner_dashboard::dto::HostingState::Running));
+        frame(&mut cx, &mut home, &mut state, 1440.0);
+        assert!(!visible(&cx, ids!(owner_host.dashboard.od_setup_page)));
+        assert!(visible(&cx, ids!(owner_host.dashboard.od_options_card)));
         region.close_all(&mut cx);
     }
 
