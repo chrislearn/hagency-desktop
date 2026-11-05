@@ -2220,7 +2220,7 @@
   "Open the authenticated approval inbox for a tool request": "Open the authenticated approval inbox for a tool request",
   "Agent is working…": "Agent is working…",
   "Message queued; waiting for Agent.": "Message queued; waiting for Agent.",
-  "Run interrupted; no final answer confirmed. Budget remains reserved until usage is verified.": "Run interrupted; no final answer confirmed. Budget remains reserved until usage is verified.",
+  "Run interrupted; no final answer confirmed. Send the message again if you still need it.": "Run interrupted; no final answer confirmed. Send the message again if you still need it.",
   "Agent run failed.": "Agent run failed.",
   "Message could not start. Check the resource and Agent connection.": "Message could not start. Check the resource and Agent connection.",
   "Agent is paused.": "Agent is paused.",

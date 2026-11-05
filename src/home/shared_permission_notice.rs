@@ -27,7 +27,7 @@ fn execution_notice(value:&Value,room:&str,thread:&str)->Option<&'static str> {
     match row["state"].as_str()? {
         "started"=>Some("Agent is working…"),
         "pending"|"queued"|"acknowledged"|"bound"=>Some("Message queued; waiting for Agent."),
-        "unknown"=>Some("Run interrupted; no final answer confirmed. Budget remains reserved until usage is verified."),
+        "unknown"=>Some("Run interrupted; no final answer confirmed. Send the message again if you still need it."),
         "failed"=>Some("Agent run failed."),
         "blocked"=>Some("Message could not start. Check the resource and Agent connection."),
         "paused"=>Some("Agent is paused."),
