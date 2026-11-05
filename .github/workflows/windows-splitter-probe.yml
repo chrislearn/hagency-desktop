@@ -59,7 +59,7 @@ jobs:
             if ($process.MainWindowHandle -eq [IntPtr]::Zero -or -not [CursorProbe]::ClientToScreen($process.MainWindowHandle, [ref]$origin)) { throw 'Window coordinates unavailable' }
             $dpi = $status.w[0].dpi
             $expected = [CursorProbe]::LoadCursorW([IntPtr]::Zero, [IntPtr]32644)
-            foreach ($x in @(260, 261, 262, 263, 264)) {
+            foreach ($x in @(255, 256, 260, 261, 262, 263, 264, 268, 269)) {
               if (-not [CursorProbe]::SetCursorPos(($origin.x + [int][Math]::Round($x * $dpi)), ($origin.y + [int][Math]::Round(180 * $dpi)))) { throw 'Cannot move pointer' }
               Start-Sleep -Milliseconds 500
               $info = New-Object CursorProbe+CursorInfo
