@@ -18,14 +18,14 @@ Pinned Palpo 的 createRoom 先写房间、canonical_alias 和 initial_state，�
 ## 回归与真实使用
 
 - Engine：`cargo test --locked -p hagency --lib console::owned_agents::direct::`，7通过，包括候选身份/隐私验证、歧义、状态读取失败、越界/重复列表及原有持久化与索引测试。
-- Desktop：全量 lib 测试（`onboarding-test-support`），767通过、0失败、2项原有忽略；该轮使用与提交内容相同的明确本地引擎副本。配对锁文件下的 locked check 退出0。
+- Desktop（macOS arm64）：全量 lib 测试（`onboarding-test-support`），767通过、0失败、2项原有忽略；该轮使用与提交内容相同的明确本地引擎副本。配对锁文件下的 locked check 退出0。
 - 本地 Server：127.0.0.1:19888，三个全新 PostgreSQL 数据库、独立 Desktop 配置和测试账号。真实 OAuth → 创建 Local-Debug-Reply-1105 → 私聊创建及 Agent 入群 → 连接本机已有 Codex 账号 → 保存 GPT-6.1-Sol / low → 启动 → 真实回复 `LOCAL_AGENT_REPLY_OK`。账本 settled，input4624 / output33 / cached_input3584 / reasoning_output23，reservation10000。回包后停止该测试服务。
 - 原账号、原 Agent、原房间（river.ominix.io:19443）：chris-agent2 的原 hello 保留。状态先正确显示 Needs attention；点击原私聊设置重试，记录从 creating/null 经过 created、pending 到 active/lastError null。服务器回读绑定 active，Agent 实际加入原房间。
 - 同一原房间发送 `Please reply only ORIGINAL_AGENT_REPLY_OK. Do not use any tools.`，原 Agent 真实回复 `ORIGINAL_AGENT_REPLY_OK`。账本 settled，input7095 / output9 / cached_input6016，reservation10000。未增加原账号预算，未手改运行记录、删除未知执行或创建替代身份/房间。
 
 ## 验证边界与复现
 
-初期使用本地 Cargo override 的调试构建曾被严格源码 pin 门禁拒绝，原始失败日志保留。PR 已改为 GitHub 固定修复提交，4处依赖与3个锁文件的源码 pin 检查通过。首轮最终 pin 驱动的全局 CARGO_TARGET_DIR 将脚本 VM 放到了驱动未预期的位置，完整 bundle 检查因找不到可执行文件而失败；已保留原日志，第二轮使用默认 target 布局重新运行，未修改检查器或产品代码来绕过它。正在对最终远端 pin 运行完整回归驱动。此文不将本地调试视为签名发布、sandbox 或 two-Agent 资格。
+初期使用本地 Cargo override 的调试构建曾被严格源码 pin 门禁拒绝，原始失败日志保留。PR 已改为 GitHub 固定修复提交，4处依赖与3个锁文件的源码 pin 检查通过。首轮最终 pin 驱动的全局 CARGO_TARGET_DIR 将脚本 VM 放到了驱动未预期的位置，完整 bundle 检查因找不到可执行文件而失败；已保留原日志，第二轮使用默认 target 布局重新运行，未修改检查器或产品代码来绕过它。最终远端 pin 的完整回归驱动已退出0，101项检查全部通过（Rust 选择器计数有重叠，不作为独立测试总数）。普通 `cargo build --locked --bin rinx` 也已退出0，无需本地 override。修复相关7项 owner-direct 测试还在 shared-budget-execution/resource-adoption 完整功能配置下再次通过。此文不将本地调试视为签名发布、sandbox 或 two-Agent 资格。
 
 原账号回归曾误启动两个相同数据目录开发实例，导致 OAuth/清理互斥错误；关闭重复实例并确认只运行一个初始化完成的应用后，正常 SDK 刷新恢复，随后完成原房间回包。该调试错误不作为原线上故障的根因。
 
