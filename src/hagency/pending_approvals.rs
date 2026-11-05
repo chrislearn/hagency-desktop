@@ -158,7 +158,7 @@ pub fn apply(cx: &mut Cx, update: &PendingApprovalsUpdate) -> bool {
     for p in announce {
         let (title, summary) = describe(&p.row);
         enqueue_popup_notification(
-            format!("{title}\n{summary}\n{}", crate::i18n::tr("Open the room or the Agent page to decide. / 到房间或 Agent 页面决定。")),
+            format!("{title}\n{summary}\n{}", crate::i18n::tr("Open the room or the Agent page to decide.")),
             PopupKind::Info,
             Some(20.0),
         );
@@ -179,7 +179,7 @@ pub fn apply_decided(update: &PendingApprovalDecided) {
     }
     if let Err(error) = &update.result {
         enqueue_popup_notification(
-            format!("{} {}", crate::i18n::tr("Could not send the decision: / 决定未能发送："), decide_error(error)),
+            format!("{} {}", crate::i18n::tr("Could not send the decision:"), decide_error(error)),
             PopupKind::Error,
             Some(8.0),
         );
@@ -255,7 +255,7 @@ pub fn describe(row: &Value) -> (String, String) {
     if row["encryptedPending"] == true {
         return (
             format!("{name} · request on its way / 请求还在路上"),
-            crate::i18n::tr("Waiting for the encrypted details from the Agent's device. / 正在等待 Agent 设备发来的加密详情。").to_owned(),
+            crate::i18n::tr("Waiting for the encrypted details from the Agent's device.").to_owned(),
         );
     }
     let request = &a["request"];
