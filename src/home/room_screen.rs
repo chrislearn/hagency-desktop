@@ -1567,6 +1567,17 @@ impl Widget for RoomScreen {
                     if let Some(tl)=self.tl_state.as_mut() {tl.profile_drawn_since_last_update.clear();tl.content_drawn_since_last_update.clear();}
                     self.view.redraw(cx);
                 }
+                // Shared-execution requests arrive and resolve outside the timeline:
+                // re-populate so their cards appear, update and disappear in place.
+                #[cfg(feature = "agent_chat")]
+                if action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalsChanged>().is_some()
+                    || action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalDecided>().is_some()
+                {
+                    if let Some(tl) = self.tl_state.as_mut() {
+                        tl.content_drawn_since_last_update.clear();
+                        self.view.redraw(cx);
+                    }
+                }
                 // Handle the outcome of sending an agent-chat approval verdict.
                 #[cfg(feature = "agent_chat")]
                 if let Some(changed) = action.downcast_ref::<crate::agent_chat::approval_runtime::ApprovalStateChanged>() {
@@ -4284,6 +4295,19 @@ impl RoomScreen {
             return;
         };
         let Some(event_id) = event_tl_item.event_id().map(ToOwned::to_owned) else { return };
+        // A shared-execution request is decided through authenticated management,
+        // never by a chat message. The card already filtered the offered actions.
+        let in_room_timeline = matches!(tl.kind, TimelineKind::MainRoom { .. });
+        if let Some(pending) = crate::hagency::pending_approvals::for_event(tl.kind.room_id(), event_id.as_str(), in_room_timeline) {
+            let decision = match action.id.as_str() {
+                "approve_once" | "approve_session" | "deny" => action.id.as_str(),
+                _ => return,
+            };
+            crate::hagency::pending_approvals::decide(pending.id(), pending.digest(), decision);
+            tl.content_drawn_since_last_update.remove(details.item_id .. details.item_id + 1);
+            self.view.portal_list(cx, ids!(timeline.list)).redraw(cx);
+            return;
+        }
         let Some(ApprovalMessage::Request(request)) = crate::agent_chat::approval_message_of(event_tl_item) else {
             return;
         };
@@ -5917,6 +5941,9 @@ fn populate_message_view(
             agent_chat_message.as_ref(),
             agent_chat_approvals,
         );
+        if agent_chat_message.is_none() {
+            populate_shared_permission_card(cx, &item, event_tl_item, timeline_kind);
+        }
     }
 
 
@@ -6118,6 +6145,46 @@ fn populate_agent_chat_approval_card(
         approvals.untrack_live(event_id);
     }
     card.set_state(cx, Some(&ApprovalCardState::new(request, decision)));
+}
+
+/// Shows a pending shared-execution permission request on the message that
+/// raised it (the thread root in the room timeline), with the same buttons
+/// the owner console offers. The request itself lives on the management
+/// server; this card only presents it and sends the click back through it.
+#[cfg(feature = "agent_chat")]
+fn populate_shared_permission_card(
+    cx: &mut Cx,
+    item: &WidgetRef,
+    event_tl_item: &EventTimelineItem,
+    timeline_kind: &TimelineKind,
+) {
+    use crate::agent_chat::approval::{ActionStyle, ApprovalAction, ApprovalDecisionState};
+    use crate::hagency::pending_approvals::{self, LocalDecision};
+    let card = item.agent_approval_card(cx, ids!(content.agent_approval_card));
+    let Some(event_id) = event_tl_item.event_id() else { return };
+    let in_room_timeline = matches!(timeline_kind, TimelineKind::MainRoom { .. });
+    let Some(pending) = pending_approvals::for_event(timeline_kind.room_id(), event_id.as_str(), in_room_timeline) else {
+        return;
+    };
+    let (title, summary) = pending_approvals::describe(&pending.row);
+    let button = |id: &str, label: &str, style: ActionStyle| ApprovalAction { id: id.into(), label: label.into(), style };
+    let mut actions = vec![button("approve_once", "Allow once / 本次允许", ActionStyle::Primary)];
+    if pending.session_allowed() {
+        actions.push(button("approve_session", "Allow this session / 本次会话允许", ActionStyle::Secondary));
+    }
+    actions.push(button("deny", "Deny / 拒绝", ActionStyle::Danger));
+    let chosen = |decision: &str| actions.iter().find(|a| a.id == decision).cloned().unwrap_or_else(|| button(decision, decision, ActionStyle::Secondary));
+    let now = current_unix_time_millis();
+    let decision = match &pending.local {
+        LocalDecision::Sending(d) => ApprovalDecisionState::Sending(chosen(d)),
+        LocalDecision::Sent(d) => ApprovalDecisionState::Confirmed(if d == "deny" { "Denied / 已拒绝".into() } else { "Allowed · waiting for the Agent / 已允许，等待 Agent".into() }),
+        LocalDecision::Failed(..) => ApprovalDecisionState::Pending,
+        LocalDecision::None if pending.expires_at_ms().is_some_and(|t| t <= now) => ApprovalDecisionState::Expired,
+        LocalDecision::None if pending.row["encryptedPending"] == true => ApprovalDecisionState::Confirmed("Waiting for the encrypted details / 等待加密详情".into()),
+        LocalDecision::None if !pending.can_decide() => ApprovalDecisionState::Confirmed(format!("Waiting for resource owner {} / 等待资源所有者批准", pending.owner_mxid())),
+        LocalDecision::None => ApprovalDecisionState::Pending,
+    };
+    card.set_state(cx, Some(&crate::agent_chat::approval_card::ApprovalCardState { title, summary, decision, actions }));
 }
 
 /// Draws the Html or plaintext body of the given Text or Notice message into the `message_content_widget`.

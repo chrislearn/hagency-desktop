@@ -250,6 +250,9 @@ pub struct App {
     #[rust] hosted_windows: Vec<(HostedWindow, WidgetRef)>,
     /// The top-level app state, shared across various parts of the app.
     #[rust] app_state: AppState,
+    /// Polls pending Agent permission requests while signed in, so the owner
+    /// is told within the request's two-minute window wherever they are.
+    #[rust] approvals_timer: Timer,
     #[rust] lifecycle: AppLifecycle,
     #[rust] owner_dashboard: OwnerDashboardCoordinator,
     /// The details of a room we're waiting on to be loaded so that we can navigate to it.
@@ -281,6 +284,7 @@ impl MatchEvent for App {
     fn handle_startup(&mut self, cx: &mut Cx) {
         if self.started { return; }
         self.started = true;
+        self.approvals_timer = cx.start_interval(crate::hagency::pending_approvals::POLL_SECONDS);
         crate::hagency::owner_dashboard::register_host_accessibility(cx);
         // only init logging/tracing once.
         //
@@ -359,6 +363,16 @@ impl MatchEvent for App {
         }
 
         for action in actions {
+            if let Some(update) = action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalsUpdate>() {
+                if crate::hagency::pending_approvals::apply(cx, update) {
+                    cx.action(crate::hagency::pending_approvals::PendingApprovalsChanged);
+                    self.ui.redraw(cx);
+                }
+            }
+            if let Some(decided) = action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalDecided>() {
+                crate::hagency::pending_approvals::apply_decided(decided);
+                self.ui.redraw(cx);
+            }
             if let Some(action) = action.downcast_ref::<crate::accounts::AccountAction>() {
                 if !crate::sliding_sync::account_changing() {
                     self.persist_runtime_state(cx, "account switch");
@@ -1352,6 +1366,9 @@ impl AppMain for App {
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
         crate::theme::system::handle_event(cx, event);
+        if self.approvals_timer.is_event(event).is_some() {
+            crate::hagency::pending_approvals::poll();
+        }
         if let Some(restore) = self.owner_dashboard.handle_event(cx, event) {
             if let crate::hagency::owner_dashboard::EmbeddedAction::Restore { id, ref view } = restore
                 && view.intent == Some(owner_dashboard::NavigationIntent::ReviewApprovals)
@@ -2096,6 +2113,7 @@ pub struct AppState {
 
 impl AppState {
     fn clear_for_session_end(&mut self) {
+        crate::hagency::pending_approvals::forget_identity();
         *self = Self::default();
     }
 }

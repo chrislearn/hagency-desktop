@@ -2,5 +2,6 @@ pub mod backend;
 pub mod model;
 pub mod ui;
 pub mod owner_dashboard;
+pub mod pending_approvals;
 
 mod approvals;
