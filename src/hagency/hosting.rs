@@ -86,6 +86,22 @@ fn enrolled_root(daemon_home: &Path, origin: &str, owner: &str) -> Option<PathBu
     }
 }
 
+/// An existing root of this account to register in place: Desktop's own,
+/// else an enrolled daemon root holding an executor resume record.
+#[cfg(unix)]
+fn existing_root(legacy: PathBuf, daemon_home: &Path, origin: &str, owner: &str) -> Option<PathBuf> {
+    if legacy.try_exists().unwrap_or(true) {
+        Some(legacy)
+    } else {
+        enrolled_root(daemon_home, origin, owner)
+    }
+}
+
+#[cfg(unix)]
+fn root_code(error: ::hagency::owner_roots::RootError) -> String {
+    error.code().to_owned()
+}
+
 /// The account's one owner root on this computer, registered on first use.
 /// Resolution order (ADR-192): the registered root; otherwise Desktop's own
 /// root from before ADR-192 if it exists; otherwise a root an older daemon
@@ -95,22 +111,44 @@ pub fn select_root(locations: &Locations, data_dir: &Path, origin: &str, owner: 
     let legacy = legacy_root(data_dir, origin, owner)?;
     #[cfg(unix)]
     {
-        let code = |e: ::hagency::owner_roots::RootError| e.code().to_owned();
-        if let Some(root) = locations.roots.lookup(origin, owner).map_err(code)? {
+        if let Some(root) = locations.roots.lookup(origin, owner).map_err(root_code)? {
             return Ok(root);
         }
-        let existing = if legacy.try_exists().unwrap_or(true) {
-            Some(legacy)
-        } else {
-            enrolled_root(&locations.daemon_home, origin, owner)
-        };
-        locations.roots.resolve(origin, owner, existing.as_deref()).map_err(code)
+        let existing = existing_root(legacy, &locations.daemon_home, origin, owner);
+        locations.roots.resolve(origin, owner, existing.as_deref()).map_err(root_code)
     }
     #[cfg(not(unix))]
     {
         let _ = locations;
         Ok(legacy)
     }
+}
+
+/// The root a signed-in Desktop pins. Where Desktop executes the owner it is
+/// [`select_root`]. On macOS the daemon executes, and a sign-in registers
+/// only a root that already exists (Desktop's own, or an enrolled daemon
+/// root holding an executor record): registration is first-writer-wins, so a
+/// Desktop profile without the account's pool must never claim the account
+/// with an empty root. Setup registers the canonical root when none exists;
+/// until then Desktop's own path is returned, for a sign-out to revoke.
+pub fn sign_in_root(locations: &Locations, data_dir: &Path, origin: &str, owner: &str) -> Result<PathBuf, String> {
+    sign_in_root_with(locations, data_dir, origin, owner, cfg!(target_os = "macos"))
+}
+
+fn sign_in_root_with(locations: &Locations, data_dir: &Path, origin: &str, owner: &str, delegated: bool) -> Result<PathBuf, String> {
+    #[cfg(unix)]
+    if delegated {
+        if let Some(root) = locations.roots.lookup(origin, owner).map_err(root_code)? {
+            return Ok(root);
+        }
+        let legacy = legacy_root(data_dir, origin, owner)?;
+        return match existing_root(legacy.clone(), &locations.daemon_home, origin, owner) {
+            Some(existing) => locations.roots.resolve(origin, owner, Some(&existing)).map_err(root_code),
+            None => Ok(legacy),
+        };
+    }
+    let _ = delegated;
+    select_root(locations, data_dir, origin, owner)
 }
 
 /// Who executes the owner right now, decided from durable state only.
@@ -858,6 +896,34 @@ mod tests {
         let locations = other.locations();
         let daemon_root = enrolled_daemon_root(&locations, Some(true));
         assert_ne!(select_root(&locations, &other.data_dir(), ORIGIN, OTHER).unwrap(), daemon_root);
+    }
+
+    #[test]
+    fn a_macos_sign_in_claims_only_an_existing_root() {
+        let temp = Temp::new();
+        let locations = temp.locations();
+        let legacy = legacy_root(&temp.data_dir(), ORIGIN, OWNER).unwrap();
+        // A profile without the account's root claims nothing at sign-in.
+        assert_eq!(sign_in_root_with(&locations, &temp.data_dir(), ORIGIN, OWNER, true).unwrap(), legacy);
+        assert_eq!(locations.roots.lookup(ORIGIN, OWNER).unwrap(), None);
+        // Setup registers the canonical root; later sign-ins pin it.
+        let registered = select_root(&locations, &temp.data_dir(), ORIGIN, OWNER).unwrap();
+        assert_eq!(registered, canonical(&locations));
+        assert_eq!(sign_in_root_with(&locations, &temp.data_dir(), ORIGIN, OWNER, true).unwrap(), registered);
+        // A profile holding the account's root registers it in place, and a
+        // daemon that already hosts that root (an adopted handover from
+        // before ADR-192) keeps hosting it without setup.
+        let other = Temp::new();
+        let locations = other.locations();
+        let own = ::hagency::owner_host::initialize(&legacy_root(&other.data_dir(), ORIGIN, OWNER).unwrap()).unwrap();
+        Enrollment::enroll(locations.daemon_home(), ORIGIN, OWNER, None, &own).unwrap();
+        assert_eq!(sign_in_root_with(&locations, &other.data_dir(), ORIGIN, OWNER, true).unwrap(), own);
+        assert_eq!(locations.roots.lookup(ORIGIN, OWNER).unwrap(), Some(own));
+        assert_eq!(execution(&locations, ORIGIN, OWNER).unwrap(), daemon(&locations));
+        // Where Desktop executes in process, a sign-in needs a root at once.
+        let third = Temp::new();
+        let locations = third.locations();
+        assert_eq!(sign_in_root_with(&locations, &third.data_dir(), ORIGIN, OWNER, false).unwrap(), canonical(&locations));
     }
 
     #[test]

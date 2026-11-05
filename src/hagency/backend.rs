@@ -301,10 +301,10 @@ struct Inner {
 #[derive(Clone)]
 pub struct Service(Arc<Inner>);
 impl Service {
-    /// The account's one owner root on this computer, registering it on first
-    /// use (ADR-192): see [`crate::hagency::hosting::select_root`].
+    /// The account's one owner root on this computer (ADR-192): see
+    /// [`crate::hagency::hosting::sign_in_root`].
     fn state_for(locations: &crate::hagency::hosting::Locations, origin: &str, owner: &str) -> Result<PathBuf, String> {
-        crate::hagency::hosting::select_root(locations, crate::app_data_dir(), origin, owner)
+        crate::hagency::hosting::sign_in_root(locations, crate::app_data_dir(), origin, owner)
     }
     /// The owner root, for operations that open or revoke it in this process.
     fn root(&self) -> Result<&std::path::Path, String> {
