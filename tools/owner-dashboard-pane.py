@@ -45,7 +45,7 @@ def main():
                 assert process.poll() is None,'fixture exited'
                 time.sleep(.1)
             assert match and int(match[2])==process.pid,'owned fixture endpoint missing'
-            journey=ax.Journey('http://127.0.0.1:'+match[1],out,True)
+            journey=ax.Journey('http://127.0.0.1:'+match[1],out)
             deadline=time.monotonic()+20
             while not journey.get('/s').get('w'):
                 assert time.monotonic()<deadline,'window missing';time.sleep(.1)

@@ -114,6 +114,7 @@ def main():
         ("miniapp-dock", "mini_apps_side_tests"),
         ("owner-approval-navigation", "owner_approvals::tests"),
         ("owner-dashboard-host", "hagency::owner_dashboard::tests"),
+        ("owner-hosting", "hagency::hosting::tests"),
         ("owner-renewal-warnings", "renewal_warning_tests"),
         ("article-editor", "article_app::"),
     ]:
@@ -122,11 +123,9 @@ def main():
         run("apple-chat-fonts", ["cargo", "test", "--locked", "--lib", "--features", "onboarding-test-support", "apple_fonts", "--", "--test-threads=1"], rust_tests=True)
         run("apple-system-fonts", ["cargo", "test", "--locked", "--manifest-path", "crates/article-makepad/Cargo.toml", "--lib", "apple_fonts", "--", "--test-threads=1"], rust_tests=True)
     run("answer-export", ["cargo", "test", "--locked", "--manifest-path", "crates/answer-export/Cargo.toml", "--lib"], rust_tests=True)
-    # Separate workspaces: Desktop's --lib gate does not execute these tests
-    # or compile the standalone controller's production entry point.
+    # Separate workspace: Desktop's --lib gate does not execute the
+    # owner-dashboard crate's own tests.
     run("owner-dashboard", ["cargo", "test", "--locked", "--manifest-path", "crates/owner-dashboard/Cargo.toml", "--lib"], rust_tests=True)
-    run("owner-controller", ["cargo", "test", "--locked", "--manifest-path", "apps/owner-controller/Cargo.toml", "--bin", "hagency-owner-controller"], rust_tests=True)
-    run("owner-controller-build", ["cargo", "build", "--locked", "--manifest-path", "apps/owner-controller/Cargo.toml", "--bin", "hagency-owner-controller"])
     if args.client:
         run("native-room-history", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "console::native::shared_execution::history::tests", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-room-history-fields", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "console::owned_runtime::e2ee::history::tests", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)

@@ -26,7 +26,6 @@ class ReleaseAssets(unittest.TestCase):
         self.out.mkdir()
         for platform, arch in [('macos','arm64'), ('windows','amd64')]:
             names = [f'hagency-desktop-{platform}-{arch}'+('.dmg' if platform == 'macos' else '.exe')]
-            if platform == 'macos': names.append('hagency-hosting-macos-arm64.dmg')
             assets = {}
             for name in names:
                 path = self.out/name
@@ -39,16 +38,16 @@ class ReleaseAssets(unittest.TestCase):
         if self.previous_sha is None: os.environ.pop('GITHUB_SHA', None)
         else: os.environ['GITHUB_SHA'] = self.previous_sha
 
-    def test_rc_is_exactly_apple_silicon_desktop_hosting_and_windows(self):
-        release.verify('macos-arm64-windows', True)
+    def test_rc_is_exactly_apple_silicon_desktop_and_windows(self):
+        release.verify('macos-arm64-windows')
         sums = (self.out/'SHA256SUMS.txt').read_text().splitlines()
-        self.assertEqual(len(sums), 3)
+        self.assertEqual(len(sums), 2)
         self.assertFalse(any('macos-amd64' in row for row in sums))
 
     def test_changed_installer_is_rejected(self):
         (self.out/'hagency-desktop-windows-amd64.exe').write_bytes(b'wrong build')
         with self.assertRaisesRegex(AssertionError, 'Checksum mismatch'):
-            release.verify('macos-arm64-windows', True)
+            release.verify('macos-arm64-windows')
 
     def test_different_source_commit_is_rejected(self):
         path = self.out/'build-windows-amd64.json'
@@ -56,15 +55,15 @@ class ReleaseAssets(unittest.TestCase):
         report['sourceCommit'] = 'b'*40
         path.write_text(json.dumps(report))
         with self.assertRaisesRegex(AssertionError, 'Mixed source versions'):
-            release.verify('macos-arm64-windows', True)
+            release.verify('macos-arm64-windows')
 
-    def test_missing_hosting_installer_is_rejected(self):
+    def test_unrecorded_installer_is_rejected(self):
         path = self.out/'build-macos-arm64.json'
         report = json.loads(path.read_text())
-        del report['assets']['hagency-hosting-macos-arm64.dmg']
+        del report['assets']['hagency-desktop-macos-arm64.dmg']
         path.write_text(json.dumps(report))
         with self.assertRaises(AssertionError):
-            release.verify('macos-arm64-windows', True)
+            release.verify('macos-arm64-windows')
 
 
 if __name__ == '__main__':

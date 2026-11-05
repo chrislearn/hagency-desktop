@@ -103,34 +103,12 @@ jobs:
         run: |
           if [[ "$PLATFORM" == windows-amd64 ]]; then formats=nsis; else formats=dmg; fi
           cargo packager --manifest-path Cargo.toml --verbose --release --out-dir "$PWD/dist" --formats "$formats"
-      - name: Resolve exact client source
-        if: inputs.artifact_run_id == '' && inputs.platform == 'macos-arm64'
-        id: client
-        run: |
-          python3 - <<'PY'
-          import os, re
-          from pathlib import Path
-          pin = re.search(r'^hagency\s*=\s*\{[^\n]*\brev\s*=\s*"([^"]+)"', Path('Cargo.toml').read_text(), re.M)[1]
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output: output.write('revision='+pin+'\n')
-          PY
-      - uses: actions/checkout@v7
-        if: inputs.artifact_run_id == '' && inputs.platform == 'macos-arm64'
-        with:
-          repository: hagency-org/hagency-client
-          ref: ${{ steps.client.outputs.revision }}
-          path: .release/client
-          persist-credentials: false
-      - name: Package Hosting and its owner daemon
-        if: inputs.artifact_run_id == '' && inputs.platform == 'macos-arm64'
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target
-        run: python3 packaging/owner-controller/build.py --release --client .release/client --output dist/hosting --dmg
       - name: Collect candidate before checks
         if: inputs.artifact_run_id == ''
         run: |
-          if [[ "$PLATFORM" == windows-amd64 ]]; then platform=windows; arch=amd64; hosting=false
-          else platform=macos; arch=arm64; hosting=true; fi
-          GITHUB_SHA="$SOURCE_COMMIT" python3 tools/release-assets.py collect --platform "$platform" --arch "$arch" --hosting "$hosting"
+          if [[ "$PLATFORM" == windows-amd64 ]]; then platform=windows; arch=amd64
+          else platform=macos; arch=arm64; fi
+          GITHUB_SHA="$SOURCE_COMMIT" python3 tools/release-assets.py collect --platform "$platform" --arch "$arch"
       - uses: actions/upload-artifact@v7
         if: inputs.artifact_run_id == ''
         with:
@@ -180,15 +158,6 @@ jobs:
               'validationCommit': os.environ['GITHUB_SHA'],
               'runId': os.environ['GITHUB_RUN_ID']}, indent=2) + '\n')
           PY
-      - name: Verify packaged Hosting lifecycle and languages
-        if: inputs.platform == 'macos-arm64'
-        run: |
-          mkdir -p .run/hosting-image
-          hdiutil attach -readonly -nobrowse -mountpoint .run/hosting-image release-assets/hagency-hosting-macos-arm64.dmg
-          trap 'hdiutil detach .run/hosting-image' EXIT
-          ditto '.run/hosting-image/Hagency Hosting.app' '.run/Hagency Hosting.app'
-          python3 .release/validation/tools/owner-controller-bundle-smoke.py --bundle '.run/Hagency Hosting.app' --output .run/release-hosting-smoke
-          python3 .release/validation/tools/owner-hosting-language-smoke.py --binary '.run/Hagency Hosting.app' --output .run/release-hosting-language
       - uses: dtolnay/rust-toolchain@master
         if: failure() && inputs.platform == 'windows-amd64'
         with:
@@ -209,10 +178,7 @@ jobs:
         if: always()
         with:
           name: installer-checks-${{ inputs.platform }}
-          path: |
-            .run/verified-installer
-            .run/release-hosting-smoke
-            .run/release-hosting-language
+          path: .run/verified-installer
           if-no-files-found: ignore
           retention-days: 14
       - uses: actions/upload-artifact@v7

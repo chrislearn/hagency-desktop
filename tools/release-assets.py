@@ -24,13 +24,11 @@ def targets(scope):
     return [TARGETS[key] for key in keys]
 
 
-def expected_assets(scope, hosting):
+def expected_assets(scope):
     names = []
     for target in targets(scope):
         platform, arch = target['platform'], target['arch']
         names.extend(f'hagency-desktop-{platform}-{arch}{ext}' for ext in EXTENSIONS[platform])
-        if platform == 'macos' and hosting:
-            names.append(f'hagency-hosting-macos-{arch}.dmg')
     return names
 
 
@@ -51,7 +49,7 @@ def sha(path):
     return digest.hexdigest()
 
 
-def collect(platform, arch, hosting):
+def collect(platform, arch):
     out = ROOT/'release-assets'
     out.mkdir(exist_ok=True)
     assets = []
@@ -61,25 +59,15 @@ def collect(platform, arch, hosting):
         destination = out/f'hagency-desktop-{platform}-{arch}{ext}'
         shutil.copy2(found[0], destination)
         assets.append(destination)
-    if platform == 'macos' and hosting:
-        src = ROOT/'dist/hosting/Hagency Hosting.dmg'
-        assert src.is_file(), 'Missing Hosting installer'
-        destination = out/f'hagency-hosting-macos-{arch}.dmg'
-        shutil.copy2(src, destination)
-        assets.append(destination)
     sums = {p.name: sha(p) for p in assets}
     report = dict(metadata(), platform=platform, arch=arch, assets=sums)
-    if platform == 'macos' and hosting:
-        report['hosting'] = json.loads((ROOT/'dist/hosting/build-report.json').read_text())
-        assert report['hosting']['desktopCommit'] == report['sourceCommit']
-        assert report['hosting']['clientCommit'] == report['clientCommit']
     (out/f'build-{platform}-{arch}.json').write_text(json.dumps(report, indent=2)+'\n')
     (out/f'SHA256SUMS-{platform}-{arch}.txt').write_text(''.join(f'{v}  {k}\n' for k,v in sums.items()))
 
 
-def verify(scope, hosting):
+def verify(scope):
     out = ROOT/'release-assets'
-    expected = set(expected_assets(scope, hosting))
+    expected = set(expected_assets(scope))
     recorded = {}
     expected_meta = metadata()
     reports = list(out.glob('build-*.json'))
@@ -102,22 +90,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['plan','collect','verify'])
     parser.add_argument('--scope', choices=['all','macos-arm64-windows'], default='all')
-    parser.add_argument('--hosting', choices=['true','false'], default='false')
     parser.add_argument('--platform', choices=list(EXTENSIONS))
     parser.add_argument('--arch')
     args = parser.parse_args()
-    hosting = args.hosting == 'true'
     if args.command == 'plan':
         data = dict(matrix=json.dumps({'include':targets(args.scope)}, separators=(',',':')),
-                    scope=args.scope, hosting=str(hosting).lower(), **metadata())
+                    scope=args.scope, **metadata())
         with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
             for key, value in data.items(): out.write(f'{key}={value}\n')
         print(json.dumps(data, indent=2))
     elif args.command == 'collect':
         assert args.platform and args.arch
-        collect(args.platform, args.arch, hosting)
+        collect(args.platform, args.arch)
     else:
-        print(json.dumps(verify(args.scope, hosting), indent=2))
+        print(json.dumps(verify(args.scope), indent=2))
 
 
 if __name__ == '__main__':

@@ -33,6 +33,10 @@ tests, then packages the app with its existing resource and Octos runtime hooks:
 | macOS | Intel amd64, Apple Silicon arm64 | DMG |
 | Windows | amd64 | NSIS EXE installer |
 
+Resource hosting ships inside the Desktop package: on macOS the owner daemon
+runs from the Desktop binary and is managed from Agent → Hosting (Client
+ADR-192). There is no separate Hosting installer or workflow input.
+
 Manual runs upload Actions artifacts only by default (14-day retention).
 An explicit `publish=true` dispatch builds and verifies every installer first,
 then creates the version tag at that exact source SHA and publishes the release.
@@ -142,25 +146,22 @@ Neither cancelled installer run published a v0.5.0 tag or Release.
 
 The release workflow now defaults to macOS Apple Silicon and Windows x64.
 The explicit `platforms=all` choice retains the other targets; this RC does
-not build Intel macOS. `hosting=true` adds a separate macOS Hagency Hosting
-DMG containing the controller and the pinned Client daemon. The controller
-provides persistent System default / English / Simplified Chinese selection.
-Windows background-daemon hosting remains unsupported.
+not build Intel macOS. Windows background-daemon hosting remains unsupported.
 
 Desktop packages are installed or relocated and launched with a fresh profile
-before collecting artifacts. Hosting has an independent packaged lifecycle
-check. Build reports and SHA256SUMS must cover the exact selected asset set
-from one Desktop, Client and Makepad revision before a draft is published.
+before collecting artifacts. Build reports and SHA256SUMS must cover the exact
+selected asset set from one Desktop, Client and Makepad revision before a draft
+is published.
 The regression gate and packaging run concurrently, but publication requires
 both. macOS RC builds are ad-hoc signed unless Developer ID signing is
-configured; Hosting is ad-hoc signed. Windows installers remain unsigned.
+configured. Windows installers remain unsigned.
 
 For this RC, Makepad is pinned to
 `ebec2e5c866eae3c791e2f24d59db543cad97a05` in `OctoSense-org/makepad`. It includes
 PR #132 and a fix for software adapters that reject video acceleration.
-All Makepad crates, standalone tools, dashboard and
-controller workspaces resolve to that commit. The tracked accessibility
-patch is applied to an isolated checkout of the same revision.
+All Makepad crates, standalone tools and the dashboard workspace resolve to
+that commit. The tracked accessibility patch is applied to an isolated checkout
+of the same revision.
 
 ## 0.5.0-rc.2 packaging
 
