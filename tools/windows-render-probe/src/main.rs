@@ -40,6 +40,13 @@ impl AppMain for App {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        if let Event::Custom(command) = event {
+            match command.as_str() {
+                "hide-cursor" => cx.set_cursor(MouseCursor::Hidden),
+                "show-cursor" => cx.set_cursor(MouseCursor::Default),
+                _ => {}
+            }
+        }
         self.ui.handle_event(cx, event, &mut Scope::empty());
     }
 }

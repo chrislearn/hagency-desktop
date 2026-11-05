@@ -2,7 +2,7 @@ name: Windows splitter cursor probe
 
 on:
   push:
-    branches: [codex/windows-splitter-probe-20261105]
+    branches: [codex/windows-cursor-visibility-probe-20261105]
 
 permissions:
   contents: read
@@ -16,7 +16,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          git clone --depth 1 --branch codex/windows-splitter-probe-20261105 https://github.com/hagency-org/hagency-desktop.git desktop
+          git clone --depth 1 --branch codex/windows-cursor-visibility-probe-20261105 https://github.com/hagency-org/hagency-desktop.git desktop
           if ($LASTEXITCODE -ne 0) { throw 'Probe checkout failed' }
           rustup run stable cargo build --locked --release --manifest-path desktop/tools/windows-render-probe/Cargo.toml
           if ($LASTEXITCODE -ne 0) { throw 'Probe build failed' }
@@ -68,6 +68,19 @@ jobs:
               Write-Output "CURSOR_PROBE x=$x resize=$($info.cursor -eq $expected)"
               if ($info.cursor -ne $expected) { throw "Resize cursor missing at x=$x" }
             }
+            Invoke-RestMethod "$root/event?data=hide-cursor" | Out-Null
+            Start-Sleep -Milliseconds 500
+            $info = New-Object CursorProbe+CursorInfo
+            $info.size = [Runtime.InteropServices.Marshal]::SizeOf($info)
+            if (-not [CursorProbe]::GetCursorInfo([ref]$info)) { throw 'Cannot inspect hidden cursor' }
+            if (($info.flags -band 1) -ne 0) { throw 'Cursor remained visible after hide' }
+            Invoke-RestMethod "$root/event?data=show-cursor" | Out-Null
+            Start-Sleep -Milliseconds 500
+            $info = New-Object CursorProbe+CursorInfo
+            $info.size = [Runtime.InteropServices.Marshal]::SizeOf($info)
+            if (-not [CursorProbe]::GetCursorInfo([ref]$info)) { throw 'Cannot inspect restored cursor' }
+            if (($info.flags -band 1) -eq 0) { throw 'Cursor remained hidden after show' }
+            Write-Output 'CURSOR_VISIBILITY_PASS'
             Write-Output 'SPLITTER_CURSOR_PASS'
           } finally {
             if ($port) { try { Invoke-WebRequest -TimeoutSec 5 "http://127.0.0.1:$port/quit" | Out-Null } catch { Write-Output "Graceful quit failed: $_" } }
