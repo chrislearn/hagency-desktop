@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Same effective Makepad source and revision as Desktop's [patch] mappings.
-makepad-widgets = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "d1b07a0eeb888f0fa8c42ba7856641ec934eb02c" }
+makepad-widgets = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "7c6f6cc81057e6452f5c2a469f5eef485e7730de" }
 hagency-owner-dashboard = { path = "../../crates/owner-dashboard" }
 serde_json = "1"
 libc = "0.2"
