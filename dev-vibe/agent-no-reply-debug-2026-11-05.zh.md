@@ -1,49 +1,45 @@
 # Desktop Agent 无回复修复与实测（2026-11-05）
 
-## 源码与隔离范围
+## 问题与最终行为
 
-- Desktop：`work/hagency-desktop-local-20261028`，基线 `ea4963d13cf7a8fb212c5d2b387714cefc2ba165`。安装版内嵌源码 `b00459166744dab2ec8433da8176b1521f064e21`，两者仅发布文档不同。
-- Server：独立 worktree `../.worktrees/hagency-server-agent-debug-20261105`，分支 `work/hagency-server-local-20261028`，源码 `7acbb25c9acb2ddf181b479ecef874662fb583d9`。
-- Engine：从 Desktop 实际固定的 `19539818e927a2a2328eebba91d8736fab22c9c6` 建独立副本 `../.worktrees/hagency-desktop-engine-debug-20261105`，分支 `codex/recover-owner-direct-room`，本地修复提交 `dec4911b45acb6789be96e5a5d75bf8d357f30d1`。没有编辑 Cargo 缓存或 Client main。
-- 使用本地 loopback 服务器、三个新 PostgreSQL 数据库和独立 Desktop 数据目录。私有配置、凭据、日志、原账号备份均留在忽略的 `.run/agent-no-reply-20261105`，不入 Git。
+Agent 身份已为 active，但私聊创建记录停在 `creating / owner_direct_creation_outcome_unknown / room null`。原房间及已送达的 hello 存在，稳定别名目录却返回 HTTP404。旧恢复流程只查询别名，且正确地禁止重复未知结果的 createRoom，因此一直无法完成原房间绑定。同时，服务 watcher 已发现没有连接房间，My Agents 仍显示 Starting。
 
-## 观察与本地实测
+Pinned Palpo 的 createRoom 先写房间、canonical_alias 和 initial_state，再处理邀请，最后写别名目录；这能产生上述部分创建状态。历史证据不能确定原请求在哪一步失败或取消。
 
-原账号 Agent 身份 active，但 owner-direct 日志为 creating / owner_direct_creation_outcome_unknown / room null。原聊天存在，原 hello 已送达；未见 Agent 入群。稳定别名的真实目录查询为 HTTP404。旧恢复代码只通过别名寻找未知创建结果，且禁止重复 createRoom，因此无法认领已产生但别名未落库的房间。
+修复通过有界、完整、只读的 joined-room 扫描找回唯一原房间，严格核对创建者、owner/Agent 标记、canonical_alias、私密规则与两方成员；任何歧义或状态读取失败都保留未知结果，不重建 Agent 或房间。随后继续既有身份校验、Matrix 索引和服务器绑定流程。完成发现但没有连接房间的服务显示 Needs attention，正常启动阶段仍显示 Starting。
 
-Pinned Palpo 的 createRoom 先写房间与 canonical_alias / initial_state，再等待邀请处理，最后写别名目录；这可以产生上述部分创建状态。尚不能仅靠历史日志确定原请求具体在哪一步失败或取消。
+## PR 与源码
 
-新本地测试账号经真实 OAuth 登录，创建 Local-Debug-Reply-1105、建立私聊、确认 Agent 入群、连接本机现有 Codex 账号并保存 GPT-6.1-Sol / low 配置后启动。真实消息 LOCAL_AGENT_REPLY_OK 得到该 Agent 同文回包。执行账本 settled，input4624 / output33 / cached_input3584 / reasoning_output23，reservation10000。回包后通过界面停止测试服务。
+- Client 引擎：[PR #52](https://github.com/hagency-org/hagency-client/pull/52)，目标 `work/hagency-client-local-20261028`，修复提交 `dec4911b45acb6789be96e5a5d75bf8d357f30d1`，基线 `19539818e927a2a2328eebba91d8736fab22c9c6`。
+- Desktop：分支 `codex/agent-private-chat-recovery`，PR 目标 `work/hagency-desktop-local-20261028`，基线 `ea4963d13cf7a8fb212c5d2b387714cefc2ba165`。本次同步更新 Desktop、测试依赖和 owner-dashboard 共4处引擎 pin，以及3个 Cargo.lock，全部固定到上述已推送的 Client 提交，不依赖本地 path override。
+- Server 实测使用 `work/hagency-server-local-20261028` / `7acbb25c9acb2ddf181b479ecef874662fb583d9`。Server 没有产品代码修改，无需 Server PR；未部署到远端。
+- 用户安装版内嵌源码 `b00459166744dab2ec8433da8176b1521f064e21` 与 Desktop 调试基线仅发布文档不同。安装包没有覆盖或发版。
 
-## 修复
+## 回归与真实使用
 
-- 未知创建 + 别名404时，只读扫描有限数量的 joined_rooms，以创建标记、所有者、Agent、canonical_alias、私密状态及两方成员验证唯一原房间。任一状态请求失败、多个候选或隐私/身份不符均保留失败，不重建 Agent 或房间，不手改运行记录。
-- 服务 watcher 已完成发现但没有任何房间时，My Agents 显示 attention，避免永久显示 Starting。正常启动阶段仍显示 Starting。
+- Engine：`cargo test --locked -p hagency --lib console::owned_agents::direct::`，7通过，包括候选身份/隐私验证、歧义、状态读取失败、越界/重复列表及原有持久化与索引测试。
+- Desktop：全量 lib 测试（`onboarding-test-support`），767通过、0失败、2项原有忽略；该轮使用与提交内容相同的明确本地引擎副本。配对锁文件下的 locked check 退出0。
+- 本地 Server：127.0.0.1:19888，三个全新 PostgreSQL 数据库、独立 Desktop 配置和测试账号。真实 OAuth → 创建 Local-Debug-Reply-1105 → 私聊创建及 Agent 入群 → 连接本机已有 Codex 账号 → 保存 GPT-6.1-Sol / low → 启动 → 真实回复 `LOCAL_AGENT_REPLY_OK`。账本 settled，input4624 / output33 / cached_input3584 / reasoning_output23，reservation10000。回包后停止该测试服务。
+- 原账号、原 Agent、原房间（river.ominix.io:19443）：chris-agent2 的原 hello 保留。状态先正确显示 Needs attention；点击原私聊设置重试，记录从 creating/null 经过 created、pending 到 active/lastError null。服务器回读绑定 active，Agent 实际加入原房间。
+- 同一原房间发送 `Please reply only ORIGINAL_AGENT_REPLY_OK. Do not use any tools.`，原 Agent 真实回复 `ORIGINAL_AGENT_REPLY_OK`。账本 settled，input7095 / output9 / cached_input6016，reservation10000。未增加原账号预算，未手改运行记录、删除未知执行或创建替代身份/房间。
 
-## 验证与限制
+## 验证边界与复现
 
-- Desktop / Server 基线真实构建成功；本地 healthz / readyz 为200；实际 OAuth、创建、入群与模型回复通过。
-- Engine owner-direct 测试7项通过，含未知创建候选、歧义、状态读取失败、越界/重复列表、身份隐私验证及原有持久化/索引测试。
-- 本地补丁使用 `.run/agent-no-reply-20261105/engine-patch.toml` 显式 Cargo override，生产 Cargo.toml 的远端 pin 没有改动。
-- 严格回归驱动运行后在 owner-source-pins 真实失败：本地补丁不属于已发布固定远端提交。此项不算通过；当前产物仅用于调试，不能作为正式发布资格。
-- 全量 Desktop 测试（显式本地 engine override）：767通过、0失败、2项原有忽略。首次 --locked 调用因切换本地补丁后的锁文件需重新解析而实际失败；后续 --offline 完整测试通过，原日志保留。
-- 原账号回归期间曾误启动两个相同数据目录开发实例，观察到401/invalid_grant及原生授权清理互斥失败；已关闭重复实例，并在再次打开 CUA 前确认只存在一个初始化完成的进程。单实例恢复后原账号授权正常，原 Agent 服务启动恢复继续。不能将该次调试并发造成的失败归咎于原线上服务或当作私聊修复成功。
-- 单实例原账号实测：SDK正常刷新，My Agents 中原 chris-agent2 已从永久 Starting 改为 Needs attention。点击原 Agent 的 Set up / retry private chat 后，修复代码找回原房间，日志从 room null / creating 经过 created、pending，最后到 active / lastError null。服务器回读 owner-direct 绑定为 active，Agent 实际加入原房间。
-- 在保留原 hello 的同一房间发送 `Please reply only ORIGINAL_AGENT_REPLY_OK. Do not use any tools.`，原 chris-agent2 真实回复 `ORIGINAL_AGENT_REPLY_OK`。原执行账本 settled，input7095 / output9 / cached_input6016，reservation10000。没有创建替代 Agent / 房间、手改状态、删除未知执行或增加原账号预算。
-- `cargo --config ... check --locked --lib` 在配对本地调试锁文件下退出0。测试后已保留 `.run/agent-no-reply-20261105/Cargo.local-engine.lock` 并恢复仓库原始 Cargo.lock；原生产 pin 检查再次通过。之前本地补丁模式的严格发布门禁失败记录仍保留，不因此声称该补丁具备发布资格。
-- 当前保留一个开发应用实例，使用原账号并可回复；隔离账号测试服务已停止。本地 Server 保留在 `http://127.0.0.1:19888`。安装版未覆盖，Server 未部署到原远端；代码未推送或发版。
+初期使用本地 Cargo override 的调试构建曾被严格源码 pin 门禁拒绝，原始失败日志保留。PR 已改为 GitHub 固定修复提交，4处依赖与3个锁文件的源码 pin 检查通过。首轮最终 pin 驱动的全局 CARGO_TARGET_DIR 将脚本 VM 放到了驱动未预期的位置，完整 bundle 检查因找不到可执行文件而失败；已保留原日志，第二轮使用默认 target 布局重新运行，未修改检查器或产品代码来绕过它。正在对最终远端 pin 运行完整回归驱动。此文不将本地调试视为签名发布、sandbox 或 two-Agent 资格。
 
-## 复现本地构建
+原账号回归曾误启动两个相同数据目录开发实例，导致 OAuth/清理互斥错误；关闭重复实例并确认只运行一个初始化完成的应用后，正常 SDK 刷新恢复，随后完成原房间回包。该调试错误不作为原线上故障的根因。
 
-在 Desktop 根目录执行（先正常退出同一开发包实例，避免同数据目录双进程）：
+检出本 Desktop PR 后可直接执行：
 
 ```bash
-cp Cargo.lock .run/agent-no-reply-20261105/Cargo.before-next-debug.lock
-cp .run/agent-no-reply-20261105/Cargo.local-engine.lock Cargo.lock
-cargo --config .run/agent-no-reply-20261105/engine-patch.toml build --locked --bin rinx
-cp .run/agent-no-reply-20261105/Cargo.before-next-debug.lock Cargo.lock
-RUST_LOG='rinx=debug,hagency=debug,info' bash packaging/run-macos.sh target/debug/rinx
+cargo build --locked --bin rinx
+bash packaging/run-macos.sh target/debug/rinx
 ```
 
-以上使用明确的本地源码 override；默认未加 override 的 Cargo 构建仍使用生产固定远端引擎。调试启动器完全初始化后再由桌面工具选择现有应用；不要在其打包/启动间隙另开同一包。原始配置、完整日志、测试报告和服务器/账本回读均在忽略目录。
+独立源码回归：
 
+```bash
+python3 tools/check-hagency-regressions.py --output .run/regressions --client /path/to/hagency-client-at-dec4911b
+```
+
+启动开发应用前正常退出同一数据目录实例，等待调试启动器初始化完成再选择现有应用。私有配置、凭据、原账号备份、完整日志和服务器/账本收据均保留在 Git 忽略目录，未上传 PR。
