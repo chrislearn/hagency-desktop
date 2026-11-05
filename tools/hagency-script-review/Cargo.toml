@@ -8,4 +8,4 @@ publish = false
 
 [dependencies]
 # Match the Makepad script VM pinned by the Desktop host.
-makepad-script = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "7c6f6cc81057e6452f5c2a469f5eef485e7730de" }
+makepad-script = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "a0ad1839c61cecbd7e83251cfb7d50d7a725ee48" }

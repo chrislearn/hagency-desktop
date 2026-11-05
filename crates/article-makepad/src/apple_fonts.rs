@@ -103,6 +103,16 @@ pub fn install(vm: &mut ScriptVm) {
     );
 }
 
+/// Whether both PingFang SC faces resolve to installed files on this machine.
+/// Hosts without Apple's downloadable PingFang asset, such as GitHub's macOS 15
+/// runners, keep the bundled fonts; tests that assert PingFang selection
+/// skip there and say so instead of failing on the environment.
+pub fn installed() -> bool {
+    [REGULAR, SEMIBOLD]
+        .iter()
+        .all(|name| load_system_face(name).is_ok())
+}
+
 /// The installed PingFang SC Regular and Semibold faces as script font
 /// resources, for VMs that build their own theme, such as Splash isolates.
 pub fn pingfang(vm: &mut ScriptVm) -> Result<(ScriptValue, ScriptValue), String> {
@@ -309,6 +319,10 @@ mod tests {
 
     #[test]
     fn system_pingfang_faces_cover_english_and_chinese() {
+        if !installed() {
+            eprintln!("skipping: PingFang SC is not installed on this machine");
+            return;
+        }
         let mut indices = Vec::new();
         for name in [REGULAR, SEMIBOLD] {
             let definition = load_system_face(name).expect("installed PingFang face");
@@ -343,6 +357,10 @@ mod tests {
 
     #[test]
     fn theme_prefers_pingfang_and_preserves_fallback_after_widget_registration() {
+        if !installed() {
+            eprintln!("skipping: PingFang SC is not installed on this machine");
+            return;
+        }
         use makepad_draw::text::fonts::Fonts;
         use std::cell::RefCell;
         let mut cx = Cx::new(Box::new(|_, _| {}));
@@ -402,6 +420,10 @@ mod tests {
 
     #[test]
     fn collection_view_preserves_selected_face_glyphs_and_tables() {
+        if !installed() {
+            eprintln!("skipping: PingFang SC is not installed on this machine");
+            return;
+        }
         for name in [REGULAR, SEMIBOLD] {
             let source = load_system_face(name).unwrap();
             let original =

@@ -14,7 +14,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-PIN = "7c6f6cc81057e6452f5c2a469f5eef485e7730de"
+PIN = "a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 SOURCE = "https://www.github.com/OctoSense-org/makepad.git"
 ROOT = Path(__file__).resolve().parents[1]
 PATCH = ROOT / "packaging/owner-controller/makepad-accessibility.patch"

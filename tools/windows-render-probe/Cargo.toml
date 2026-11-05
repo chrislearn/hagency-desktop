@@ -7,4 +7,4 @@ publish = false
 [workspace]
 
 [dependencies]
-makepad-widgets = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "7c6f6cc81057e6452f5c2a469f5eef485e7730de", features = ["serde"] }
+makepad-widgets = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "a0ad1839c61cecbd7e83251cfb7d50d7a725ee48", features = ["serde"] }

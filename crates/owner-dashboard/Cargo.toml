@@ -17,7 +17,7 @@ name = "owner_dashboard"
 # The exact effective Makepad source Desktop patches every Makepad URL to
 # (Cargo.toml [patch] sections). Naming it directly keeps one package identity
 # when Rinx and the standalone controller both link this crate.
-makepad-widgets = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "7c6f6cc81057e6452f5c2a469f5eef485e7730de" }
+makepad-widgets = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "a0ad1839c61cecbd7e83251cfb7d50d7a725ee48" }
 # Shared DTO contract from the same published Client revision as Desktop.
 hagency-metering = { git = "https://github.com/hagency-org/hagency-client.git", rev = "19539818e927a2a2328eebba91d8736fab22c9c6" }
 serde = { version = "1", features = ["derive"] }

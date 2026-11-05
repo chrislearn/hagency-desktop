@@ -76,6 +76,10 @@ mod tests {
 
     #[test]
     fn apple_fonts_actual_chat_glyphs_survive_draw_theme_reload_and_fresh_start() {
+        if !article_makepad::apple_fonts::installed() {
+            eprintln!("skipping: PingFang SC is not installed on this machine");
+            return;
+        }
         // Repeat with a fresh context, then with retained chat widgets across
         // reloads: cold-start success alone must not hide this regression.
         for _ in 0..2 {
