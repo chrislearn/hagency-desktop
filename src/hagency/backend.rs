@@ -628,15 +628,20 @@ impl Service {
         invited_agent_joined(&value, &agent, room)
     }
     async fn native_owner(&self) -> Result<NativeOwner, String> {
+        // On macOS only the owner daemon executes (ADR-192). An account the
+        // daemon does not host (another account is hosted, or hosting is not
+        // set up) still opens its own root here for management requests such
+        // as permission and Agent requests, but restores no runtime and starts
+        // no pool worker. Once the daemon hosts it, `remote_client` retires
+        // this owner before attaching.
+        let management_only = match self.execution()? {
+            crate::hagency::hosting::Execution::InProcess => false,
+            crate::hagency::hosting::Execution::Daemon { .. } => return Err("owner_daemon_management_required".into()),
+            crate::hagency::hosting::Execution::Setup(_) => true,
+        };
         let native = {
             let mut native = self.0.native.lock().await;
             self.check()?;
-            // On macOS only the owner daemon opens the root (ADR-192).
-            match self.execution()? {
-                crate::hagency::hosting::Execution::InProcess => {}
-                crate::hagency::hosting::Execution::Daemon { .. } => return Err("owner_daemon_management_required".into()),
-                crate::hagency::hosting::Execution::Setup(reason) => return Err(reason.code().into()),
-            }
             #[cfg(feature = "resource-adoption")]
             self.drain_adoption_source(&mut native).await?;
             if native.is_none() {
@@ -676,7 +681,7 @@ impl Service {
                 let restore_legacy = selected.is_none();
                 #[cfg(not(feature = "resource-adoption"))]
                 let restore_legacy = true;
-                if restore_legacy {
+                if restore_legacy && !management_only {
                     log_runtime_recovery(owner.restore_runtime_intents().await);
                 }
                 if let Err(error) = self.check() {
@@ -693,10 +698,12 @@ impl Service {
             }
             native.as_ref().unwrap().clone()
         };
-        #[cfg(feature = "resource-adoption")]
-        self.start_allocation_worker(&native).await;
-        #[cfg(feature = "shared-execution")]
-        self.start_shared_worker(&native).await;
+        if !management_only {
+            #[cfg(feature = "resource-adoption")]
+            self.start_allocation_worker(&native).await;
+            #[cfg(feature = "shared-execution")]
+            self.start_shared_worker(&native).await;
+        }
         Ok(native)
     }
     async fn open_legacy_owner(&self) -> Result<NativeOwner, NativeError> {

@@ -28,9 +28,10 @@ impl Service {
     }
 
     /// Stop any in-process executor before attaching to the daemon. Repeated
-    /// calls retain a failed drain. `Ok(None)` allows in-process execution,
-    /// which only platforms without the daemon get; macOS without a hosting
-    /// setup fails with the setup reason instead of opening anything.
+    /// calls retain a failed drain. `Ok(None)` means this process serves the
+    /// account: it executes only where no daemon ships; on macOS an account
+    /// the daemon does not host gets a management-only owner (see
+    /// `native_owner`), so permission and Agent requests keep working.
     pub(super) async fn remote_client(&self) -> Result<Option<Arc<ControllerClient>>, String> {
         self.check()?;
         let mut native = self.0.native.lock().await;
@@ -47,10 +48,7 @@ impl Service {
                     self.retire();
                     return Err("native_owner_restart_required".into());
                 }
-                return match other {
-                    Execution::Setup(reason) => Err(reason.code().into()),
-                    _ => Ok(None),
-                };
+                return Ok(None);
             }
         };
         let registered = self
