@@ -18,6 +18,22 @@ grep -r "texture_2d" widgets/src/
 RUST_BACKTRACE=1 cargo run -p makepad-example-splash --release & PID=$!; sleep 15; kill $PID 2>/dev/null; echo "Process $PID killed"
 ```
 
+## Build footprint
+
+The dev profile compiles incrementally unless the build host turns it off: a
+one-line change rebuilds in about 10 s instead of 37 s, for a cache of about
+1.7 GB under `target/`. Many worktrees building at once fill a disk, so:
+
+- A build host shared by agents may set `incremental = false` in its own
+  `~/.cargo/config.toml`. The shell a person edits in then runs
+  `export CARGO_INCREMENTAL=1`; an explicit environment variable overrides it.
+- A throwaway build or test run in an agent worktree uses `--profile fast`
+  (`cargo test --profile fast --locked --lib`): no incremental cache, no debug
+  info.
+- Delete a worktree's `target/` when its branch is merged or abandoned, and
+  `cargo clean` a long-lived checkout now and then: stale profiles and feature
+  sets accumulate (one checkout reached 125 GB).
+
 ## Cargo.toml Setup
 
 ```toml
