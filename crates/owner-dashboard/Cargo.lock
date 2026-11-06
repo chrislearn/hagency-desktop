@@ -338,7 +338,7 @@ dependencies = [
 [[package]]
 name = "hagency-metering"
 version = "0.1.0"
-source = "git+https://github.com/hagency-org/hagency-client.git?rev=2477a7a99bf1b6dce66cc61222b5385b236d657e#2477a7a99bf1b6dce66cc61222b5385b236d657e"
+source = "git+https://github.com/hagency-org/hagency-client.git?rev=3e40015616b76dce67c53c5580be8fa5541ed15f#3e40015616b76dce67c53c5580be8fa5541ed15f"
 dependencies = [
  "serde",
  "serde_json",

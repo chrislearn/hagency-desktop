@@ -19,7 +19,7 @@ name = "owner_dashboard"
 # when this crate is built and tested on its own.
 makepad-widgets = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "a0ad1839c61cecbd7e83251cfb7d50d7a725ee48" }
 # Shared DTO contract from the same published Client revision as Desktop.
-hagency-metering = { git = "https://github.com/hagency-org/hagency-client.git", rev = "2477a7a99bf1b6dce66cc61222b5385b236d657e" }
+hagency-metering = { git = "https://github.com/hagency-org/hagency-client.git", rev = "3e40015616b76dce67c53c5580be8fa5541ed15f" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
