@@ -166,6 +166,13 @@ def main():
         if len(probes) != 1:
             raise SystemExit("Expected one freshly built offline context probe")
         env["HAGENCY_TEST_RUNTIME_PROBE"] = probes[0]
+        for name, package, pattern in [
+            ("native-known-usage-recovery", "hagency-store", "recurring_"),
+            ("native-never-started-store-recovery", "hagency-store", "shared_demand_v2_"),
+            ("native-never-started-message-recovery", "hagency", "native_demand_never_started_attempt_retries_same_event_exactly_once"),
+            ("native-demand-late-stop-recovery", "hagency", "native_demand_late_stop_and_logout_keep_unknown_state_and_deny_stale_offer"),
+        ]:
+            run(name, ["cargo", "test", "--locked", "-p", package, "--features", "shared-budget-execution,resource-adoption", "--lib", pattern, "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-room-history-input", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution", "--lib", "encrypted_shared_input_is_pinned", "--", "--ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-thread-context", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution", "--lib", "shared_context_", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-thread-context-http", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution", "--lib", "native_shared_context_", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
