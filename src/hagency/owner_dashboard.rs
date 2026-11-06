@@ -144,6 +144,8 @@ fn message(code: &str) -> String {
         ("opening_setup", false) => "Opening the hosting setup window…",
         ("sign_in_required", true) => "请先登录 Hagency，再打开此账号的资源控制面板。",
         ("sign_in_required", false) => "Sign in to Hagency to open this account’s hosting dashboard.",
+        ("platform_unsupported", true) => "本版本的后台托管仅支持 macOS。Windows 和 Linux 的支持正在开发中；此设备仍可作为聊天和请求方使用。",
+        ("platform_unsupported", false) => "Background hosting is macOS-only in this release. Windows and Linux support is in progress; this computer can still chat and request Agents.",
         (_, true) => "尚未确认目标窗口已打开。当前页面已保留，请确认 Hagency Hosting 已安装且登录同一账号后重试。",
         (_, false) => "The destination has not confirmed opening. This view is preserved. Check that Hagency Hosting is installed and uses the same account, then retry.",
     }.into()
@@ -183,7 +185,12 @@ fn open_setup() {
             Ok(false)
         })().unwrap_or(false);
         #[cfg(not(target_os = "macos"))]
-        let success = { let _ = (origin, home, root); false };
+        {
+            let _ = (origin, home, root);
+            Cx::post_action(EmbeddedAction::SetupResult { owner, message: message("platform_unsupported") });
+            return;
+        }
+        #[cfg(target_os = "macos")]
         Cx::post_action(EmbeddedAction::SetupResult { owner, message: message(if success { "setup" } else { "destination_unavailable" }) });
     });
     if launched.is_err() {

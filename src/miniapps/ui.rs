@@ -428,9 +428,11 @@ script_mod! {
                 RinxPageTitle {width: Fill text: #(crate::i18n::tr("Hagency permissions")) i18n_text: "Hagency permissions"}
                 account := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
                 RinxLabel {width: Fill flow: Flow.Right{wrap: true}
-                    text: #(crate::i18n::tr("Hagency uses your current Matrix account.")) i18n_text: "Hagency uses your current Matrix account."
+                    text: #(crate::i18n::tr("Hagency uses your current Matrix account to manage Agents on this computer: connect a coding tool, create Agents, and run them in rooms you choose. Nothing is shared outside your server."))
+                    i18n_text: "Hagency uses your current Matrix account to manage Agents on this computer: connect a coding tool, create Agents, and run them in rooms you choose. Nothing is shared outside your server."
                 }
-                permissions := RinxLabel {width: Fill flow: Flow.Right{wrap: true}}
+                permissions_toggle := RinxButton {text: #(crate::i18n::tr("Show details")) i18n_text: "Show details"}
+                permissions := RinxLabel {visible: false width: Fill flow: Flow.Right{wrap: true}}
                 RinxHint {width: Fill flow: Flow.Right{wrap: true}
                     text: #(crate::i18n::tr("Approval remains limited to your assigned server role. Provider credentials stay in the native host."))
                     i18n_text: "Approval remains limited to your assigned server role. Provider credentials stay in the native host."
@@ -1167,6 +1169,14 @@ impl MiniAppsPanel {
         }
         self.view.redraw(cx);
     }
+    /// The consent screen leads with one sentence; the full capability list
+    /// is one tap away so a first-time user is not met with a wall of text.
+    fn set_permissions_expanded(&mut self, cx: &mut Cx, expanded: bool) {
+        self.view.label(cx, ids!(hagency_review.permissions)).set_visible(cx, expanded);
+        let text = crate::i18n::tr(if expanded { "Hide details" } else { "Show details" });
+        self.view.button(cx, ids!(hagency_review.permissions_toggle)).set_text(cx, text);
+        self.view.redraw(cx);
+    }
     fn present_review_controls(&mut self, cx: &mut Cx) {
         let palpo = self.package.as_ref().and_then(Package::builtin_id) == Some(super::palpo::APP_ID);
         let reviewing = palpo && self.lease.is_none() && !self.showing_catalog && !self.showing_hub;
@@ -1182,6 +1192,7 @@ impl MiniAppsPanel {
                 .filter_map(|cap| octosense_app_contract::hagency::words(cap))
                 .map(crate::i18n::tr).collect::<Vec<_>>().join("\n")).unwrap_or_default();
             self.view.label(cx, ids!(hagency_review.permissions)).set_text(cx, &permissions);
+            self.set_permissions_expanded(cx, false);
             self.view.widget(cx, ids!(notice)).set_visible(cx, !self.notice_text.is_empty() && self.notice_text != self.review_notice);
         }
         // TextInput has no visibility property. Hide its containing View so
@@ -1962,6 +1973,10 @@ impl Widget for MiniAppsPanel {
             if self.view.button(cx, ids!(browse_hub)).clicked(actions) {
                 self.show_hub(cx);
                 return;
+            }
+            if self.view.button(cx, ids!(hagency_review.permissions_toggle)).clicked(actions) {
+                let expanded = !self.view.label(cx, ids!(hagency_review.permissions)).visible();
+                self.set_permissions_expanded(cx, expanded);
             }
             if self.view.button(cx, ids!(hagency_cancel)).clicked(actions) {
                 self.show_catalog(cx);

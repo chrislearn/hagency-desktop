@@ -359,6 +359,12 @@ impl Snapshot {
         }
     }
 
+    /// Foreground that reads on the navigation rail, which is navy in light
+    /// themes and the page color in dark ones (see `nav_ink` in `script_mod`).
+    pub fn nav_ink(&self) -> Vec4f {
+        if luminance(self.page) < 0.5 { self.ink } else { self.surface }
+    }
+
     pub fn role(&self, name: &str) -> Vec4f {
         self.tokens
             .get(name)
