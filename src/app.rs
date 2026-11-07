@@ -394,8 +394,9 @@ impl MatchEvent for App {
             if let Some(request) = action.downcast_ref::<crate::hagency::pending_questions::QuestionAnswerRequested>() {
                 crate::hagency::pending_questions::send(request.clone());
             }
-            if let Some(sent) = action.downcast_ref::<crate::hagency::pending_questions::QuestionAnswerSent>() {
-                crate::hagency::pending_questions::sent(sent);
+            if let Some(sent) = action.downcast_ref::<crate::hagency::pending_questions::QuestionAnswerSent>()
+                && crate::hagency::pending_questions::sent(sent)
+            {
                 if sent.result.is_err() {
                     enqueue_popup_notification(
                         crate::i18n::tr("Could not send the answer. Please try again."),

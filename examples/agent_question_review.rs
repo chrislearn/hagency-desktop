@@ -13,8 +13,14 @@ use std::collections::BTreeMap;
 app_main!(App);
 fn review_size() -> Vec2d {
     Vec2d {
-        x: std::env::var("WIZARD_REVIEW_WIDTH").ok().and_then(|s| s.parse().ok()).unwrap_or(720.0),
-        y: std::env::var("WIZARD_REVIEW_HEIGHT").ok().and_then(|s| s.parse().ok()).unwrap_or(1180.0),
+        x: std::env::var("WIZARD_REVIEW_WIDTH")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(720.0),
+        y: std::env::var("WIZARD_REVIEW_HEIGHT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1180.0),
     }
 }
 script_mod! {
@@ -51,10 +57,15 @@ const SLOTS: [(&str, &str, char); 4] = [
 ];
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 fn option(label: &str, description: &str) -> CardOption {
-    CardOption { label: label.into(), description: description.into() }
+    CardOption {
+        label: label.into(),
+        description: description.into(),
+    }
 }
 fn card(digit: char, trigger: &str, questions: Vec<CardQuestion>, withheld: u64) -> Card {
     Card {
@@ -76,7 +87,10 @@ fn database() -> CardQuestion {
         header: "Database".into(),
         question: "Which database should the new service use?".into(),
         options: vec![
-            option("Postgres (Recommended)", "Durable and familiar to the team."),
+            option(
+                "Postgres (Recommended)",
+                "Durable and familiar to the team.",
+            ),
             option("SQLite", "Simplest to run on one machine."),
         ],
         other: true,
@@ -92,7 +106,11 @@ fn fixtures() {
                 id: "lang".into(),
                 header: "语言".into(),
                 question: "用哪种语言重写这个模块？".into(),
-                options: vec![option("Rust", "与现有代码一致。"), option("Go", "团队更熟悉。"), option("Python", "")],
+                options: vec![
+                    option("Rust", "与现有代码一致。"),
+                    option("Go", "团队更熟悉。"),
+                    option("Python", ""),
+                ],
                 other: false,
             },
             CardQuestion {
@@ -107,17 +125,53 @@ fn fixtures() {
     );
     let answered = card('c', "$trigger_answered", vec![database()], 0);
     let expired = card('d', "$trigger_expired", vec![database()], 0);
-    pending_questions::posted("!room:example.invalid", "$card_single", AGENT, "小黄瓜", card('a', "$trigger_single", vec![database()], 0));
-    pending_questions::posted("!room:example.invalid", "$card_several", AGENT, "Atlas", several);
-    pending_questions::posted("!room:example.invalid", "$card_answered", AGENT, "Atlas", answered.clone());
-    pending_questions::posted("!room:example.invalid", "$card_expired", AGENT, "Atlas", expired.clone());
+    pending_questions::posted(
+        "!room:example.invalid",
+        "$card_single",
+        AGENT,
+        "小黄瓜",
+        now_ms(),
+        card('a', "$trigger_single", vec![database()], 0),
+    );
+    pending_questions::posted(
+        "!room:example.invalid",
+        "$card_several",
+        AGENT,
+        "Atlas",
+        now_ms(),
+        several,
+    );
+    pending_questions::posted(
+        "!room:example.invalid",
+        "$card_answered",
+        AGENT,
+        "Atlas",
+        now_ms(),
+        answered.clone(),
+    );
+    pending_questions::posted(
+        "!room:example.invalid",
+        "$card_expired",
+        AGENT,
+        "Atlas",
+        now_ms(),
+        expired.clone(),
+    );
     pending_questions::edited(
         "!room:example.invalid",
         "$card_answered",
         AGENT,
-        answered.answered("@alice:example.invalid", BTreeMap::from([("db".into(), AnswerValue::Text("CockroachDB".into()))])),
+        answered.answered(
+            "@alice:example.invalid",
+            BTreeMap::from([("db".into(), AnswerValue::Text("CockroachDB".into()))]),
+        ),
     );
-    pending_questions::edited("!room:example.invalid", "$card_expired", AGENT, expired.expired());
+    pending_questions::edited(
+        "!room:example.invalid",
+        "$card_expired",
+        AGENT,
+        expired.expired(),
+    );
 }
 
 #[derive(Script, ScriptHook)]
@@ -132,9 +186,8 @@ struct App {
 }
 impl App {
     fn render(&mut self, cx: &mut Cx) {
-        for (slot, _, digit) in SLOTS {
-            let id = format!("aq_{}", digit.to_string().repeat(64));
-            let view = pending_questions::get(&id)
+        for (slot, event, _) in SLOTS {
+            let view = pending_questions::get(event)
                 .filter(|_| self.shown.iter().any(|s| s == slot))
                 .map(|c| pending_questions::view(&c, now_ms()));
             self.ui
@@ -146,8 +199,8 @@ impl App {
     fn report(&self) {
         let cards: serde_json::Map<String, serde_json::Value> = SLOTS
             .iter()
-            .filter_map(|(slot, _, digit)| {
-                let c = pending_questions::get(&format!("aq_{}", digit.to_string().repeat(64)))?;
+            .filter_map(|(slot, event, _)| {
+                let c = pending_questions::get(event)?;
                 Some((
                     (*slot).to_owned(),
                     serde_json::json!({"local": format!("{:?}", c.local), "choices": c.choices, "texts": c.texts,
@@ -156,7 +209,8 @@ impl App {
             })
             .collect();
         let report = serde_json::json!({"requests": self.requests, "cards": cards});
-        let path = std::path::PathBuf::from(std::env::var("HAGENCY_DESKTOP_DATA_DIR").unwrap()).join("question-review.json");
+        let path = std::path::PathBuf::from(std::env::var("HAGENCY_DESKTOP_DATA_DIR").unwrap())
+            .join("question-review.json");
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
 }
@@ -174,10 +228,17 @@ impl AppMain for App {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
         if let Event::Custom(command) = event {
             if matches!(command.as_str(), "theme:dark" | "theme:light") {
-                rinx::theme::select(cx, rinx::theme::Selection {
-                    appearance: if command == "theme:dark" { rinx::theme::Appearance::Dark } else { rinx::theme::Appearance::Light },
-                    accent: rinx::theme::Accent::Teal,
-                })
+                rinx::theme::select(
+                    cx,
+                    rinx::theme::Selection {
+                        appearance: if command == "theme:dark" {
+                            rinx::theme::Appearance::Dark
+                        } else {
+                            rinx::theme::Appearance::Light
+                        },
+                        accent: rinx::theme::Accent::Teal,
+                    },
+                )
                 .unwrap();
             }
             match command.as_str() {
@@ -190,16 +251,37 @@ impl AppMain for App {
                 "question:inspect" => self.report(),
                 "question:sent-ok" | "question:sent-fail" => {
                     if let Some(card_id) = self.requests.last().and_then(|r| r["card"].as_str()) {
-                        let result = if command == "question:sent-ok" { Ok(()) } else { Err("answer_send_failed".to_owned()) };
-                        pending_questions::sent(&QuestionAnswerSent { card_id: card_id.to_owned(), result });
+                        let result = if command == "question:sent-ok" {
+                            Ok(())
+                        } else {
+                            Err("answer_send_failed".to_owned())
+                        };
+                        let generation = self
+                            .requests
+                            .last()
+                            .and_then(|r| r["generation"].as_u64())
+                            .unwrap();
+                        pending_questions::sent(&QuestionAnswerSent {
+                            generation,
+                            key: card_id.to_owned(),
+                            result,
+                        });
                     }
                     self.render(cx);
                 }
                 "question:agent-answered" => {
                     // The Agent's own edit after another member answered first.
-                    if let Some(c) = pending_questions::get(&format!("aq_{}", "a".repeat(64))) {
-                        let settled = c.card.answered("@bob:example.invalid", BTreeMap::from([("db".into(), AnswerValue::Option("SQLite".into()))]));
-                        pending_questions::edited("!room:example.invalid", "$card_single", AGENT, settled);
+                    if let Some(c) = pending_questions::get("$card_single") {
+                        let settled = c.card.answered(
+                            "@bob:example.invalid",
+                            BTreeMap::from([("db".into(), AnswerValue::Option("SQLite".into()))]),
+                        );
+                        pending_questions::edited(
+                            "!room:example.invalid",
+                            "$card_single",
+                            AGENT,
+                            settled,
+                        );
                     }
                     self.render(cx);
                 }
@@ -217,7 +299,7 @@ impl AppMain for App {
             for action in actions {
                 if let Some(request) = action.downcast_ref::<QuestionAnswerRequested>() {
                     // Recorded, never sent.
-                    self.requests.push(serde_json::json!({"room": request.room_id, "card": request.card_id,
+                    self.requests.push(serde_json::json!({"room": request.room_id, "card": request.key, "generation": request.generation,
                         "agent": request.agent, "content": request.content}));
                 }
                 changed |= action.downcast_ref::<PendingQuestionsChanged>().is_some();

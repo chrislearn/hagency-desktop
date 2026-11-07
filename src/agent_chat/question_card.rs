@@ -173,27 +173,53 @@ script_mod! {
 const BLOCKS: [&[LiveId]; 3] = [ids!(q0), ids!(q1), ids!(q2)];
 /// Option buttons per block. A card offers at most four options a question.
 const OPTIONS: [[&[LiveId]; 4]; 3] = [
-    [ids!(q0.options.o0), ids!(q0.options.o1), ids!(q0.options.o2), ids!(q0.options.o3)],
-    [ids!(q1.options.o0), ids!(q1.options.o1), ids!(q1.options.o2), ids!(q1.options.o3)],
-    [ids!(q2.options.o0), ids!(q2.options.o1), ids!(q2.options.o2), ids!(q2.options.o3)],
+    [
+        ids!(q0.options.o0),
+        ids!(q0.options.o1),
+        ids!(q0.options.o2),
+        ids!(q0.options.o3),
+    ],
+    [
+        ids!(q1.options.o0),
+        ids!(q1.options.o1),
+        ids!(q1.options.o2),
+        ids!(q1.options.o3),
+    ],
+    [
+        ids!(q2.options.o0),
+        ids!(q2.options.o1),
+        ids!(q2.options.o2),
+        ids!(q2.options.o3),
+    ],
 ];
-const INPUTS: [&[LiveId]; 3] = [ids!(q0.other_box.other_input), ids!(q1.other_box.other_input), ids!(q2.other_box.other_input)];
+const INPUTS: [&[LiveId]; 3] = [
+    ids!(q0.other_box.other_input),
+    ids!(q1.other_box.other_input),
+    ids!(q2.other_box.other_input),
+];
 
 /// A card for one Agent question, with its option buttons and "Other" input.
 #[derive(Script, ScriptHook, Widget)]
 pub struct AgentQuestionCard {
-    #[deref] view: View,
+    #[deref]
+    view: View,
     /// The card shown, so a click maps to the store's card.
-    #[rust] card_id: Option<String>,
+    #[rust]
+    card_id: Option<String>,
     /// Each block's question id and option labels, as drawn.
-    #[rust] rows: Vec<(String, Vec<String>)>,
+    #[rust]
+    rows: Vec<(String, Vec<String>)>,
 }
 
 impl Widget for AgentQuestionCard {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         self.view.handle_event(cx, event, scope);
-        let Event::Actions(actions) = event else { return };
-        let Some(card_id) = self.card_id.clone() else { return };
+        let Event::Actions(actions) = event else {
+            return;
+        };
+        let Some(card_id) = self.card_id.clone() else {
+            return;
+        };
         let mut changed = false;
         for (index, (question, labels)) in self.rows.clone().iter().enumerate().take(BLOCKS.len()) {
             for (slot, label) in labels.iter().enumerate().take(OPTIONS[index].len()) {
@@ -216,7 +242,11 @@ impl Widget for AgentQuestionCard {
                 changed = true;
             }
         }
-        if self.view.button(cx, ids!(footer.send_button)).clicked(actions) {
+        if self
+            .view
+            .button(cx, ids!(footer.send_button))
+            .clicked(actions)
+        {
             if let Some(request) = pending_questions::submit(&card_id) {
                 cx.action(request);
             }
@@ -242,11 +272,15 @@ impl AgentQuestionCard {
             return;
         };
         // A recycled timeline item may have shown another card's draft.
-        let rebinding = self.card_id.as_deref() != Some(v.card_id.as_str());
-        self.card_id = Some(v.card_id.clone());
+        let rebinding = self.card_id.as_deref() != Some(v.key.as_str());
+        self.card_id = Some(v.key.clone());
         self.view.set_visible(cx, true);
-        self.view.label(cx, ids!(header.title_label)).set_text(cx, &v.title);
-        self.view.label(cx, ids!(header.status_badge.status_label)).set_text(cx, &v.status);
+        self.view
+            .label(cx, ids!(header.title_label))
+            .set_text(cx, &v.title);
+        self.view
+            .label(cx, ids!(header.status_badge.status_label))
+            .set_text(cx, &v.status);
         for (index, block_path) in BLOCKS.iter().enumerate() {
             let block = self.view.view(cx, block_path);
             let Some(row) = v.questions.get(index) else {
@@ -257,7 +291,9 @@ impl AgentQuestionCard {
             let header = block.label(cx, ids!(header_label));
             header.set_visible(cx, !row.header.is_empty());
             header.set_text(cx, &row.header);
-            block.label(cx, ids!(question_label)).set_text(cx, &row.question);
+            block
+                .label(cx, ids!(question_label))
+                .set_text(cx, &row.question);
             for (slot, path) in OPTIONS[index].iter().enumerate() {
                 let button = self.view.button(cx, path);
                 let Some((label, chosen)) = row.options.get(slot) else {
@@ -265,18 +301,29 @@ impl AgentQuestionCard {
                     continue;
                 };
                 button.set_visible(cx, row.answer.is_none());
-                button.set_text(cx, &if *chosen { format!("✓ {label}") } else { label.clone() });
+                button.set_text(
+                    cx,
+                    &if *chosen {
+                        format!("✓ {label}")
+                    } else {
+                        label.clone()
+                    },
+                );
                 show_enabled(cx, &button, v.open);
                 if v.open {
                     // A recycled portal-list item may carry stale hover state.
                     button.reset_hover(cx);
                 }
             }
-            block.view(cx, ids!(options)).set_visible(cx, !row.options.is_empty() && row.answer.is_none());
+            block
+                .view(cx, ids!(options))
+                .set_visible(cx, !row.options.is_empty() && row.answer.is_none());
             let details = block.label(cx, ids!(details_label));
             details.set_visible(cx, v.open && !row.details.is_empty());
             details.set_text(cx, &row.details);
-            block.view(cx, ids!(other_box)).set_visible(cx, row.text.is_some());
+            block
+                .view(cx, ids!(other_box))
+                .set_visible(cx, row.text.is_some());
             let input = self.view.text_input(cx, INPUTS[index]);
             if let Some(draft) = &row.text
                 && (rebinding || input.text() != *draft)
@@ -292,14 +339,21 @@ impl AgentQuestionCard {
         let send = self.view.button(cx, ids!(footer.send_button));
         send.set_visible(cx, v.send_visible);
         show_enabled(cx, &send, v.can_send);
-        self.view.view(cx, ids!(footer)).set_visible(cx, v.send_visible);
+        self.view
+            .view(cx, ids!(footer))
+            .set_visible(cx, v.send_visible);
         let hint = self.view.label(cx, ids!(hint_label));
         hint.set_visible(cx, !v.hint.is_empty());
         hint.set_text(cx, &v.hint);
         self.rows = v
             .questions
             .iter()
-            .map(|row| (row.id.clone(), row.options.iter().map(|(label, _)| label.clone()).collect()))
+            .map(|row| {
+                (
+                    row.id.clone(),
+                    row.options.iter().map(|(label, _)| label.clone()).collect(),
+                )
+            })
             .collect();
         self.view.redraw(cx);
     }

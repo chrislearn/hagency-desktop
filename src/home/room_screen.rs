@@ -424,6 +424,8 @@ script_mod! {
                 forward_card := mod.widgets.ForwardCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_approval_card := mod.widgets.AgentApprovalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_question_card := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_question_card_1 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_question_card_2 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_reply := mod.widgets.AgentReply {width: Fill}
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
@@ -474,6 +476,8 @@ script_mod! {
                 forward_card := mod.widgets.ForwardCard {}
                 agent_approval_card := mod.widgets.AgentApprovalCard {}
                 agent_question_card := mod.widgets.AgentQuestionCard {}
+                agent_question_card_1 := mod.widgets.AgentQuestionCard {}
+                agent_question_card_2 := mod.widgets.AgentQuestionCard {}
                 octos_action_card := mod.widgets.OctosActionCard {}
                 agent_reply := mod.widgets.AgentReply {}
                 agent_usage := mod.widgets.AgentUsage {show_toggle: false}
@@ -613,6 +617,8 @@ script_mod! {
                 forward_card := mod.widgets.ForwardCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_approval_card := mod.widgets.AgentApprovalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_question_card := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_question_card_1 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_question_card_2 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_reply := mod.widgets.AgentReply {width: Fill}
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
@@ -6205,13 +6211,16 @@ fn populate_agent_question_card(
     timeline_kind: &TimelineKind,
 ) {
     use crate::agent_chat::question_card::AgentQuestionCardWidgetRefExt;
-    let card = item.agent_question_card(cx, ids!(content.agent_question_card));
     let in_room_timeline = matches!(timeline_kind, TimelineKind::MainRoom { .. });
-    let shown = event_tl_item.event_id().and_then(|event_id| {
+    let shown = event_tl_item.event_id().map(|event_id| {
         crate::hagency::pending_questions::for_event(timeline_kind.room_id(), event_id.as_str(), in_room_timeline)
-    });
-    let view = shown.map(|q| crate::hagency::pending_questions::view(&q, current_unix_time_millis()));
-    card.set_view(cx, view.as_ref());
+    }).unwrap_or_default();
+    let paths = [ids!(content.agent_question_card), ids!(content.agent_question_card_1), ids!(content.agent_question_card_2)];
+    debug_assert_eq!(paths.len(), crate::hagency::pending_questions::MAX_CARDS_PER_MESSAGE);
+    for (index, path) in paths.into_iter().enumerate() {
+        let view = shown.get(index).map(|q| crate::hagency::pending_questions::view(q, current_unix_time_millis()));
+        item.agent_question_card(cx, path).set_view(cx, view.as_ref());
+    }
 }
 
 /// Draws the Html or plaintext body of the given Text or Notice message into the `message_content_widget`.
@@ -7753,6 +7762,8 @@ impl Message {
         let in_approval_card = self.view.widget(cx, ids!(content.agent_approval_card))
             .area().clipped_rect(cx).contains(abs)
             || self.view.widget(cx, ids!(content.agent_question_card)).area().clipped_rect(cx).contains(abs)
+            || self.view.widget(cx, ids!(content.agent_question_card_1)).area().clipped_rect(cx).contains(abs)
+            || self.view.widget(cx, ids!(content.agent_question_card_2)).area().clipped_rect(cx).contains(abs)
             || self.view.widget(cx, ids!(content.octos_action_card)).area().clipped_rect(cx).contains(abs);
         #[cfg(not(feature = "agent_chat"))]
         let in_approval_card = false;
