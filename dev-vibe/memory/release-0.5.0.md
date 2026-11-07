@@ -1,6 +1,19 @@
 # Desktop 0.5.0 发布
 
-更新：2026-11-06。
+更新：2026-11-07。
+
+## 2026-11-07 rc.4 发布
+
+用户要求发布包含最新 Agent 问题卡修复的新 RC；由 Codex 执行。
+
+- [v0.5.0-rc.4](https://github.com/hagency-org/hagency-desktop/releases/tag/v0.5.0-rc.4) 于 2026-11-07 17:35:00 UTC 公开为 prerelease。标签和两个安装包源码统一为 Desktop `5db1ece7f73b1847d0848736f6777c20efca76e9`，包含 rc.3 发布分支及已复核的问题卡提交 `b0243afdd5a07bee9dab14267836ac9d1bcffcec`。stable latest 仍为 v1.1.2。
+- Client 固定为 `6cd99ceb84ae407b2315dcd0f5e900022eebac06`；Makepad 保持 `a0ad1839c61cecbd7e83251cfb7d50d7a725ee48`。本次加入消息下方的问题卡，拒绝通过问题通道批准 MCP 工具或技能安装、拒绝其他 Agent 的回答；同一轮问题共用十分钟等待预算，包含加密设备打开及重试；重启或取消后恢复卡片终态，桌面端有界重试暂时无法解密的卡片，并隔离旧登录会话的回调。还包含长 Codex 运行及已完成回答的保留修复。
+- [release.yml run 42387632599](https://github.com/hagency-org/hagency-desktop/actions/runs/42387632599) 使用 publish=true、macos-arm64-windows，完整执行成功。110 项预算／聊天回归全部通过，累计 812 次 Rust 测试执行（选择器有重叠，不是独立测试总数）。六组问题卡检查实际执行 54 个测试；四组 rc.3 恢复检查实际执行 21 个测试，均通过。合并回归脚本时保留了两边全部检查，没有绕过门禁或接受零测试结果。
+- macOS Desktop 单测 792 通过、2 忽略；Windows 776 通过、2 忽略。两平台各 10 个 app-contract 测试通过，Windows 软件图形设备启动／重建回归实际执行 1 个测试并通过。客户端源码在发布前另通过默认 workspace 3,216 项和 shipping features 1,240 项完整测试，保留既有 ignored／filtered 配置；独立源码复核无剩余阻塞项。
+- 恰好两个安装包：`hagency-desktop-macos-arm64.dmg`（162,910,613 字节）和 `hagency-desktop-windows-amd64.exe`（117,586,176 字节）。两个 build report、三个 SHA256SUMS 及两个安装包共 7 个公开附件已重新下载，大小和 SHA-256 均与 GitHub 元数据、平台报告及校验文件匹配；报告中的 Desktop、Client、Makepad 提交一致。匿名访问 Release 和两个安装包下载地址均为 HTTP 200。
+- 两个实际安装包均在隔离 profile 下启动并通过连续三帧登录页非空检查，字体／资源错误为零。随包运行时为 `octos 2.0.3-rc.13 (fe08d8e 2026-11-07)`。macOS 渲染截图、Windows 渲染及原生桌面截图共三张已查看；Windows 原生窗口可见。没有执行独立 verify_only 流程，也没有宣称完成了人工 Windows 11 全流程验收或 River 真实加密房间验收。
+- Mac 仍为 ad-hoc 签名、未 notarize；Windows 未签名。macOS 资源托管集成在 Desktop 的 Agent → Hosting；没有单独 Hosting 安装包、Windows 后台托管或 Intel macOS 包。发布说明保留已知用量可能低估服务商消耗、兼容服务端要求及既有依赖审计开放项。
+- 发布证据位于 `~/.codex/task-reports/hagency-rc4-20261107/release.json`，包含完整工作流、110 项回归报告、两平台测试日志、安装检查、截图及公开附件核验。未部署服务端、修改 River 配置或发送真实房间消息。
 
 ## 2026-11-06 rc.3 发布
 
