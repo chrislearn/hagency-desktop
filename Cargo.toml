@@ -592,3 +592,7 @@ required-features = ["onboarding-test-support"]
 [[example]]
 name = "compact_mention_review"
 required-features = ["onboarding-test-support"]
+
+[[example]]
+name = "agent_question_review"
+required-features = ["onboarding-test-support"]

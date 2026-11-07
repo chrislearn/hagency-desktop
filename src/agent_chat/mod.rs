@@ -37,6 +37,7 @@ pub mod approval_runtime;
 mod marker_selection;
 pub mod approval_inbox;
 pub mod approval_card;
+pub mod question_card;
 pub mod octos;
 pub mod octos_card;
 pub mod preferences;
@@ -89,6 +90,7 @@ pub enum ApprovalVerdictResult {
 /// Registers the agent-chat widgets with the script VM.
 pub fn script_mod(vm: &mut ScriptVm) {
     approval_card::script_mod(vm);
+    question_card::script_mod(vm);
     octos_card::script_mod(vm);
     approval_inbox::script_mod(vm);
     preferences::script_mod(vm);
