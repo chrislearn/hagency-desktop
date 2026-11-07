@@ -263,11 +263,14 @@ winresource = "0.1"
 [package.metadata.docs.rs]
 all-features = true
 
-## Keep dev builds small: line tables are enough for backtraces, dependencies
-## get no debug info, and incremental caches are disabled (they grow unbounded).
+## Keep dev builds small: line tables are enough for backtraces and dependencies
+## get no debug info. Incremental compilation is left at cargo's default (on):
+## `rinx` is one 167k-line crate, and without it every edit recompiles all of it
+## (37 s against 10 s for a one-line change, measured 2026-11-06). A build host
+## that must cap disk use turns it off in its own ~/.cargo/config.toml and sets
+## CARGO_INCREMENTAL=1 in the shell that edits; see AGENTS.md, "Build footprint".
 [profile.dev]
 debug = "line-tables-only"
-incremental = false
 
 [profile.dev.package."*"]
 debug = false
@@ -301,6 +304,7 @@ debug = false
 lto = "off"
 strip = true
 debug-assertions = false
+incremental = false
 
 
 
