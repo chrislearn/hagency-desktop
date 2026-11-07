@@ -86,7 +86,7 @@ jobs:
       matrix:
         include:
           # Apple Silicon Macs (M1/M2/M3/M4 chips)
-          - os: macos-14
+          - os: macos-15
             arch: arm64
           # Intel Macs (x86_64 architecture)
           - os: macos-15-intel
@@ -140,7 +140,7 @@ jobs:
   build_ios_on_macos:
     if: github.event_name == 'workflow_dispatch'
     name: Build iOS (macOS Host)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
 
@@ -191,7 +191,7 @@ jobs:
   build_android_on_macos:
     if: github.event_name == 'workflow_dispatch'
     name: Build Android (macOS Host)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
 

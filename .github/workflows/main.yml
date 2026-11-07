@@ -21,7 +21,7 @@ env:
 jobs:
   native:
     name: Native build and unit tests
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
