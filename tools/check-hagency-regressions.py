@@ -98,6 +98,7 @@ def main():
         ("publication-ui", "grant_ui::"),
         ("resource-ceiling-ui", "resource_edit_ui::tests"),
         ("agent-chat", "agent_chat"),
+        ("agent-question-cards", "hagency::pending_questions::tests"),
         ("shared-worker", "hagency::backend::shared_worker::tests"),
         ("chat-mermaid", "shared::chat_mermaid::tests"),
         ("link-preview", "link_preview"),
@@ -127,6 +128,10 @@ def main():
     # owner-dashboard crate's own tests.
     run("owner-dashboard", ["cargo", "test", "--locked", "--manifest-path", "crates/owner-dashboard/Cargo.toml", "--lib"], rust_tests=True)
     if args.client:
+        run("native-question-protocol", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "agent_questions::tests"], cwd=args.client.resolve(), rust_tests=True)
+        run("native-question-recovery", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "shared_execution::questions::", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
+        run("native-question-recovery-auth", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "question_recovery_requires_authenticated_events_in_encrypted_rooms"], cwd=args.client.resolve(), rust_tests=True)
+        run("native-question-adapter", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--features", "shared-context", "--all-targets", "user_input"], cwd=args.client.resolve(), rust_tests=True)
         run("native-room-history", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "console::native::shared_execution::history::tests", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-room-history-fields", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "console::owned_runtime::e2ee::history::tests", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-key-wakeup", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "shared_work_sync_wakes", "--", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
@@ -173,6 +178,7 @@ def main():
             ("native-demand-late-stop-recovery", "hagency", "native_demand_late_stop_and_logout_keep_unknown_state_and_deny_stale_offer"),
         ]:
             run(name, ["cargo", "test", "--locked", "-p", package, "--features", "shared-budget-execution,resource-adoption", "--lib", pattern, "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
+        run("native-question-execution", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_question_", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-room-history-input", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution", "--lib", "encrypted_shared_input_is_pinned", "--", "--ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-thread-context", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution", "--lib", "shared_context_", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)
         run("native-thread-context-http", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution", "--lib", "native_shared_context_", "--", "--include-ignored", "--test-threads=1"], cwd=args.client.resolve(), rust_tests=True)

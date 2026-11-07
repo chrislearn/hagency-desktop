@@ -2806,5 +2806,17 @@
   "Resolve a reviewed interrupted task: continue remaining work, accept completion or keep blocked": "Resolve a reviewed interrupted task: continue remaining work, accept completion or keep blocked",
   "Inspect workspace recovery status for an authorized resource": "Inspect workspace recovery status for an authorized resource",
   "Clear a reviewed workspace dirty marker after inspection, preserving unresolved execution and shared ownership checks": "Clear a reviewed workspace dirty marker after inspection, preserving unresolved execution and shared ownership checks",
-  "Change the reviewed agent’s execution permissions for its next dispatch, including unrestricted execution": "Change the reviewed agent’s execution permissions for its next dispatch, including unrestricted execution"
+  "Change the reviewed agent’s execution permissions for its next dispatch, including unrestricted execution": "Change the reviewed agent’s execution permissions for its next dispatch, including unrestricted execution",
+  "Other: type your own answer": "Other: type your own answer",
+  "Send answer": "Send answer",
+  "Could not send the answer. Please try again.": "Could not send the answer. Please try again.",
+  "Answered by {0}": "Answered by {0}",
+  "Expired · the Agent continued on its own": "Expired · the Agent continued on its own",
+  "Sent · waiting for the Agent": "Sent · waiting for the Agent",
+  "Not sent · try again": "Not sent · try again",
+  "Waiting for an answer": "Waiting for an answer",
+  "Any member of this room can answer. With no answer by {0}, the Agent continues on its own.": "Any member of this room can answer. With no answer by {0}, the Agent continues on its own.",
+  "A private question was not shown here and gets no answer.": "A private question was not shown here and gets no answer.",
+  "{0} asks": "{0} asks",
+  "{0} asks a question. Open the room to answer it under your message.": "{0} asks a question. Open the room to answer it under your message."
 }

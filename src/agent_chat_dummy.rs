@@ -1,7 +1,8 @@
 //! Placeholder widgets for builds without the `agent_chat` feature.
 //!
-//! The room timeline DSL references `AgentApprovalCard` unconditionally; this
-//! module defines it as an empty, invisible view so that default builds
+//! The room timeline DSL references `AgentApprovalCard` and
+//! `AgentQuestionCard` unconditionally; this module defines them as empty,
+//! invisible views so that default builds
 //! contain no agent-chat UI at all. See `crate::agent_chat` for the real thing.
 
 use makepad_widgets::*;
@@ -16,6 +17,7 @@ script_mod! {
     }
     mod.widgets.ApprovalInbox = View {visible: false width: 0 height: 0}
     mod.widgets.OctosActionCard = View {visible: false width: 0 height: 0}
+    mod.widgets.AgentQuestionCard = View {visible: false width: 0 height: 0}
     mod.widgets.AgentOpsPanel = View {visible: false width: 0 height: 0}
     mod.widgets.AgentReply = View {visible: false width: 0 height: 0}
 

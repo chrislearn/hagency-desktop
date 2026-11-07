@@ -2806,5 +2806,17 @@
   "Resolve a reviewed interrupted task: continue remaining work, accept completion or keep blocked": "处理已核对的中断任务：继续剩余工作、确认完成或保持阻塞",
   "Inspect workspace recovery status for an authorized resource": "检查已授权资源的工作区恢复状态",
   "Clear a reviewed workspace dirty marker after inspection, preserving unresolved execution and shared ownership checks": "检查后清除经确认的工作区未完成标记，并保留未结清执行和共享归属检查",
-  "Change the reviewed agent’s execution permissions for its next dispatch, including unrestricted execution": "修改已核对 Agent 下次执行的权限，包括完全权限"
+  "Change the reviewed agent’s execution permissions for its next dispatch, including unrestricted execution": "修改已核对 Agent 下次执行的权限，包括完全权限",
+  "Other: type your own answer": "其他：输入你自己的回答",
+  "Send answer": "发送回答",
+  "Could not send the answer. Please try again.": "回答未发送，请重试。",
+  "Answered by {0}": "已由 {0} 回答",
+  "Expired · the Agent continued on its own": "已过期 · Agent 已自行继续",
+  "Sent · waiting for the Agent": "已发送 · 等待 Agent",
+  "Not sent · try again": "未发送 · 请重试",
+  "Waiting for an answer": "等待回答",
+  "Any member of this room can answer. With no answer by {0}, the Agent continues on its own.": "本聊天室的任何成员都可以回答。到 {0} 仍无人回答时，Agent 将自行继续。",
+  "A private question was not shown here and gets no answer.": "有一个私密问题未在此显示，也不会得到回答。",
+  "{0} asks": "{0} 提问",
+  "{0} asks a question. Open the room to answer it under your message.": "{0} 提了一个问题。打开聊天室，在你的消息下方回答。"
 }

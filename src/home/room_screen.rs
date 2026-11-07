@@ -423,6 +423,9 @@ script_mod! {
                 mini_app_card := mod.widgets.MiniAppCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 forward_card := mod.widgets.ForwardCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_approval_card := mod.widgets.AgentApprovalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_question_card := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_question_card_1 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_question_card_2 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_reply := mod.widgets.AgentReply {width: Fill}
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
@@ -472,6 +475,9 @@ script_mod! {
             mini_app_card := mod.widgets.MiniAppCard {}
                 forward_card := mod.widgets.ForwardCard {}
                 agent_approval_card := mod.widgets.AgentApprovalCard {}
+                agent_question_card := mod.widgets.AgentQuestionCard {}
+                agent_question_card_1 := mod.widgets.AgentQuestionCard {}
+                agent_question_card_2 := mod.widgets.AgentQuestionCard {}
                 octos_action_card := mod.widgets.OctosActionCard {}
                 agent_reply := mod.widgets.AgentReply {}
                 agent_usage := mod.widgets.AgentUsage {show_toggle: false}
@@ -610,6 +616,9 @@ script_mod! {
                 mini_app_card := mod.widgets.MiniAppCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 forward_card := mod.widgets.ForwardCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_approval_card := mod.widgets.AgentApprovalCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_question_card := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_question_card_1 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                agent_question_card_2 := mod.widgets.AgentQuestionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 octos_action_card := mod.widgets.OctosActionCard {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 agent_reply := mod.widgets.AgentReply {width: Fill}
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
@@ -1567,11 +1576,13 @@ impl Widget for RoomScreen {
                     if let Some(tl)=self.tl_state.as_mut() {tl.profile_drawn_since_last_update.clear();tl.content_drawn_since_last_update.clear();}
                     self.view.redraw(cx);
                 }
-                // Shared-execution requests arrive and resolve outside the timeline:
-                // re-populate so their cards appear, update and disappear in place.
+                // Shared-execution requests and Agent questions arrive and resolve
+                // outside the timeline: re-populate so their cards appear, update and
+                // disappear in place.
                 #[cfg(feature = "agent_chat")]
                 if action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalsChanged>().is_some()
                     || action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalDecided>().is_some()
+                    || action.downcast_ref::<crate::hagency::pending_questions::PendingQuestionsChanged>().is_some()
                 {
                     if let Some(tl) = self.tl_state.as_mut() {
                         tl.content_drawn_since_last_update.clear();
@@ -5944,6 +5955,7 @@ fn populate_message_view(
         if agent_chat_message.is_none() {
             populate_shared_permission_card(cx, &item, event_tl_item, timeline_kind);
         }
+        populate_agent_question_card(cx, &item, event_tl_item, timeline_kind);
     }
 
 
@@ -6185,6 +6197,30 @@ fn populate_shared_permission_card(
         LocalDecision::None => ApprovalDecisionState::Pending,
     };
     card.set_state(cx, Some(&crate::agent_chat::approval_card::ApprovalCardState { title, summary, decision, actions }));
+}
+
+/// Shows the question an Agent asked during the run this message started (the
+/// thread root in the room timeline), with its answer buttons, or hides the
+/// card. The card itself lives in the room as the Agent's own message; this
+/// only presents it and hands answers to the app to send.
+#[cfg(feature = "agent_chat")]
+fn populate_agent_question_card(
+    cx: &mut Cx,
+    item: &WidgetRef,
+    event_tl_item: &EventTimelineItem,
+    timeline_kind: &TimelineKind,
+) {
+    use crate::agent_chat::question_card::AgentQuestionCardWidgetRefExt;
+    let in_room_timeline = matches!(timeline_kind, TimelineKind::MainRoom { .. });
+    let shown = event_tl_item.event_id().map(|event_id| {
+        crate::hagency::pending_questions::for_event(timeline_kind.room_id(), event_id.as_str(), in_room_timeline)
+    }).unwrap_or_default();
+    let paths = [ids!(content.agent_question_card), ids!(content.agent_question_card_1), ids!(content.agent_question_card_2)];
+    debug_assert_eq!(paths.len(), crate::hagency::pending_questions::MAX_CARDS_PER_MESSAGE);
+    for (index, path) in paths.into_iter().enumerate() {
+        let view = shown.get(index).map(|q| crate::hagency::pending_questions::view(q, current_unix_time_millis()));
+        item.agent_question_card(cx, path).set_view(cx, view.as_ref());
+    }
 }
 
 /// Draws the Html or plaintext body of the given Text or Notice message into the `message_content_widget`.
@@ -7725,6 +7761,9 @@ impl Message {
         #[cfg(feature = "agent_chat")]
         let in_approval_card = self.view.widget(cx, ids!(content.agent_approval_card))
             .area().clipped_rect(cx).contains(abs)
+            || self.view.widget(cx, ids!(content.agent_question_card)).area().clipped_rect(cx).contains(abs)
+            || self.view.widget(cx, ids!(content.agent_question_card_1)).area().clipped_rect(cx).contains(abs)
+            || self.view.widget(cx, ids!(content.agent_question_card_2)).area().clipped_rect(cx).contains(abs)
             || self.view.widget(cx, ids!(content.octos_action_card)).area().clipped_rect(cx).contains(abs);
         #[cfg(not(feature = "agent_chat"))]
         let in_approval_card = false;

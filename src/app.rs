@@ -389,6 +389,33 @@ impl MatchEvent for App {
                 crate::hagency::pending_approvals::apply_decided(decided);
                 self.ui.redraw(cx);
             }
+            // Agent questions: a card's click produced an answer to send, an
+            // answer was sent (or not), or cards arrived from the room.
+            if let Some(request) = action.downcast_ref::<crate::hagency::pending_questions::QuestionAnswerRequested>() {
+                crate::hagency::pending_questions::send(request.clone());
+            }
+            if let Some(sent) = action.downcast_ref::<crate::hagency::pending_questions::QuestionAnswerSent>()
+                && crate::hagency::pending_questions::sent(sent)
+            {
+                if sent.result.is_err() {
+                    enqueue_popup_notification(
+                        crate::i18n::tr("Could not send the answer. Please try again."),
+                        PopupKind::Error,
+                        Some(8.0),
+                    );
+                }
+                cx.action(crate::hagency::pending_questions::PendingQuestionsChanged);
+                self.ui.redraw(cx);
+            }
+            if action.downcast_ref::<crate::hagency::pending_questions::PendingQuestionsChanged>().is_some() {
+                for (_, agent_name) in crate::hagency::pending_questions::take_announcements() {
+                    let text = crate::hagency::pending_questions::announcement(&agent_name);
+                    enqueue_popup_notification(text.clone(), PopupKind::Info, Some(20.0));
+                    // A no-op on backends without system notifications.
+                    cx.show_notification(&agent_name, &text);
+                }
+                self.ui.redraw(cx);
+            }
             if let Some(action) = action.downcast_ref::<crate::accounts::AccountAction>() {
                 if !crate::sliding_sync::account_changing() {
                     self.persist_runtime_state(cx, "account switch");
@@ -2141,6 +2168,7 @@ pub struct AppState {
 impl AppState {
     fn clear_for_session_end(&mut self) {
         crate::hagency::pending_approvals::forget_identity();
+        crate::hagency::pending_questions::forget_identity();
         *self = Self::default();
     }
 }
