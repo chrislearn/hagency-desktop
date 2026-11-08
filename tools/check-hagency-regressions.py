@@ -118,6 +118,7 @@ def main():
         ("owner-approval-navigation", "owner_approvals::tests"),
         ("owner-dashboard-host", "hagency::owner_dashboard::tests"),
         ("owner-hosting", "hagency::hosting::tests"),
+        ("owner-daemon-handoff", "hagency::backend::retirement_tests"),
         ("owner-renewal-warnings", "renewal_warning_tests"),
         ("article-editor", "article_app::"),
     ]:
