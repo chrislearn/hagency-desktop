@@ -61,6 +61,7 @@ base64.workspace = true
 subtle.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+lopdf = { version = "0.36", default-features = false }
 
 [dev-dependencies]
 hagency-store = { workspace = true, features = ["test-support"] }
@@ -77,6 +78,10 @@ rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 rusqlite = { workspace = true, features = ["bundled"] }
 tempfile.workspace = true
 tokio-rustls = { workspace = true, features = ["ring", "tls12"] }
+
+[[bin]]
+name = "hagency-document-probe"
+path = "tests/fixtures/document_peer.rs"
 
 [[bin]]
 name = "hagency-owned-mcp-probe"

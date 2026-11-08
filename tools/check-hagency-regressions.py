@@ -195,6 +195,8 @@ def main():
     run("native-account-inventory", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "account_inventory", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-owner-pool-limits", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution,resource-adoption", "--lib", "automatic_account_quota_does_not_couple_pools_or_erase_unknown_usage", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-capacity", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution", "--lib", "pool_agent_topup_requires_owner_keeps_unknown_usage_and_conserves_siblings", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-room-documents", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "documents::tests", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-pdf-parser", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--test", "documents", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     if not reached_start:
         raise SystemExit(f'Unknown start check: {args.start_at}')
 

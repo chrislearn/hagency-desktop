@@ -2,6 +2,9 @@
 use std::{collections::BTreeMap, ffi::OsString, io, path::PathBuf, time::Duration};
 
 pub mod legacy_writer;
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)] // Narrow PDFKit ownership/selector boundary, used by the disposable parser.
+pub mod pdf_text;
 #[allow(unsafe_code)] // Narrow getpwuid_r boundary; never inherits HOME for ownership.
 mod owner_home;
 pub mod private_state;
