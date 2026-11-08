@@ -57,6 +57,7 @@ pub struct SessionDriver<R, W, E> {
     /// Read-only account quota metadata from this process (never usage).
     rate_limits: super::rate_limits::RateLimitTracker,
     history_pending: BTreeSet<RequestId>,
+    file_pending: BTreeSet<RequestId>,
     /// The host asks people the model's questions and answers each one.
     user_input_enabled: bool,
     /// Every `item/tool/requestUserInput` this session saw, and where it
@@ -111,6 +112,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             policy_declines: 0,
             rate_limits: super::rate_limits::RateLimitTracker::default(),
             history_pending: BTreeSet::new(),
+            file_pending: BTreeSet::new(),
             user_input_enabled: false,
             user_input: BTreeMap::new(),
         })
@@ -605,6 +607,19 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
     pub async fn start_thread(&mut self) -> Result<String, Error> {
         self.open_thread(None).await
     }
+    pub fn enable_room_files(&mut self) -> Result<(), Error> {
+        if self.phase() != Phase::Ready || self.settings.read_only { return Err(Error::State); }
+        self.settings.room_files = true;
+        Ok(())
+    }
+    pub async fn respond_room_file(&mut self, call: &super::RoomFileCall, content: String) -> Result<(), Error> {
+        if self.phase() != Phase::Running || !self.settings.room_files
+            || self.thread_id() != Some(call.thread.as_str()) || self.turn_id() != Some(call.turn.as_str())
+            || !self.file_pending.contains(&call.id) || content.len() > super::ROOM_FILE_RESULT_BYTES { return Err(Error::Scope); }
+        self.wire.send(transport::Command::RespondRoomFile { call: call.clone(), content }).await.map_err(Error::Transport)?;
+        self.file_pending.remove(&call.id);
+        Ok(())
+    }
     pub fn enable_room_history(&mut self) -> Result<(), Error> {
         if self.phase() != Phase::Ready {
             return Err(Error::State);
@@ -868,7 +883,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                 id,
                 method,
                 params: Some(params),
-            } if method == "item/tool/call" && self.settings.room_history => {
+            } if method == "item/tool/call" && (self.settings.room_history || self.settings.room_files) => {
                 if self.phase() != Phase::Running
                     || params["threadId"].as_str() != self.thread_id()
                     || params["turnId"].as_str() != self.turn_id()
@@ -883,6 +898,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                     );
                     return Err(Error::Scope);
                 }
+                if self.settings.room_files && super::ROOM_FILE_TOOLS.iter().any(|name| params["tool"] == *name) {
+                    let call = super::RoomFileCall::parse(id.clone(), &params)?;
+                    if !self.file_pending.insert(id) { return Err(Error::Scope); }
+                    self.observation_kind = super::ObservationKind::Ignored;
+                    return Ok(Update::RoomFile(call));
+                }
+                if !self.settings.room_history { return Err(Error::UnsupportedRequest); }
                 let call = super::RoomHistoryCall::parse(id.clone(), &params)?;
                 if !self.history_pending.insert(id) {
                     return Err(Error::Scope);

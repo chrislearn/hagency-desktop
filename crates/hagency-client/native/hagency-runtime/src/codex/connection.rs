@@ -318,6 +318,18 @@ impl Connection {
         Ok(bytes)
     }
 
+    pub fn respond_room_file(&mut self, call: &super::session::RoomFileCall, content: &str, now_ms: u64) -> Result<Vec<u8>, Error> {
+        self.tick(now_ms)?;
+        let pending = self.server_pending.get(&call.id).ok_or(Error::Identity)?;
+        let params = pending.params.as_ref().ok_or(Error::Identity)?;
+        if pending.responded || pending.method != "item/tool/call"
+            || params["tool"] != call.operation.name() || params["threadId"] != call.thread || params["turnId"] != call.turn
+            || content.len() > super::session::ROOM_FILE_RESULT_BYTES { return Err(Error::Identity); }
+        let bytes = encode(Message::Response { id: call.id.clone(), result: json!({"contentItems":[{"type":"inputText","text":content}],"success":true}) })?;
+        self.server_pending.remove(&call.id);
+        Ok(bytes)
+    }
+
     /// The one answer to a pending `item/tool/requestUserInput`. Like the
     /// history response it removes the pending scope, so an approval, another
     /// callback, an expired request or a second answer cannot be written here.
@@ -497,7 +509,7 @@ impl Connection {
                             .ok_or(Error::Envelope)
                     })
                     .transpose()?;
-                // Typed approvals and the scoped read-only history response
+                // Typed approvals and the scoped room tool responses
                 // need a content-bound copy.
                 // Bound it before cloning; unrelated unsupported callbacks keep
                 // no payload copy in the connection's pending table.
@@ -510,7 +522,9 @@ impl Connection {
                 );
                 let history = method == "item/tool/call"
                     && params.as_ref().and_then(|p|p["tool"].as_str()) == Some(super::session::ROOM_HISTORY_TOOL);
-                let response_params = if (approval || history)
+                let files = method == "item/tool/call"
+                    && params.as_ref().and_then(|p|p["tool"].as_str()).is_some_and(|tool|super::session::ROOM_FILE_TOOLS.contains(&tool));
+                let response_params = if (approval || history || files)
                     && serde_json::to_vec(&params)
                         .map_err(|_| Error::Envelope)?
                         .len()

@@ -352,6 +352,7 @@ impl OwnedSession {
 /// delta. Hosts cannot manufacture or rebind this event from JSON.
 pub struct SharedTextEvent {
     history_call: Option<crate::codex::session::RoomHistoryCall>,
+    file_call: Option<crate::codex::session::RoomFileCall>,
     user_input: Option<crate::codex::session::UserInputRequest>,
     user_input_resolved: Option<crate::codex::RequestId>,
     history_tool: bool,
@@ -363,6 +364,7 @@ pub struct SharedTextEvent {
     delta: Option<(String, String)>,
 }
 impl SharedTextEvent {
+    pub fn room_file_call(&self) -> Option<&crate::codex::session::RoomFileCall> { self.file_call.as_ref() }
     pub fn room_history_call(&self) -> Option<&crate::codex::session::RoomHistoryCall> { self.history_call.as_ref() }
     /// The model's question, on a session whose host opted in to ask it.
     pub fn user_input(&self) -> Option<&crate::codex::session::UserInputRequest> { self.user_input.as_ref() }
@@ -386,6 +388,9 @@ impl SharedTextEvent {
     }
 }
 impl OwnedSession {
+    pub fn shared_tools_enabled(&self) -> bool {
+        self.text_source.state.lock().is_ok_and(|state| state.tools)
+    }
     /// Yield for host maintenance without cancelling the retained pipe read.
     /// Approval authority remains independently controlled by the session.
     pub async fn next_shared_event_or_tick(&mut self) -> Result<Option<SharedTextEvent>, Error> {
@@ -403,6 +408,7 @@ impl OwnedSession {
         self.shared_event(update, observation)
     }
     pub fn shared_event(&self, update: crate::codex::session::Update, observation: crate::codex::session::Observation) -> Result<SharedTextEvent, Error> {
+        let file_call = match &update { crate::codex::session::Update::RoomFile(call) => Some(call.clone()), _ => None };
         let history_call = match &update { crate::codex::session::Update::RoomHistory(call) => Some(call.clone()), _ => None };
         let user_input = match &update { crate::codex::session::Update::UserInput(request) => Some(request.clone()), _ => None };
         let user_input_resolved = match &update { crate::codex::session::Update::UserInputResolved { id } => Some(id.clone()), _ => None };
@@ -421,7 +427,7 @@ impl OwnedSession {
             None
         };
         Ok(SharedTextEvent {
-            history_call, history_tool, user_input, user_input_resolved,
+            history_call, file_call, history_tool, user_input, user_input_resolved,
             hosted_web, tools, approval,
             source: self.text_source.clone(),
             observation,

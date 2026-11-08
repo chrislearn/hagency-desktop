@@ -3,7 +3,7 @@ use crate::documents::{MAX_FILE_BYTES, Text};
 use serde_json::{Value, json};
 
 pub(super) fn metadata(content: &Value) -> Option<Value> {
-    if content["msgtype"] != "m.file" {
+    if !matches!(content["msgtype"].as_str(), Some("m.file" | "m.image" | "m.audio" | "m.video")) {
         return None;
     }
     let filename = content
@@ -55,15 +55,15 @@ fn source(
     Ok((id, descriptor))
 }
 
+pub(in crate::console) struct RoomFile {
+    pub bytes: Vec<u8>,
+    pub filename: String,
+    pub mime: Option<String>,
+}
+
 impl AgentDevice {
-    /// The caller selects only events already returned from this admitted
-    /// room's history. Recheck current visibility, sender trust and redaction;
-    /// obtain bytes using this Agent's credentials, never the user's session.
-    pub(in crate::console) async fn read_document(
-        &self,
-        room: &str,
-        event: &str,
-    ) -> Result<Text, &'static str> {
+    pub(in crate::console) async fn receive_room_file(&self, room: &str, event: &str) -> Result<RoomFile, &'static str> {
+        if self.is_revoked() { return Err("attachment_unavailable"); }
         let room_id = OwnedRoomId::try_from(room).map_err(|_| "invalid_attachment")?;
         let event_id = OwnedEventId::try_from(event).map_err(|_| "invalid_attachment")?;
         let room = self
@@ -79,7 +79,6 @@ impl AgentDevice {
         }
         let record = history::history_event(&event).ok_or("attachment_unavailable")?;
         if record.get("status").is_some()
-            || record["messageType"] != "m.file"
             || record.get("attachment").is_none()
         {
             return Err("attachment_unavailable");
@@ -98,17 +97,25 @@ impl AgentDevice {
             None => codec.check(bytes),
         }
         .map_err(|_| "attachment_integrity_failed")?;
-        let bytes = checked.bytes();
-        let filename = record["attachment"]["filename"]
-            .as_str()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let mime = record["attachment"]["mimeType"]
-            .as_str()
-            .unwrap_or_default()
-            .split(';')
-            .next()
-            .unwrap_or_default();
+        Ok(RoomFile {
+            bytes: checked.bytes().to_vec(),
+            filename: record["attachment"]["filename"].as_str().ok_or("invalid_attachment")?.into(),
+            mime: record["attachment"]["mimeType"].as_str().map(str::to_owned),
+        })
+    }
+
+    /// The caller selects only events already returned from this admitted
+    /// room's history. Recheck current visibility, sender trust and redaction;
+    /// obtain bytes using this Agent's credentials, never the user's session.
+    pub(in crate::console) async fn read_document(
+        &self,
+        room: &str,
+        event: &str,
+    ) -> Result<Text, &'static str> {
+        let file = self.receive_room_file(room, event).await?;
+        let bytes = file.bytes.as_slice();
+        let filename = file.filename.to_ascii_lowercase();
+        let mime = file.mime.as_deref().unwrap_or_default().split(';').next().unwrap_or_default();
         if bytes.starts_with(b"%PDF-") || mime == "application/pdf" || filename.ends_with(".pdf") {
             return crate::documents::pdf(bytes.to_vec()).await;
         }

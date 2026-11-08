@@ -197,6 +197,9 @@ def main():
     run("native-capacity", ["cargo", "test", "--locked", "-p", "hagency-store", "--features", "shared-budget-execution", "--lib", "pool_agent_topup_requires_owner_keeps_unknown_usage_and_conserves_siblings", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-room-documents", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "documents::tests", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     run("native-pdf-parser", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--test", "documents", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-chat-file-protocol", ["cargo", "test", "--locked", "-p", "hagency-runtime", "--features", "shared-context", "--test", "session", "native_room_file", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-chat-file-service", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "chat_files_", "--", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
+    run("native-chat-file-execution", ["cargo", "test", "--locked", "-p", "hagency", "--features", "shared-budget-execution,resource-adoption", "--lib", "native_shared_chat_files_cross_", "--", "--ignored", "--test-threads=1"], cwd=CLIENT, rust_tests=True)
     if not reached_start:
         raise SystemExit(f'Unknown start check: {args.start_at}')
 
