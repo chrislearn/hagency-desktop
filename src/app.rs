@@ -2241,6 +2241,14 @@ pub(crate) fn workspace_navigation(action: &Action) -> bool {
         || matches!(action.downcast_ref::<AppStateAction>(), Some(AppStateAction::NavigateToRoom {..}))
         || action.downcast_ref::<crate::home::room_history::RoomHistoryAction>().is_some()
         || action.downcast_ref::<HagencyAction>().is_some()
+        || matches!(action.downcast_ref::<crate::home::main_desktop_ui::MainDesktopUiAction>(),
+            Some(crate::home::main_desktop_ui::MainDesktopUiAction::ShowChats))
+        || matches!(action.downcast_ref::<WebBrowserAction>(),
+            Some(WebBrowserAction::Open(_) | WebBrowserAction::OpenMarkdown {..} | WebBrowserAction::ReadArticle {..}))
+        || matches!(action.downcast_ref::<MiniAppsAction>(), Some(MiniAppsAction::Open | MiniAppsAction::OpenReviewed))
+        || matches!(action.downcast_ref::<ThemeStudioAction>(), Some(ThemeStudioAction::Open))
+        || matches!(action.downcast_ref::<AgentAccessAction>(), Some(AgentAccessAction::Open))
+        || matches!(action.downcast_ref::<SpaceManagementAction>(), Some(SpaceManagementAction::Open {..}))
 }
 
 

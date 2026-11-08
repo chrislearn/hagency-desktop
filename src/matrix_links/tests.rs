@@ -313,7 +313,15 @@ async fn scope_original_client_nonce_and_dismissal_reject_late_results() {
     let navigation = conversation(&room, Some("$ancient".try_into().unwrap()), old.clone())
         .await
         .unwrap();
-    controller.cancel();
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let actions = cx.capture_actions(|cx| {
+        cx.action(crate::shared::web_browser::WebBrowserAction::Open(
+            url::Url::parse("https://example.org/").unwrap(),
+        ))
+    });
+    for action in &actions {
+        controller.observe_navigation(action);
+    }
     assert!(!old.is_current());
     assert!(
         controller
