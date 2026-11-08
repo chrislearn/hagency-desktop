@@ -144,6 +144,9 @@ pub fn requested<S: AsRef<OsStr>>(args: &[S]) -> bool {
 /// synchronous `main`, before any UI or async runtime starts.
 pub fn run_if_requested() -> Option<i32> {
     let args: Vec<OsString> = std::env::args_os().collect();
+    if let Some(status) = crate::documents::worker_if_requested(&args) {
+        return Some(status);
+    }
     if !requested(&args) {
         return None;
     }

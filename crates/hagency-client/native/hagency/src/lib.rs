@@ -20,6 +20,7 @@ pub mod bot_commands;
 pub mod console;
 /// Per-user owner daemon and its private local control API (ADR 0012).
 pub mod daemon;
+mod documents;
 /// Questions an Agent asks its room during a run, and the room's answers.
 pub mod agent_questions;
 pub mod encrypted_approvals;

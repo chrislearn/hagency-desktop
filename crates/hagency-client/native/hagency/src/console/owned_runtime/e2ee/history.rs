@@ -63,7 +63,7 @@ impl AgentDevice {
     }
 }
 
-fn history_event(event: &TimelineEvent) -> Option<Value> {
+pub(super) fn history_event(event: &TimelineEvent) -> Option<Value> {
     let raw: Value = serde_json::from_str(event.kind.raw().json().get()).ok()?;
     let unavailable_reason = match &event.kind {
         TimelineEventKind::UnableToDecrypt { .. } => Some("unable_to_decrypt"),
@@ -165,6 +165,13 @@ pub(in crate::console) fn history_record(raw: &Value, unavailable: bool) -> Opti
         record["status"] = "unavailable_invalid_message".into();
         record["unavailableReason"] = "body_is_not_text".into();
     }
+    if content["msgtype"] == "m.file"
+        && let Some(metadata) = super::documents::metadata(content)
+    {
+        // Only a display descriptor reaches the model. URL, key, IV and hash
+        // remain in the authenticated event on this Agent's own device.
+        record["attachment"] = metadata;
+    }
     if let Some(root) = matrix_id(&relation["event_id"], '$') {
         record["relatedEventId"] = root.into();
     }
@@ -177,6 +184,20 @@ mod tests {
 
     fn event(id: &str, content: Value) -> Value {
         json!({"type":"m.room.message","event_id":id,"sender":"@member:example.test","origin_server_ts":1700000000000u64,"content":content})
+    }
+
+    #[test]
+    fn history_file_records_expose_only_metadata_and_never_unavailable_attachment_keys() {
+        let raw = event("$file", json!({"msgtype":"m.file","body":"设计.pdf","file":{"url":"mxc://example.test/secret","key":"private-key","iv":"private-iv"},"info":{"mimetype":"application/pdf","size":100}}));
+        let record = history_record(&raw, false).unwrap();
+        assert_eq!(record["attachment"]["filename"], "设计.pdf");
+        assert_eq!(record["attachment"]["status"], "not_read");
+        assert!(!record.to_string().contains("private"));
+        assert!(!record.to_string().contains("mxc://"));
+        assert!(history_record(&raw, true).unwrap().get("attachment").is_none());
+        let mut redacted = raw.clone();
+        redacted["unsigned"] = json!({"redacted_because":{}});
+        assert!(history_record(&redacted, false).unwrap().get("attachment").is_none());
     }
 
     #[test]
