@@ -7,6 +7,7 @@ pub mod agent_usage;
 pub mod collapsible_header;
 pub mod context_menu;
 pub mod expand_arrow;
+pub mod dropdown;
 pub mod confirmation_modal;
 pub mod file_upload_modal;
 pub mod helpers;
@@ -45,6 +46,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     crate::theme::script_mod(vm);
     cached_widget::script_mod(vm);
     styles::script_mod(vm);
+    dropdown::script_mod(vm);
     design_tokens::script_mod(vm);
     pane_splitter::script_mod(vm);
     helpers::script_mod(vm);
