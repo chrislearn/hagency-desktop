@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 use makepad_widgets::*;
+use crate::matrix_links::Controller as MatrixLinkController;
 use matrix_sdk::{RoomState, ruma::{OwnedEventId, OwnedRoomId, OwnedUserId, RoomId}};
 use serde::{Deserialize, Serialize};
 use crate::{
@@ -238,6 +239,7 @@ app_main!(App);
 
 #[derive(Script)]
 pub struct App {
+    #[rust] matrix_link_navigation: MatrixLinkController,
     #[live] ui: WidgetRef,
     /// Hosted inside OctoSense: `ui` is the window-less `RinxContent`, and the host
     /// owns the window, its geometry and menus.
@@ -379,6 +381,15 @@ impl MatchEvent for App {
         }
 
         for action in actions {
+            let effects = self.matrix_link_navigation.observe_navigation(action);
+            self.apply_matrix_link_effects(cx, effects);
+            if let Some(link) = action.downcast_ref::<crate::matrix_links::LinkAction>() {
+                let effects = self.matrix_link_navigation.action(link);
+                self.apply_matrix_link_effects(cx, effects);
+            }
+            if let Some(link) = action.downcast_ref::<makepad_widgets::makepad_platform::event::NativeDeepLink>() {
+                crate::matrix_links::open(&link.url);
+            }
             if let Some(update) = action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalsUpdate>() {
                 if crate::hagency::pending_approvals::apply(cx, update) {
                     cx.action(crate::hagency::pending_approvals::PendingApprovalsChanged);
@@ -1255,7 +1266,27 @@ impl App {
             .set_overlay_occluded(cx, occluded);
     }
 
+    fn apply_matrix_link_effects(&mut self, cx: &mut Cx, effects: Vec<crate::matrix_links::Effect>) {
+        use crate::matrix_links::Effect;
+        for effect in effects {
+            match effect {
+                Effect::CloseJoin => self.ui.modal(cx, ids!(join_leave_modal)).close(cx),
+                Effect::Join {ticket, details, is_space} if ticket.is_current() => {
+                    self.ui.join_leave_room_modal(cx, ids!(join_leave_modal.content)).set_kind(cx,
+                        JoinLeaveModalKind::JoinMatrixLink {details: *details, is_space, ticket}, false);
+                    self.ui.modal(cx, ids!(join_leave_modal)).open(cx);
+                }
+                Effect::Navigate(navigation) if navigation.is_current() => {
+                    crate::matrix_links::publish_navigation(cx, navigation);
+                }
+                Effect::Error(epoch, error) => crate::matrix_links::publish_error(epoch, error),
+                _ => (),
+            }
+        }
+    }
+
     fn clear_session_ui(&mut self, cx: &mut Cx) {
+        self.matrix_link_navigation.cancel();
         self.lifecycle.last_app_state_save = None;
         self.pending_signup_navigation = None;
         self.ui.image_viewer(cx, ids!(image_viewer_modal.content)).reset(cx);
@@ -1418,6 +1449,13 @@ impl AppMain for App {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        let effects = self.matrix_link_navigation.poll();
+        self.apply_matrix_link_effects(cx, effects);
+        if matches!(event, Event::BackPressed {..} | Event::KeyDown(KeyEvent {key_code: KeyCode::Escape, ..}))
+            && self.matrix_link_navigation.cancel_loading() {
+            event.back_pressed();
+            return;
+        }
         crate::theme::system::handle_event(cx, event);
         if self.approvals_timer.is_event(event).is_some() {
             crate::hagency::pending_approvals::poll();
@@ -2192,6 +2230,19 @@ impl AppState {
         *self = Self::default();
     }
 }
+
+/// Navigation intents that replace an in-flight permalink.
+pub(crate) fn workspace_navigation(action: &Action) -> bool {
+    matches!(action.downcast_ref::<NavigationBarAction>(), Some(
+        NavigationBarAction::GoToTab(_) | NavigationBarAction::GoToHome
+        | NavigationBarAction::GoToAddRoom | NavigationBarAction::GoToSpace {..}
+        | NavigationBarAction::OpenSettings | NavigationBarAction::OpenOwnProfile
+        | NavigationBarAction::NewChat))
+        || matches!(action.downcast_ref::<AppStateAction>(), Some(AppStateAction::NavigateToRoom {..}))
+        || action.downcast_ref::<crate::home::room_history::RoomHistoryAction>().is_some()
+        || action.downcast_ref::<HagencyAction>().is_some()
+}
+
 
 #[cfg(test)]
 mod session_state_tests {

@@ -1476,6 +1476,11 @@ impl RoomInputBar {
 }
 
 impl RoomInputBarRef {
+    #[cfg(test)]
+    pub(crate) fn matrix_link_context(&self) -> Option<TimelineKind> {
+        self.borrow().and_then(|inner|inner.timeline_kind.clone())
+    }
+
     /// Shows a preview of the given event that the user is currently replying to
     /// above the message input bar.
     pub fn show_replying_to(

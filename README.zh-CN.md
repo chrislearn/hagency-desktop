@@ -55,6 +55,10 @@ Transfer、Article editor、Browser、Settings。Project 条目的 **⋯** 可�
 Hagency 管理由原生 Projects/Agents 页面承担，旧资源与协调者审批流程已移除。
 Agent 加密 Room 执行暂缓，这不等于删除 Matrix 聊天的加密能力。
 
+Matrix Room、别名和消息链接在应用内打开；未加入的 Room 先显示加入确认。
+消息链接定位到原 Room 或线程，聊天中的用户链接仍打开资料面板。详见
+[Matrix 链接导航](docs/matrix-links.md)。
+
 ## 账号、设置与本地数据
 
 通过 **Settings → Account** 的账号列表添加或切换账号；左下角账号菜单可打开

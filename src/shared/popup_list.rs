@@ -4,7 +4,7 @@ use crossbeam_queue::SegQueue;
 use makepad_widgets::*;
 use crate::{LivePtr, view_from_live_ptr};
 
-static PENDING_POPUP_NOTIFICATIONS: SegQueue<PopupItem> = SegQueue::new();
+static PENDING_POPUP_NOTIFICATIONS: SegQueue<(Option<u64>, PopupItem)> = SegQueue::new();
 
 /// Displays a new popup notification with a popup item.
 ///
@@ -26,7 +26,12 @@ pub fn enqueue_popup_notification(
     popup_item.auto_dismissal_duration = popup_item
         .auto_dismissal_duration
         .map(|duration| duration.min(3. * 60.));
-    PENDING_POPUP_NOTIFICATIONS.push(popup_item);
+    PENDING_POPUP_NOTIFICATIONS.push((None, popup_item));
+    SignalToUI::set_ui_signal();
+}
+
+pub(crate) fn enqueue_scoped_popup_notification(epoch: u64, message: String, kind: PopupKind, duration: Option<f64>) {
+    PENDING_POPUP_NOTIFICATIONS.push((Some(epoch), PopupItem {message: message.into(), kind, auto_dismissal_duration: duration}));
     SignalToUI::set_ui_signal();
 }
 
@@ -428,7 +433,8 @@ impl Widget for RobrixPopupNotification {
             }
         }
         if matches!(event, Event::Signal) {
-            while let Some(popup_item) = PENDING_POPUP_NOTIFICATIONS.pop() {
+            while let Some((epoch, popup_item)) = PENDING_POPUP_NOTIFICATIONS.pop() {
+                if epoch.is_some_and(|epoch| epoch != crate::account_session::epoch()) { continue; }
                 self.push(cx, popup_item);
             }
         }

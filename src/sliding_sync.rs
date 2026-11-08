@@ -6582,3 +6582,9 @@ async fn change_account_ui() -> Result<()> {
     Cx::post_action(LoginAction::AccountPickerReady);
     Ok(())
 }
+
+/// Isolated Matrix link tests install no sync service, owner or daemon.
+#[cfg(test)]
+pub(crate) fn install_link_test_client(client: Option<Client>) {
+    CLIENT.replace(client, || {});
+}
