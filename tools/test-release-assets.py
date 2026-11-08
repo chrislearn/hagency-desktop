@@ -21,7 +21,7 @@ class ReleaseAssets(unittest.TestCase):
         self.previous_sha = os.environ.get('GITHUB_SHA')
         os.environ['GITHUB_SHA'] = 'a'*40
         self.addCleanup(self.restore_sha)
-        (self.root/'Cargo.toml').write_text('[package]\nversion="0.5.0-rc.1"\n[dependencies]\nhagency={rev="client"}\nmakepad-app-module={rev="makepad"}\n')
+        (self.root/'Cargo.toml').write_text('[package]\nversion="0.5.0-rc.1"\n[dependencies]\nhagency={path="crates/hagency-client/native/hagency"}\nmakepad-app-module={rev="makepad"}\n')
         self.out = self.root/'release-assets'
         self.out.mkdir()
         for platform, arch in [('macos','arm64'), ('windows','amd64')]:
@@ -47,6 +47,19 @@ class ReleaseAssets(unittest.TestCase):
     def test_changed_installer_is_rejected(self):
         (self.out/'hagency-desktop-windows-amd64.exe').write_bytes(b'wrong build')
         with self.assertRaisesRegex(AssertionError, 'Checksum mismatch'):
+            release.verify('macos-arm64-windows')
+
+    def test_library_source_is_the_desktop_commit(self):
+        metadata = release.metadata()
+        self.assertEqual(metadata['clientCommit'], metadata['sourceCommit'])
+        self.assertEqual(metadata['clientPath'], 'crates/hagency-client')
+
+    def test_external_client_revision_is_rejected(self):
+        path = self.out/'build-windows-amd64.json'
+        report = json.loads(path.read_text())
+        report['clientCommit'] = 'c'*40
+        path.write_text(json.dumps(report))
+        with self.assertRaisesRegex(AssertionError, 'Mixed source versions'):
             release.verify('macos-arm64-windows')
 
     def test_different_source_commit_is_rejected(self):

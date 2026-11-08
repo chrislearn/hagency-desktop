@@ -1,0 +1,24 @@
+[package]
+name = "hagency-permissions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+hagency-core.workspace = true
+hagency-store.workspace = true
+hagency-runtime.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+hagency-platform = { workspace = true, features = ["test-support"] }
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+rusqlite = { workspace = true, features = ["bundled"], default-features = true }
+
+[lints]
+workspace = true

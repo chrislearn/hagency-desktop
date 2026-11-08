@@ -121,7 +121,7 @@ shell 或 MCP 执行。
 
 重启会恢复已保存的运行意图。规则是只恢复曾明确 Start、且没有显式 Stop 的 Room，重新核验当前主人、设备、租约、资源和完整账本后使用保存的预留量、effort 与 host files 选择。**停止处理消息将该范围排除在重启恢复之外**；正常关闭程序不是同一个指令。Agent active 或保存模型不能自动启动全部 Room。资源缺失、未知费用、失去成员权限或指定其他设备均应阻断，不自动重推理或 takeover。
 
-Agent 不限额不会绕过 Room／成员的有限额度或显式请求拒绝。已送出的策略暂停回复不算正常推理成功。[运行恢复记录](../../hagency-client/docs/design/2026-10-08-agent-runtime-recovery.zh-CN.md) 记录普通/快速重启、显式 Stop 排除及尚未覆盖的实机分支。
+Agent 不限额不会绕过 Room／成员的有限额度或显式请求拒绝。已送出的策略暂停回复不算正常推理成功。[运行恢复记录](https://github.com/hagency-org/hagency-client/blob/6cd99ceb84ae407b2315dcd0f5e900022eebac06/docs/design/2026-10-08-agent-runtime-recovery.zh-CN.md) 记录普通/快速重启、显式 Stop 排除及尚未覆盖的实机分支。
 
 ## 失败与恢复
 

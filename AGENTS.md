@@ -734,7 +734,7 @@ script_mod! {
 ## Hagency budget and chat release checks
 
 For changes to Hagency budgets, chat rendering, execution activity or answer actions,
-run `python3 tools/check-hagency-regressions.py --output .run/regressions --client ../hagency-client`
+run `python3 tools/check-hagency-regressions.py --output .run/regressions`
 from the Desktop root before promoting a build. The same Desktop checks run in CI.
 Keep Markdown, previews, activity and copy/forward/export checks together when fixing any
 one of them. A zero-test filtered run is not a passing check.

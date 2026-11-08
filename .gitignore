@@ -1,5 +1,6 @@
 ## Cargo generated directory
 /target
+**/target
 **/target/
 ## cargo-packager generated directory
 /dist

@@ -1,0 +1,86 @@
+[workspace]
+members = ["native/hagency-agent-local", "native/hagency-core", "native/hagency-store", "native/hagency", "native/hagency-crypto-proof", "native/hagency-platform", "native/hagency-runtime", "native/hagency-palpo", "native/hagency-permissions", "native/hagency-matrix", "native/hagency-matrix-format", "native/hagency-metering", "native/hagency-progress", "native/hagency-execution", "native/hagency-progress-runtime", "native/hagency-files", "native/hagency-media", "native/hagency-media-store"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+base64 = { version = "=0.22.1" }
+cap-fs-ext = { version = "=4.0.3" }
+cap-std = { version = "=4.0.3" }
+clap = { version = "4.5.54" }
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+chrono-tz = { version = "=0.10.4", default-features = false, features = ["std"] }
+getrandom = { version = "=0.3.4" }
+hagency-core = { path = "native/hagency-core" }
+hagency-execution = { path = "native/hagency-execution" }
+hagency-files = { path = "native/hagency-files" }
+hagency-matrix = { path = "native/hagency-matrix" }
+hagency-matrix-format = { path = "native/hagency-matrix-format" }
+hagency-media = { path = "native/hagency-media" }
+hagency-media-store = { path = "native/hagency-media-store" }
+hagency-metering = { path = "native/hagency-metering" }
+hagency-palpo = { path = "native/hagency-palpo" }
+hagency-platform = { path = "native/hagency-platform" }
+hagency-progress = { path = "native/hagency-progress" }
+hagency-runtime = { path = "native/hagency-runtime" }
+hagency-store = { path = "native/hagency-store" }
+hmac = { version = "=0.12.1" }
+http = { version = "=1.5.0" }
+http-body-util = { version = "=0.1.5" }
+hyper = { version = "=1.11.1", default-features = false }
+hyper-util = { version = "=0.1.20", default-features = false }
+idna = { version = "=1.1.0" }
+libc = { version = "0.2.186" }
+linkify = { version = "=0.10.0" }
+markdown = { version = "=1.0.0" }
+matrix-sdk = { version = "=0.19.1", default-features = false }
+matrix-sdk-base = { version = "=0.19.1" }
+matrix-sdk-common = { version = "=0.19.1" }
+matrix-sdk-crypto = { version = "=0.19.1" }
+matrix-sdk-sqlite = { version = "=0.19.1", default-features = false }
+matrix-sdk-store-encryption = { version = "=0.19.1" }
+mdurl = { version = "=0.3.1" }
+regex = { version = "=1.13.1" }
+reqwest = { version = "=0.12.28", default-features = false }
+rmcp = { version = "=1.8.0", default-features = false }
+ruma = { version = "=0.17.0" }
+ruma-common = { version = "=0.20.0" }
+rusqlite = { version = "=0.40.2", default-features = false, features = ["cache"] }
+rustix = { version = "=1.1.4" }
+ryu-js = { version = "=1.0.3" }
+salvo = { version = "=1.0.1", default-features = false }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149", features = ["float_roundtrip"] }
+sha2 = "0.10.9"
+subtle = { version = "2.6.1" }
+tempfile = "3.24.0"
+thiserror = "2.0.18"
+time = { version = "=0.3.55", default-features = false }
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tokio-rustls = { version = "=0.26.4", default-features = false }
+tokio-util = { version = "=0.7.19" }
+tracing = { version = "0.1.44" }
+tracing-subscriber = { version = "0.3.22" }
+unicode-general-category = { version = "=0.6.0" }
+unicode-normalization = { version = "=0.1.25" }
+windows-sys = { version = "=0.61.2" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+
+# Keep complete executable integrity checks practical in unoptimized test builds.
+[profile.dev.package."sha2@0.10.9"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+strip = true

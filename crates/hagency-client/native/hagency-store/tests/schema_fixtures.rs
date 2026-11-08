@@ -1,0 +1,124 @@
+mod common;
+
+#[test]
+fn native_stopped_inspection_schema34_upgrade() {
+    let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+    let state = root.path().join("state");
+    let mut db = hagency_store::DomainRepository::open(&state).unwrap();
+    let resource = common::resource("preserved", "seat", 1000);
+    db.put_resource(&resource).unwrap();
+    drop(db);
+    let sql = rusqlite::Connection::open(state.join("domain.sqlite3")).unwrap();
+    common::remove_coordinator_schema(&sql);
+    sql.execute_batch("ALTER TABLE runner_sessions DROP COLUMN model_override; ALTER TABLE runner_sessions DROP COLUMN mode_override; DROP TABLE owned_stop_inspections; ALTER TABLE dispatch_inputs DROP COLUMN addressed; DROP TABLE IF EXISTS dispatch_conversation_reads; ALTER TABLE runner_attempts DROP COLUMN started_at; ALTER TABLE runner_attempts DROP COLUMN parked_at; ALTER TABLE runner_attempts DROP COLUMN last_renew_at; ALTER TABLE runner_attempts DROP COLUMN settled_at; ALTER TABLE runner_attempts DROP COLUMN terminal_reason; DROP TABLE IF EXISTS runner_attempt_events; DROP TABLE IF EXISTS agent_fences; DROP TABLE IF EXISTS avatar_requests; DROP TABLE IF EXISTS agent_tombstones; DROP TABLE IF EXISTS delivery_events; DROP TABLE IF EXISTS operator_messages; DROP TABLE IF EXISTS dispatch_activity_events; DROP TABLE IF EXISTS dispatch_activity;  DROP TABLE IF EXISTS pending_invites;  DROP TABLE IF EXISTS ceiling_alert_notes; DROP TABLE IF EXISTS agent_lifecycle; DROP TABLE IF EXISTS side_registrations; DROP VIEW IF EXISTS current_command_notices; DROP TABLE IF EXISTS command_notice_inspections; DROP TABLE IF EXISTS command_notices; ALTER TABLE final_replies DROP COLUMN incidental; DROP TABLE IF EXISTS operator_tasks; DROP TABLE IF EXISTS operator_task_comments; DROP TABLE IF EXISTS side_records; DROP TABLE IF EXISTS side_projects;   ALTER TABLE decisions DROP COLUMN kind; ALTER TABLE decisions DROP COLUMN at; DROP TABLE IF EXISTS reminders; DROP TABLE IF EXISTS room_trust;  DROP TABLE IF EXISTS quota_holds; DROP TABLE IF EXISTS owner_anchors; DROP TABLE IF EXISTS joined_rooms; ALTER TABLE engagements DROP COLUMN allocated_tokens; DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=33;")
+        .unwrap();
+    let before: String = sql
+        .query_row(
+            "SELECT config FROM resources WHERE id=?1",
+            [resource.id()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    drop(sql);
+    for _ in 0..2 {
+        let db = hagency_store::DomainRepository::open(&state).unwrap();
+        assert!(
+            db.owned_stop_inspection("no_original_receipt", 1)
+                .unwrap()
+                .is_none()
+        );
+        drop(db);
+        let sql = rusqlite::Connection::open(state.join("domain.sqlite3")).unwrap();
+        assert_eq!(
+            sql.pragma_query_value(None, "user_version", |r| r.get::<_, u64>(0))
+                .unwrap(),
+            hagency_store::DOMAIN_SCHEMA_VERSION as u64
+        );
+        assert_eq!(
+            sql.query_row(
+                "SELECT config FROM resources WHERE id=?1",
+                [resource.id()],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            before
+        );
+    }
+}
+
+#[test]
+fn native_owner_approval_recovery_crlf_fixture() {
+    let schemas = [
+        include_str!("../src/domain.sql"),
+        include_str!("../src/migrations/002-role-publication.sql"),
+        include_str!("../src/migrations/003-task-dispatch.sql"),
+        include_str!("../src/migrations/004-message-inputs.sql"),
+        include_str!("../src/migrations/005-task-intents.sql"),
+        include_str!("../src/migrations/006-internal-conversations.sql"),
+        include_str!("../src/migrations/007-peer-inputs.sql"),
+        include_str!("../src/migrations/008-recovery-reports.sql"),
+        include_str!("../src/migrations/009-conversation-lifecycle.sql"),
+        include_str!("../src/migrations/010-task-graphs.sql"),
+        include_str!("../src/migrations/011-final-replies.sql"),
+    ];
+    for crlf in [false, true] {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        for schema in schemas {
+            db.execute_batch(schema).unwrap();
+        }
+        let source = schemas.last().unwrap().replace("\r\n", "\n");
+        let source = if crlf {
+            source.replace('\n', "\r\n")
+        } else {
+            source
+        };
+        let view = common::reply_route_view(&source);
+        assert!(view.trim_end().ends_with(';'));
+        assert!(!view.contains("CREATE TABLE final_replies"));
+        db.execute_batch("DROP VIEW current_matrix_routes;")
+            .unwrap();
+        db.execute_batch(view).unwrap();
+        db.prepare("SELECT session_id FROM current_matrix_routes LIMIT 0")
+            .unwrap();
+    }
+}
+
+#[test]
+fn native_account_schema22() {
+    let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+    let state = root.path().join("state");
+    let mut domain = hagency_store::DomainRepository::open(&state).unwrap();
+    let resource = common::resource("schema22-resource", "schema22-seat", 1000);
+    domain.put_resource(&resource).unwrap();
+    domain.put_seat(&serde_json::from_value(serde_json::json!({"id":"schema22-seat","declaration":{"quotaTokens":5000,"period":"monthly"}})).unwrap()).unwrap();
+    domain.register(&common::registration()).unwrap();
+    let proof = common::proof(&common::request(
+        "schema22-request",
+        "Worker",
+        &resource,
+        100,
+    ));
+    domain.admit(&proof, 1000).unwrap();
+    domain.approve("schema22-approval", &proof, 1000).unwrap();
+    drop(domain);
+    let sql = rusqlite::Connection::open(state.join("domain.sqlite3")).unwrap();
+    common::remove_coordinator_schema(&sql);
+    sql.execute_batch("ALTER TABLE runner_sessions DROP COLUMN model_override; ALTER TABLE runner_sessions DROP COLUMN mode_override; DROP TABLE IF EXISTS ceiling_alerts; DROP TABLE IF EXISTS ceiling_alert_notes; DROP TABLE IF EXISTS account_login_observations; DROP TABLE IF EXISTS account_login_attempts; DROP TABLE IF EXISTS account_logout_receipts; DROP TABLE resource_accounts; DROP TABLE managed_accounts; DROP TABLE account_identity_key; ALTER TABLE approval_verdict_receipts DROP COLUMN denial_reason; ALTER TABLE runner_attempts DROP COLUMN park_reason; ALTER TABLE dispatch_inputs DROP COLUMN addressed; DROP TABLE IF EXISTS dispatch_conversation_reads; ALTER TABLE runner_attempts DROP COLUMN started_at; ALTER TABLE runner_attempts DROP COLUMN parked_at; ALTER TABLE runner_attempts DROP COLUMN last_renew_at; ALTER TABLE runner_attempts DROP COLUMN settled_at; ALTER TABLE runner_attempts DROP COLUMN terminal_reason; DROP TABLE IF EXISTS runner_attempt_events; DROP TABLE IF EXISTS agent_fences; DROP TABLE IF EXISTS avatar_requests; DROP TABLE IF EXISTS agent_tombstones; DROP TABLE IF EXISTS delivery_events; DROP TABLE IF EXISTS operator_messages; DROP TABLE IF EXISTS dispatch_activity_events; DROP TABLE IF EXISTS dispatch_activity;  DROP TABLE IF EXISTS pending_invites;  DROP TABLE IF EXISTS agent_lifecycle; DROP TABLE IF EXISTS side_registrations; DROP VIEW IF EXISTS current_command_notices; DROP TABLE IF EXISTS command_notice_inspections; DROP TABLE IF EXISTS command_notices; ALTER TABLE final_replies DROP COLUMN incidental; DROP TABLE IF EXISTS operator_tasks; DROP TABLE IF EXISTS operator_task_comments; DROP TABLE IF EXISTS side_records; DROP TABLE IF EXISTS side_projects;   ALTER TABLE decisions DROP COLUMN kind; ALTER TABLE decisions DROP COLUMN at; DROP TABLE IF EXISTS reminders; DROP TABLE IF EXISTS room_trust;  DROP TABLE IF EXISTS quota_holds; DROP TABLE IF EXISTS owner_anchors; DROP TABLE IF EXISTS joined_rooms; ALTER TABLE engagements DROP COLUMN allocated_tokens; DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=22;").unwrap();
+    let snapshot = |sql: &rusqlite::Connection| -> Vec<(String, String, String)> {
+        sql.prepare("SELECT 'resources',id,config FROM resources UNION ALL SELECT 'seats',id,config FROM seats UNION ALL SELECT 'engagements',id,context FROM engagements ORDER BY 1,2").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<Result<_,_>>().unwrap()
+    };
+    let before = snapshot(&sql);
+    drop(sql);
+    let domain = hagency_store::DomainRepository::open(&state).unwrap();
+    assert!(domain.account_choices().unwrap().is_empty());
+    drop(domain);
+    let sql = rusqlite::Connection::open(state.join("domain.sqlite3")).unwrap();
+    assert_eq!(
+        sql.query_row("PRAGMA user_version", [], |r| r.get::<_, u64>(0))
+            .unwrap(),
+        hagency_store::DOMAIN_SCHEMA_VERSION as u64
+    );
+    assert_eq!(before, snapshot(&sql));
+    drop(sql);
+    drop(hagency_store::DomainRepository::open(&state).unwrap());
+}

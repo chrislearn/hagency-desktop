@@ -82,10 +82,9 @@ costs; restore the same owner's complete ledger when the recovery gate requires 
 
 ## Build and check
 
-Cargo fetches the owner engine from the `work/hagency-client-local-20261028` branch of
-[`hagency-org/hagency-client`](https://github.com/hagency-org/hagency-client).
-The committed Cargo.lock records the exact revision used for a build; no sibling
-checkout is required. The repository pins Rust 1.98.0.
+The owner engine is maintained in [`crates/hagency-client`](crates/hagency-client/README.md)
+as local Rust libraries. No separate Client checkout or browser UI build is required.
+The repository pins Rust 1.98.0.
 Install CMake and the platform's native build dependencies, then run:
 
 ```sh

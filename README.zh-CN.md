@@ -72,7 +72,7 @@ Agent 加密 Room 执行暂缓，这不等于删除 Matrix 聊天的加密能力
 
 ## 构建与开发
 
-Cargo 从 [`hagency-org/hagency-client`](https://github.com/hagency-org/hagency-client) 的 `work/hagency-client-local-20261028` 分支获取主人引擎，Cargo.lock 记录构建使用的具体提交，无需同级源码目录。安装 CMake 和平台依赖后执行：
+主人引擎作为本仓库的 Rust 库维护于 [`crates/hagency-client`](crates/hagency-client/README.md)，无需单独检出 Client 或构建旧网页 UI。安装 CMake 和平台依赖后执行：
 
 ```sh
 cargo run --locked --bin rinx

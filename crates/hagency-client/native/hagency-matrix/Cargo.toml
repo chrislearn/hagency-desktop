@@ -1,0 +1,43 @@
+[package]
+name = "hagency-matrix"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+hagency-core.workspace = true
+hagency-store.workspace = true
+hagency-execution.workspace = true
+hagency-matrix-format.workspace = true
+hagency-media.workspace = true
+hagency-media-store.workspace = true
+getrandom.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }
+tokio-util = { workspace = true, features = ["rt"] }
+reqwest = { workspace = true, features = ["rustls-tls-webpki-roots"] }
+matrix-sdk-base = { workspace = true, features = ["e2e-encryption"] }
+matrix-sdk-common.workspace = true
+matrix-sdk-crypto.workspace = true
+matrix-sdk-store-encryption.workspace = true
+matrix-sdk-sqlite = { workspace = true, features = ["crypto-store", "state-store", "bundled"] }
+http.workspace = true
+ruma = { workspace = true, features = ["client-api-c", "events"] }
+
+[dev-dependencies]
+hagency-platform = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["process", "test-util"] }
+hagency-files.workspace = true
+cap-std.workspace = true
+base64.workspace = true
+tempfile.workspace = true
+rusqlite = { workspace = true, features = ["bundled"], default-features = true }
+tokio-rustls = { workspace = true, features = ["ring", "tls12"] }
+
+[lints]
+workspace = true

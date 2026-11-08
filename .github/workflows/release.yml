@@ -65,7 +65,6 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       scope: ${{ steps.plan.outputs.scope }}
-      client: ${{ steps.plan.outputs.clientCommit }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -88,12 +87,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.0
-      - uses: actions/checkout@v7
-        with:
-          repository: hagency-org/hagency-client
-          ref: ${{ needs.plan.outputs.client }}
-          path: .release/client
-          persist-credentials: false
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -101,9 +94,9 @@ jobs:
             . -> target
             tools/hagency-script-review -> target
             crates/owner-dashboard -> target
-            .release/client -> target
+            crates/hagency-client -> target
       - run: brew install cmake
-      - run: python3 tools/check-hagency-regressions.py --output .run/release-regressions --client .release/client
+      - run: python3 tools/check-hagency-regressions.py --output .run/release-regressions
       - uses: actions/upload-artifact@v7
         if: always()
         with:

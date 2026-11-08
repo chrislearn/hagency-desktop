@@ -1,0 +1,1203 @@
+//! Desktop runtime bridge. Local accounts stay provider-owned; one disposable
+//! session per invocation shares the owner ledger and exact approval queue.
+use crate::codex::{
+    self, ApprovalQueue, BudgetMode, Completed, Error, Profile, Result, TurnStatus,
+};
+use crate::{Ledger, Reservation, Scope, ToolPolicy, ToolProposal, Usage};
+use hagency_runtime::{claude, octos};
+use serde_json::{Value, json};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
+use tokio::process::{Child, ChildStdin, ChildStdout};
+
+type Claude = hagency_runtime::owned::OwnedClaudeSession;
+type Octos = hagency_runtime::owned::OwnedOctosSession;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Codex,
+    Claude,
+    Octos,
+}
+impl Kind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::Octos => "octos",
+        }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "codex" => Some(Self::Codex),
+            "claude" => Some(Self::Claude),
+            "octos" => Some(Self::Octos),
+            _ => None,
+        }
+    }
+}
+/// Strict metadata grammar, never a credential resolver or login proof.
+pub fn managed_reference(reference: &str) -> Option<(Kind, Option<&str>)> {
+    for (prefix, kind) in [
+        ("claude-managed:shared-home:", Kind::Claude),
+        ("octos-managed:shared-home:", Kind::Octos),
+    ] {
+        if let Some(rest) = reference.strip_prefix(prefix) {
+            let (hash, profile) = rest
+                .split_once(':')
+                .map(|(h, p)| (h, Some(p)))
+                .unwrap_or((rest, None));
+            if hash.len() != 64
+                || !hash
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return None;
+            }
+            return match (kind, profile) {
+                (Kind::Claude, None) => Some((kind, None)),
+                (Kind::Octos, Some(p)) if octos::profile_id(p) => Some((kind, Some(p))),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+pub fn local_reference(
+    kind: Kind,
+    home: &Path,
+    profile: Option<(&str, &octos::ProfileModel)>,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = if let Some((id, primary)) = profile {
+        Sha256::digest(
+            serde_json::to_vec(&(home.to_string_lossy(), id, &primary.family, &primary.model))
+                .expect("public strings"),
+        )
+    } else {
+        Sha256::digest(home.to_string_lossy().as_bytes())
+    };
+    let mut reference = format!("{}-managed:shared-home:{digest:x}", kind.name());
+    if let Some((id, _)) = profile {
+        reference.push(':');
+        reference.push_str(id);
+    }
+    reference
+}
+pub fn kind(reference: &str) -> Kind {
+    managed_reference(reference)
+        .map(|v| v.0)
+        .unwrap_or(Kind::Codex)
+}
+pub fn validate(profile: &Profile, reference: &str) -> Result<()> {
+    if kind(reference) == Kind::Codex {
+        return profile.validate();
+    }
+    for path in [
+        &profile.executable,
+        &profile.home,
+        &profile.codex_home,
+        &profile.cwd,
+    ] {
+        if !path.is_absolute() || path.canonicalize().ok().as_ref() != Some(path) {
+            return Err(Error::Profile("canonical absolute paths required"));
+        }
+    }
+    if !profile.executable.is_file()
+        || !profile.home.is_dir()
+        || !profile.codex_home.is_dir()
+        || !profile.cwd.is_dir()
+        || profile.codex_home.starts_with(&profile.cwd)
+        || profile.home.starts_with(&profile.cwd)
+        || !profile.shared_auth
+    {
+        return Err(Error::Profile("local provider directory required"));
+    }
+    crate::key(&profile.model)?;
+    match kind(reference) {
+        Kind::Claude
+            if local_reference(Kind::Claude, &profile.codex_home, None) != reference
+                || !matches!(profile.effort.as_str(), "low" | "medium" | "high" | "max") =>
+        {
+            return Err(Error::Profile("Claude account or effort mismatch"));
+        }
+        Kind::Octos if profile.effort != "none" => {
+            return Err(Error::Profile("Octos requires profile reasoning settings"));
+        }
+        _ => {}
+    }
+    if kind(reference) == Kind::Octos {
+        let (_, Some(id)) =
+            managed_reference(reference).ok_or(Error::Profile("Octos profile required"))?
+        else {
+            return Err(Error::Profile("Octos profile required"));
+        };
+        let file = profile
+            .codex_home
+            .join("profiles")
+            .join(format!("{id}.json"));
+        if std::fs::symlink_metadata(&file)?.file_type().is_symlink() {
+            return Err(Error::Profile("Octos profile must be local"));
+        }
+        let mut bytes = Vec::new();
+        use std::io::Read;
+        std::fs::File::open(file)?
+            .take(octos::MAX_PROFILE_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        let model =
+            octos::profile_model(id, &bytes).ok_or(Error::Profile("Octos profile unavailable"))?;
+        if model.model != profile.model
+            || local_reference(Kind::Octos, &profile.codex_home, Some((id, &model))) != reference
+        {
+            return Err(Error::Profile("Octos profile changed"));
+        }
+    }
+    Ok(())
+}
+
+pub struct Process {
+    pub session: Session,
+    child: Option<Child>,
+}
+impl Process {
+    pub async fn stop(&mut self) -> Result<()> {
+        match &mut self.session {
+            Session::Codex(_) => {
+                if let Some(child) = self.child.as_mut()
+                    && child.try_wait()?.is_none()
+                {
+                    child.kill().await?;
+                }
+            }
+            Session::Claude { wire, .. } => require_stopped(wire.stop())?,
+            Session::Octos { wire, .. } => require_stopped(wire.stop())?,
+        }
+        Ok(())
+    }
+}
+fn require_stopped(cleanup: hagency_runtime::owned::Cleanup) -> Result<()> {
+    if matches!(cleanup,hagency_runtime::owned::Cleanup::Observed(report) if report.scope.whole_tree_stopped)
+    {
+        Ok(())
+    } else {
+        Err(Error::Unknown)
+    }
+}
+pub enum Session {
+    Codex(Box<codex::Session<ChildStdout, ChildStdin>>),
+    Claude {
+        wire: Box<Claude>,
+        profile: Profile,
+        scope: Option<Scope>,
+        context: String,
+    },
+    Octos {
+        wire: Box<Octos>,
+        profile: Profile,
+        id: String,
+        scope: Option<Scope>,
+        context: String,
+    },
+}
+
+pub async fn spawn(profile: &Profile, reference: &str) -> Result<Process> {
+    spawn_inner(profile, reference, None, None).await
+}
+fn context_profile(profile: &Profile, reference: &str) -> Result<String> {
+    crate::hash(&(reference, &profile.model, &profile.effort, &profile.cwd)).map_err(Into::into)
+}
+pub async fn spawn_for_scope(
+    profile: &Profile,
+    reference: &str,
+    ledger: &mut Ledger,
+    scope: &Scope,
+) -> Result<Process> {
+    spawn_for_scope_with_guardian(profile, reference, ledger, scope, None).await
+}
+/// Explicit host custody executable; no credentials or runtime authority.
+pub async fn spawn_for_scope_with_guardian(
+    profile: &Profile,
+    reference: &str,
+    ledger: &mut Ledger,
+    scope: &Scope,
+    guardian: Option<&Path>,
+) -> Result<Process> {
+    use rusqlite::OptionalExtension;
+    crate::verify(&ledger.db, scope)?;
+    let context = scope.context_key(&ledger.owner)?;
+    let profile_key = context_profile(profile, reference)?;
+    let session: Option<String> = ledger
+        .db
+        .query_row(
+            "SELECT session FROM external_sessions WHERE scope=? AND profile=?",
+            (&context, &profile_key),
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(crate::Error::from)?;
+    spawn_inner(profile, reference, session.as_deref(), guardian).await
+}
+async fn spawn_inner(
+    profile: &Profile,
+    reference: &str,
+    resume: Option<&str>,
+    guardian: Option<&Path>,
+) -> Result<Process> {
+    validate(profile, reference)?;
+    let kind = kind(reference);
+    if kind == Kind::Codex {
+        let process = profile.spawn().await?;
+        return Ok(Process {
+            session: Session::Codex(Box::new(process.session)),
+            child: Some(process.child),
+        });
+    }
+    let mut command = tokio::process::Command::new(&profile.executable);
+    command
+        .env_clear()
+        .env("HOME", &profile.home)
+        .current_dir(&profile.cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    // Native local login and provider helpers require only this allowlist.
+    for name in ["PATH", "USER", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    match kind {
+        Kind::Claude => {
+            if let Some(session) = resume {
+                crate::key(session)?;
+                command.args(["--resume", session]);
+            }
+            command.env("CLAUDE_CONFIG_DIR", &profile.codex_home);
+            let settings = json!({"disableAllHooks":true,"permissions":{"ask":["Bash","Read","Write","Edit","Glob","Grep"]},"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":false}});
+            command
+                .args(
+                    claude::arguments(&profile.model)
+                        .map_err(|_| Error::Profile("Claude model"))?,
+                )
+                .args([
+                    "--setting-sources",
+                    "",
+                    "--settings",
+                    &settings.to_string(),
+                    "--strict-mcp-config",
+                    "--mcp-config",
+                    "{\"mcpServers\":{}}",
+                    "--tools",
+                    "Bash,Read,Write,Edit,Glob,Grep",
+                    "--disable-slash-commands",
+                    "--no-chrome",
+                    "--effort",
+                    &profile.effort,
+                ]);
+        }
+        Kind::Octos => {
+            let digest = crate::hash(&(reference, &profile.cwd))?;
+            let instance = profile
+                .cwd
+                .parent()
+                .ok_or(Error::Profile("instance parent"))?
+                .join(".hagency-octos-instances")
+                .join(digest);
+            std::fs::create_dir_all(&instance)?;
+            if instance.canonicalize()? != instance {
+                return Err(Error::Profile("Octos instance symlink"));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&instance, std::fs::Permissions::from_mode(0o700))?;
+            }
+            let config = instance.join("config.json");
+            // Refuse links and don't read/write any provider-owned config.
+            if std::fs::symlink_metadata(&config).is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(Error::Profile("Octos settings symlink"));
+            }
+            use std::io::{Read, Write};
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true).write(true).create(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options
+                    .mode(0o600)
+                    .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+            }
+            let mut file = options.open(&config)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if file.metadata()?.nlink() != 1 {
+                    return Err(Error::Profile("Octos settings hardlink"));
+                }
+            }
+            let mut existing = Vec::new();
+            (&mut file).take(8193).read_to_end(&mut existing)?;
+            if existing.is_empty() {
+                file.write_all(octos::CONFIG)?;
+                file.sync_all()?;
+            } else if existing != octos::CONFIG {
+                return Err(Error::Profile("Octos instance settings changed"));
+            }
+            command.env("OCTOS_HOME", &profile.codex_home).args(
+                octos::serve_arguments(
+                    profile
+                        .cwd
+                        .to_str()
+                        .ok_or(Error::Profile("workspace encoding"))?,
+                    instance
+                        .to_str()
+                        .ok_or(Error::Profile("instance encoding"))?,
+                    config.to_str().ok_or(Error::Profile("config encoding"))?,
+                )
+                .map_err(|_| Error::Profile("Octos settings"))?,
+            );
+        }
+        Kind::Codex => unreachable!(),
+    }
+    let guardian = guardian
+        .map(Path::to_path_buf)
+        .unwrap_or(std::env::current_exe()?);
+    let launch = hagency_platform::Launch {
+        executable: profile.executable.clone(),
+        arguments: command
+            .as_std()
+            .get_args()
+            .map(|v| v.to_os_string())
+            .collect(),
+        directory: profile.cwd.clone(),
+        environment: command
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| (key.to_os_string(), value.to_os_string()))
+            })
+            .collect(),
+        require_crash_containment: false,
+    };
+    let session = match kind {
+        Kind::Claude => Session::Claude {
+            wire: Box::new(
+                Claude::spawn(
+                    &guardian,
+                    &launch,
+                    claude::session::Limits {
+                        event_wait_ms: 1_200_000,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|_| Error::Profile("Claude process custody unavailable"))?,
+            ),
+            profile: profile.clone(),
+            scope: None,
+            context: context_profile(profile, reference)?,
+        },
+        Kind::Octos => Session::Octos {
+            wire: Box::new(
+                Octos::spawn(
+                    &guardian,
+                    &launch,
+                    octos::session::Limits {
+                        event_wait_ms: 1_200_000,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|_| Error::Profile("Octos process custody unavailable"))?,
+            ),
+            profile: profile.clone(),
+            id: managed_reference(reference)
+                .and_then(|v| v.1)
+                .unwrap()
+                .into(),
+            scope: None,
+            context: context_profile(profile, reference)?,
+        },
+        Kind::Codex => unreachable!(),
+    };
+    Ok(Process {
+        session,
+        child: None,
+    })
+}
+
+fn now() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+struct Charge<'a> {
+    ledger: &'a mut Ledger,
+    scope: Scope,
+    call: String,
+    settled: bool,
+}
+impl Drop for Charge<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            let _ = self.ledger.mark_unknown(&self.scope, &self.call);
+        }
+    }
+}
+impl Session {
+    pub async fn initialize(&mut self) -> Result<()> {
+        match self {
+            Self::Codex(session) => {
+                session.initialize().await?;
+            }
+            Self::Claude { wire, .. } => wire
+                .initialize()
+                .await
+                .map_err(|_| Error::Protocol("Claude initialize"))?,
+            Self::Octos { wire, .. } => wire
+                .hello()
+                .await
+                .map_err(|_| Error::Protocol("Octos hello"))?,
+        }
+        Ok(())
+    }
+    pub async fn verify_host_environment(&mut self) -> Result<()> {
+        if let Self::Codex(session) = self {
+            session.verify_host_environment().await?;
+        }
+        Ok(())
+    }
+    pub async fn require_local_account(&mut self) -> Result<()> {
+        match self {
+            Self::Codex(session) => session.require_local_account().await?,
+            Self::Claude { profile, .. } => {
+                if !claude_account(&profile.executable, &profile.home, &profile.codex_home).await? {
+                    return Err(Error::Profile("dedicated owner provider login required"));
+                }
+            }
+            Self::Octos { .. } => {}
+        }
+        Ok(())
+    }
+    #[cfg(unix)]
+    pub fn enable_host_files(
+        &mut self,
+        workspace: crate::room_files::Workspace,
+        gate: std::sync::Arc<dyn codex::HostToolGate>,
+    ) -> Result<()> {
+        match self {
+            Self::Codex(session) => session.enable_host_files(workspace, gate),
+            _ => Err(Error::Profile("host files not released for this runtime")),
+        }
+    }
+    pub async fn open_context(
+        &mut self,
+        ledger: &mut Ledger,
+        scope: &Scope,
+        profile: &Profile,
+    ) -> Result<()> {
+        match self {
+            Self::Codex(session) => session.open_context(ledger, scope, profile).await,
+            Self::Claude { scope: bound, .. } | Self::Octos { scope: bound, .. } => {
+                crate::verify(&ledger.db, scope)?;
+                if bound.is_some() {
+                    return Err(Error::Protocol("context already open"));
+                }
+                *bound = Some(scope.clone());
+                Ok(())
+            }
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_with_started(
+        &mut self,
+        ledger: &mut Ledger,
+        owner: &str,
+        scope: &Scope,
+        call: &str,
+        dispatch: &str,
+        input: &str,
+        mode: BudgetMode,
+        queue: &ApprovalQueue,
+        started: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> Result<Completed> {
+        self.run_with_started_observed(ledger, owner, scope, call, dispatch, input, mode, queue, started, None).await
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_with_started_observed(
+        &mut self,
+        ledger: &mut Ledger,
+        owner: &str,
+        scope: &Scope,
+        call: &str,
+        dispatch: &str,
+        input: &str,
+        mode: BudgetMode,
+        queue: &ApprovalQueue,
+        started: Option<tokio::sync::oneshot::Sender<()>>,
+        observer: Option<&(dyn Fn(&Usage) + Send + Sync)>,
+    ) -> Result<Completed> {
+        if let Self::Codex(session) = self {
+            return session
+                .run_with_started_observed(
+                    ledger, owner, scope, call, dispatch, input, mode, queue, started, observer,
+                )
+                .await;
+        }
+        ledger.owner(owner)?;
+        let bound = match self {
+            Self::Claude { scope, .. } | Self::Octos { scope, .. } => scope.as_ref(),
+            _ => unreachable!(),
+        };
+        if bound != Some(scope) {
+            return Err(Error::Protocol("run scope differs from opened context"));
+        }
+        if input.is_empty() || input.len() > 65536 {
+            return Err(Error::Profile("input size"));
+        }
+        let BudgetMode::Estimated { reservation } = mode else {
+            return Err(Error::StrictQuotaUnsupported);
+        };
+        if ledger.reserve(scope, call, dispatch, reservation, now())? != Reservation::New {
+            return Err(Error::Protocol("refusing provider replay"));
+        }
+        let mut charge = Charge {
+            ledger,
+            scope: scope.clone(),
+            call: call.into(),
+            settled: false,
+        };
+        let began = Instant::now();
+        let result = match self {
+            Self::Claude { wire, profile, .. } => {
+                run_claude(
+                    wire,
+                    profile,
+                    charge.ledger,
+                    owner,
+                    scope,
+                    dispatch,
+                    input,
+                    queue,
+                    started,
+                )
+                .await
+            }
+            Self::Octos {
+                wire, profile, id, ..
+            } => {
+                run_octos(
+                    wire,
+                    profile,
+                    id,
+                    charge.ledger,
+                    owner,
+                    scope,
+                    dispatch,
+                    input,
+                    queue,
+                    started,
+                )
+                .await
+            }
+            _ => unreachable!(),
+        };
+        let (text, mut usage, failed, requests, returns, cumulative) = result?;
+        let is_octos = matches!(self, Self::Octos { .. });
+        let (context, session) = match self {
+            Self::Claude { wire, context, .. } => {
+                (context.as_str(), wire.session_id().ok_or(Error::Unknown)?)
+            }
+            Self::Octos { wire, context, .. } => {
+                (context.as_str(), wire.session_id().ok_or(Error::Unknown)?)
+            }
+            _ => unreachable!(),
+        };
+        // Persist absolute Octos counters even when this turn only exposes turn usage.
+        // This keeps a later session-total event from charging earlier turns twice.
+        let counters = if is_octos && usage.accounting_version != crate::UNREPORTED_ZERO {
+            use rusqlite::OptionalExtension;
+            let baseline: Option<String> = charge
+                .ledger
+                .db
+                .query_row(
+                    "SELECT counters FROM external_sessions WHERE scope=? AND profile=?",
+                    (scope.context_key(owner)?, context),
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(crate::Error::from)?;
+            let baseline_missing = baseline.as_deref() == Some("null");
+            let prior: Option<Usage> = baseline
+                .filter(|s| !s.is_empty() && s != "null")
+                .map(|s| serde_json::from_str(&s))
+                .transpose()?;
+            if cumulative {
+                let absolute = serde_json::to_string(&usage)?;
+                if baseline_missing {
+                    usage = crate::unreported_usage();
+                }
+                if let Some(prior) = prior {
+                    usage.input = usage.input.checked_sub(prior.input).ok_or(Error::Unknown)?;
+                    usage.output = usage
+                        .output
+                        .checked_sub(prior.output)
+                        .ok_or(Error::Unknown)?;
+                    usage.cached_input = usage
+                        .cached_input
+                        .checked_sub(prior.cached_input)
+                        .ok_or(Error::Unknown)?;
+                    usage.cache_write_input = match (usage.cache_write_input, prior.cache_write_input) {
+                        (Some(current), Some(prior)) => Some(current.checked_sub(prior).ok_or(Error::Unknown)?),
+                        _ => None,
+                    };
+                }
+                absolute
+            } else {
+                let mut absolute = usage.clone();
+                if let Some(prior) = prior {
+                    absolute.input = absolute
+                        .input
+                        .checked_add(prior.input)
+                        .ok_or(Error::Unknown)?;
+                    absolute.output = absolute
+                        .output
+                        .checked_add(prior.output)
+                        .ok_or(Error::Unknown)?;
+                    absolute.cached_input = absolute
+                        .cached_input
+                        .checked_add(prior.cached_input)
+                        .ok_or(Error::Unknown)?;
+                    absolute.cache_write_input = match (absolute.cache_write_input, prior.cache_write_input) {
+                        (Some(current), Some(prior)) => Some(current.checked_add(prior).ok_or(Error::Unknown)?),
+                        _ => None,
+                    };
+                }
+                serde_json::to_string(&absolute)?
+            }
+        } else {
+            String::new()
+        };
+        if let Some(observer) = observer { observer(&usage); }
+        charge
+            .ledger
+            .settle_external(scope, call, &usage, context, session, &counters)?;
+        charge.settled = true;
+        if failed {
+            return Err(Error::Failed);
+        }
+        Ok(Completed {
+            text,
+            usage,
+            status: TurnStatus::Completed,
+            elapsed_seconds: began.elapsed().as_secs(),
+            tool_requests: requests,
+            tool_returns: returns,
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn permission(
+    ledger: &mut Ledger,
+    owner: &str,
+    scope: &Scope,
+    dispatch: &str,
+    tool: String,
+    arguments: Value,
+    cwd: &Path,
+    queue: &ApprovalQueue,
+) -> bool {
+    let Ok(versions) = ledger.policy_snapshot(scope) else {
+        return false;
+    };
+    let proposal = ToolProposal {
+        scope: scope.clone(),
+        dispatch: dispatch.into(),
+        tool,
+        arguments,
+        canonical_directory: cwd.to_string_lossy().into(),
+        risk: "high".into(),
+        policy_revision: versions.map(|v| v.revision),
+        expires: now() + 280,
+    };
+    match ledger.tool_disposition(&proposal, now()) {
+        Ok(ToolPolicy::AllowWithRules { .. }) => ledger.authorize_tool(&proposal, now()).is_ok(),
+        Ok(ToolPolicy::AskOwner) => {
+            let (pending, decision) = codex::pending_approval(proposal.clone());
+            queue.offer(pending)
+                && matches!(
+                    tokio::time::timeout(Duration::from_secs(280), decision).await,
+                    Ok(Ok(true))
+                )
+                && ledger
+                    .approve_tool(owner, &proposal, now())
+                    .and_then(|_| ledger.authorize_tool(&proposal, now()))
+                    .is_ok()
+        }
+        _ => false,
+    }
+}
+type TurnResult = (String, Usage, bool, usize, usize, bool);
+#[allow(clippy::too_many_arguments)]
+async fn run_claude(
+    wire: &mut Claude,
+    profile: &Profile,
+    ledger: &mut Ledger,
+    owner: &str,
+    scope: &Scope,
+    dispatch: &str,
+    input: &str,
+    queue: &ApprovalQueue,
+    started: Option<tokio::sync::oneshot::Sender<()>>,
+) -> Result<TurnResult> {
+    wire.prompt(input)
+        .await
+        .map_err(|_| Error::Protocol("Claude prompt"))?;
+    // Claude binds its session on the first system/init event after prompt.
+    let init = wire
+        .next_message()
+        .await
+        .map_err(|_| Error::Protocol("Claude session init"))?;
+    if !matches!(
+        init,
+        claude::Message::Event {
+            kind: claude::EventKind::System,
+            ..
+        }
+    ) {
+        return Err(Error::Protocol("Claude session init"));
+    }
+    wire.enable_approval_control(claude::session::ApprovalControlPolicy {
+        owner_wait_ms: 300_000,
+        response_reserve_ms: 10_000,
+    })
+    .map_err(|_| Error::Protocol("Claude control"))?;
+    if let Some(send) = started {
+        let _ = send.send(());
+    }
+    let mut requests = std::collections::BTreeSet::new();
+    let mut returns = std::collections::BTreeSet::new();
+    let mut buffered = std::collections::VecDeque::new();
+    for _ in 0..16384 {
+        let (message, observation) = if let Some(item) = buffered.pop_front() {
+            item
+        } else {
+            let message = wire
+                .next_message()
+                .await
+                .map_err(|_| Error::Protocol("Claude event"))?;
+            (message, wire.last_observation().cloned())
+        };
+        match message {
+            claude::Message::Permission {
+                request_id,
+                tool_name,
+                input,
+                ..
+            } => {
+                let directory = approval_directory(&profile.cwd, &input);
+                let decision = permission(
+                    ledger,
+                    owner,
+                    scope,
+                    dispatch,
+                    format!("claude.{tool_name}"),
+                    input,
+                    &directory,
+                    queue,
+                );
+                tokio::pin!(decision);
+                let allow = loop {
+                    match wire
+                        .next_or_control(decision.as_mut())
+                        .await
+                        .map_err(|_| Error::Protocol("Claude approval wait"))?
+                    {
+                        claude::session::ControlUpdate::Control(allow) => break Some(allow),
+                        claude::session::ControlUpdate::Message(message) => {
+                            let cancelled = matches!(&message,claude::Message::ControlCancel {request_id:id} if id==&request_id);
+                            let ended = matches!(
+                                &message,
+                                claude::Message::Event {
+                                    kind: claude::EventKind::Result,
+                                    ..
+                                }
+                            );
+                            if buffered.len() >= 256 {
+                                return Err(Error::Unknown);
+                            }
+                            buffered.push_back((message, wire.last_observation().cloned()));
+                            if cancelled || ended {
+                                break None;
+                            }
+                        }
+                    }
+                };
+                let Some(allow) = allow else {
+                    continue;
+                };
+                let mut prepared = wire
+                    .prepare_approval(
+                        &request_id,
+                        if allow {
+                            claude::session::PermissionDecision::Allow
+                        } else {
+                            claude::session::PermissionDecision::Deny
+                        },
+                    )
+                    .map_err(|_| Error::Protocol("Claude decision"))?;
+                loop {
+                    match wire
+                        .send_prepared_approval(&mut prepared)
+                        .await
+                        .map_err(|_| Error::Protocol("Claude approval write"))?
+                    {
+                        claude::session::PreparedUpdate::WriteAccepted(_) => break,
+                        claude::session::PreparedUpdate::Message(message) => {
+                            if buffered.len() >= 256 {
+                                return Err(Error::Unknown);
+                            }
+                            buffered.push_back((message, wire.last_observation().cloned()));
+                        }
+                    }
+                }
+            }
+            claude::Message::Event { kind, payload, .. } => {
+                if let Some(content) = payload["message"]["content"].as_array() {
+                    for block in content {
+                        if block["type"] == "tool_use"
+                            && let Some(id) = block["id"].as_str()
+                        {
+                            requests.insert(id.to_owned());
+                        }
+                        if block["type"] == "tool_result"
+                            && let Some(id) = block["tool_use_id"].as_str()
+                        {
+                            returns.insert(id.to_owned());
+                        }
+                    }
+                }
+                if kind == claude::EventKind::Result {
+                    let Some(observation) = observation else {
+                        return Err(Error::Unknown);
+                    };
+                    let claude::session::ObservationKind::Result { usage, is_error } =
+                        observation.kind()
+                    else {
+                        return Err(Error::Unknown);
+                    };
+                    let counts = usage.counts();
+                    let usage = match (
+                        counts.input(),
+                        counts.cache_read(),
+                        counts.cache_write(),
+                        counts.output(),
+                    ) {
+                        (Some(fresh), Some(cache), Some(write), Some(output)) => Usage {
+                            input: fresh
+                                .checked_add(cache)
+                                .and_then(|v| v.checked_add(write))
+                                .ok_or(Error::Unknown)?,
+                            output,
+                            cached_input: cache,
+                            cache_write_input: Some(write),
+                            reasoning_output: 0,
+                            accounting_version: "claude-reported-v1".into(),
+                        },
+                        _ => crate::unreported_usage(),
+                    };
+                    return Ok((
+                        payload["result"].as_str().unwrap_or("").into(),
+                        usage,
+                        *is_error,
+                        requests.len(),
+                        returns.len(),
+                        false,
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(Error::Unknown)
+}
+#[allow(clippy::too_many_arguments)]
+async fn run_octos(
+    wire: &mut Octos,
+    profile: &Profile,
+    id: &str,
+    ledger: &mut Ledger,
+    owner: &str,
+    scope: &Scope,
+    dispatch: &str,
+    input: &str,
+    queue: &ApprovalQueue,
+    started: Option<tokio::sync::oneshot::Sender<()>>,
+) -> Result<TurnResult> {
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|_| Error::Unknown)?;
+    let hex = random
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let turn = format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    );
+    let context = crate::hash(&(
+        scope.context_key(owner)?,
+        &profile.model,
+        &profile.effort,
+        &profile.codex_home,
+    ))?;
+    let session = format!("{id}:local:{}", &context[..32]);
+    wire.open(
+        &session,
+        id,
+        profile.cwd.to_str().ok_or(Error::Profile("cwd"))?,
+        octos::session::Permissions::ReadOnly,
+    )
+    .await
+    .map_err(|_| Error::Protocol("Octos session"))?;
+    wire.start_turn(&turn, input)
+        .await
+        .map_err(|_| Error::Protocol("Octos prompt"))?;
+    wire.enable_approval_control(octos::session::ApprovalControlPolicy {
+        owner_wait_ms: 300_000,
+        response_reserve_ms: 10_000,
+    })
+    .map_err(|_| Error::Protocol("Octos control"))?;
+    if let Some(send) = started {
+        let _ = send.send(());
+    }
+    let mut requests = std::collections::BTreeSet::new();
+    let mut returns = std::collections::BTreeSet::new();
+    let mut buffered = std::collections::VecDeque::new();
+    for _ in 0..16384 {
+        let (event, observation) = if let Some(item) = buffered.pop_front() {
+            item
+        } else {
+            let event = wire
+                .next()
+                .await
+                .map_err(|_| Error::Protocol("Octos event"))?;
+            (event, wire.last_observation().cloned())
+        };
+        match event {
+            octos::session::Event::Approval {
+                approval_id,
+                params,
+                ..
+            } => {
+                let directory = approval_directory(&profile.cwd, &params);
+                let decision = permission(
+                    ledger,
+                    owner,
+                    scope,
+                    dispatch,
+                    "octos.approval".into(),
+                    params,
+                    &directory,
+                    queue,
+                );
+                tokio::pin!(decision);
+                let allow = loop {
+                    match wire
+                        .next_or_control(decision.as_mut())
+                        .await
+                        .map_err(|_| Error::Protocol("Octos approval wait"))?
+                    {
+                        octos::session::ControlUpdate::Control(allow) => break Some(allow),
+                        octos::session::ControlUpdate::Event(event) => {
+                            let cancelled = matches!(&event,octos::session::Event::ApprovalSettled {approval_id:id} if id==&approval_id);
+                            let ended = matches!(&event, octos::session::Event::Idle(_));
+                            if buffered.len() >= 256 {
+                                return Err(Error::Unknown);
+                            }
+                            buffered.push_back((event, wire.last_observation().cloned()));
+                            if cancelled || ended {
+                                break None;
+                            }
+                        }
+                    }
+                };
+                let Some(allow) = allow else {
+                    continue;
+                };
+                let mut prepared = wire
+                    .prepare_approval(
+                        &approval_id,
+                        if allow {
+                            octos::session::PermissionDecision::Allow
+                        } else {
+                            octos::session::PermissionDecision::Deny
+                        },
+                    )
+                    .map_err(|_| Error::Protocol("Octos decision"))?;
+                loop {
+                    match wire
+                        .send_prepared_approval(&mut prepared)
+                        .await
+                        .map_err(|_| Error::Protocol("Octos approval write"))?
+                    {
+                        octos::session::PreparedUpdate::WriteAccepted(_) => break,
+                        octos::session::PreparedUpdate::Event(event) => {
+                            if buffered.len() >= 256 {
+                                return Err(Error::Unknown);
+                            }
+                            buffered.push_back((event, wire.last_observation().cloned()));
+                        }
+                    }
+                }
+            }
+            octos::session::Event::Tool {
+                tool_call_id,
+                ended,
+                ..
+            } => {
+                if ended {
+                    returns.insert(tool_call_id);
+                } else {
+                    requests.insert(tool_call_id);
+                }
+            }
+            octos::session::Event::Idle(idle) => {
+                let Some(observation) = observation else {
+                    return Err(Error::Unknown);
+                };
+                let octos::session::ObservationKind::Idle(evidence) = observation.kind() else {
+                    return Err(Error::Unknown);
+                };
+                let usage = match (
+                    evidence.input(),
+                    evidence.cache_read(),
+                    evidence.cache_write(),
+                    evidence.output(),
+                ) {
+                    (Some(input), Some(cache), Some(write), Some(output)) => Usage {
+                        input: input
+                            .checked_add(cache)
+                            .and_then(|v| v.checked_add(write))
+                            .ok_or(Error::Unknown)?,
+                        output,
+                        cached_input: cache,
+                        cache_write_input: Some(write),
+                        reasoning_output: 0,
+                        accounting_version: "octos-reported-v1".into(),
+                    },
+                    _ => crate::unreported_usage(),
+                };
+                return Ok((
+                    idle.reply.unwrap_or_default(),
+                    usage,
+                    idle.outcome != octos::Outcome::Completed,
+                    requests.len(),
+                    returns.len(),
+                    evidence.coverage() == octos::session::UsageCoverage::Session,
+                ));
+            }
+            octos::session::Event::ToolCall { params } => {
+                // No task/MCP tool registration is made in the personal chat host.
+                let call = wire
+                    .host_tool_call(&params)
+                    .map_err(|_| Error::Protocol("unexpected Octos host tool"))?;
+                wire.host_tool_result(&call.call_id, Err("unsupported_host_tool".into()))
+                    .await
+                    .map_err(|_| Error::Protocol("Octos tool response"))?;
+            }
+            _ => {}
+        }
+    }
+    Err(Error::Unknown)
+}
+
+/// Read only the CLI's public authentication verdict. Never reads credentials.
+pub async fn claude_account(binary: &Path, home: &Path, config: &Path) -> Result<bool> {
+    use tokio::io::AsyncReadExt;
+    let mut command = tokio::process::Command::new(binary);
+    command
+        .args(["auth", "status", "--json"])
+        .env_clear()
+        .env("HOME", home)
+        .env("CLAUDE_CONFIG_DIR", config)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    for name in ["USER", "PATH", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    let mut child = command.spawn()?;
+    let mut output = child
+        .stdout
+        .take()
+        .ok_or(Error::Profile("account stdout"))?
+        .take(65537);
+    let mut bytes = Vec::new();
+    let work = async {
+        output.read_to_end(&mut bytes).await?;
+        let status = child.wait().await?;
+        Ok::<_, std::io::Error>(status)
+    };
+    let status = tokio::time::timeout(Duration::from_secs(10), work)
+        .await
+        .map_err(|_| Error::Timeout)??;
+    if bytes.len() > 65536 {
+        return Err(Error::Protocol("account response bound"));
+    }
+    let value: Value = serde_json::from_slice(&bytes)?;
+    Ok(status.success() && value["loggedIn"] == true)
+}
+
+fn approval_directory(cwd: &Path, arguments: &Value) -> std::path::PathBuf {
+    let target = arguments["typed_details"]["command"]["cwd"]
+        .as_str()
+        .or_else(|| arguments["file_path"].as_str())
+        .or_else(|| arguments["path"].as_str())
+        .or_else(|| arguments["cwd"].as_str())
+        .or_else(|| arguments["working_directory"].as_str());
+    let Some(target) = target else {
+        return cwd.to_path_buf();
+    };
+    let path = Path::new(target);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    if path.is_dir() {
+        return path.canonicalize().unwrap_or(path);
+    }
+    path.parent()
+        .and_then(|p| p.canonicalize().ok())
+        .unwrap_or(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn references_require_exact_kind_hash_and_octos_profile() {
+        let hash = "a".repeat(64);
+        assert_eq!(
+            managed_reference(&format!("claude-managed:shared-home:{hash}")),
+            Some((Kind::Claude, None))
+        );
+        assert_eq!(
+            managed_reference(&format!("octos-managed:shared-home:{hash}:coding")),
+            Some((Kind::Octos, Some("coding")))
+        );
+        for reference in [
+            format!("octos-managed:shared-home:{hash}"),
+            format!("claude-managed:shared-home:{hash}:coding"),
+            format!("octos-managed:shared-home:{hash}:../private"),
+            "claude-managed:shared-home:bad".into(),
+        ] {
+            assert!(managed_reference(&reference).is_none());
+        }
+    }
+}
