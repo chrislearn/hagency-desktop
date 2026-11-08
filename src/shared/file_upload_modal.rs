@@ -47,9 +47,9 @@ script_mod! {
     mod.widgets.FileUploadModal = set_type_default() do #(FileUploadModal::register_widget(vm)) {
         ..mod.widgets.RoundedView
 
-        width: Fill { max: 1000 }
-        height: Fill
-        margin: 30,
+        width: Fill { max: 560 }
+        height: Fit { max: FitBound.Rel{base: Base.Full, factor: 1.0} }
+        margin: 24,
         align: Align{x: 0.5, y: 0}
         flow: Down
         spacing: 12
@@ -105,7 +105,7 @@ script_mod! {
 
             caption_input := RobrixTextInput {
                 width: Fill,
-                height: Fit { max: FitBound.Rel{base: Base.Full, factor: 0.5} },
+                height: Fit { max: FitBound.Abs(96.0) },
                 is_multiline: true,
                 submit_on_enter: true,
                 empty_text: #(crate::i18n::tr("Enter caption...")) i18n_empty_text: "Enter caption..."
@@ -158,7 +158,7 @@ script_mod! {
         // The view showing the preview of the file being uploaded, switching between
         // multiple options: loading page, image, code, plain text, or no preview.
         preview_block := View {
-            width: Fill, height: Fill,
+            width: Fill, height: 160,
             flow: Overlay
 
             preview_flip := PageFlip {
@@ -601,6 +601,7 @@ impl FileUploadModal {
         self.label(cx, ids!(empty_attachment_warning_label))
             .set_visible(cx, size == 0);
         self.page_flip(cx, ids!(preview_flip)).set_active_page(cx, self.preview_page);
+        self.resize_preview(cx);
         let truncated = self.preview_truncated;
         self.label(cx, ids!(code_truncated_label))
             .set_visible(cx, truncated && self.preview_page == id!(code_text_page));
@@ -645,6 +646,17 @@ impl FileUploadModal {
             FilePreview::None => id!(no_preview_page),
         };
         self.page_flip(cx, ids!(preview_flip)).set_active_page(cx, self.preview_page);
+        self.resize_preview(cx);
+    }
+
+    fn resize_preview(&self, cx: &mut Cx) {
+        let height = if [id!(image_page), id!(code_text_page), id!(plain_text_page)].contains(&self.preview_page) {
+            280.0
+        } else {
+            160.0
+        };
+        let mut preview = self.view(cx, ids!(preview_block));
+        script_apply_eval!(cx, preview, { height: #(height) });
     }
 
     /// Clears state and frees every preview resource (texture, text, source file).
@@ -661,6 +673,9 @@ impl FileUploadModal {
         self.page_flip(cx, ids!(preview_flip)).set_active_page(cx, self.preview_page);
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 impl FileUploadModalRef {
     pub fn handle_file_previewer_action(&self, cx: &mut Cx, outer_modal: ModalRef, action: &FileUploadModalAction) {

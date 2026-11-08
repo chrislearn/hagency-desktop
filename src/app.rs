@@ -1245,6 +1245,16 @@ impl App {
         }
     }
 
+    fn sync_upload_overlay(&self, cx: &mut Cx) {
+        let occluded = self.ui.modal(cx, ids!(file_upload_modal)).is_open();
+        // Only browsers in this content host are covered. A popped-out reader
+        // remains visible in its own window, and background dock tabs stay hidden.
+        self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).reader(cx)
+            .set_overlay_occluded(cx, occluded);
+        self.ui.web_browser(cx, ids!(web_browser_modal.content))
+            .set_overlay_occluded(cx, occluded);
+    }
+
     fn clear_session_ui(&mut self, cx: &mut Cx) {
         self.lifecycle.last_app_state_save = None;
         self.pending_signup_navigation = None;
@@ -1419,6 +1429,13 @@ impl AppMain for App {
         // (OctoSense leaves the app; Android backgrounds it).
         let back_unhandled = matches!(event, Event::BackPressed { handled } if !handled.get());
         let escape = matches!(event, Event::KeyDown(k) | Event::KeyUp(k) if k.key_code == KeyCode::Escape);
+        if (back_unhandled || escape) && self.ui.modal(cx, ids!(file_upload_modal)).is_open() {
+            self.ui.widget(cx, ids!(file_upload_modal)).handle_event(
+                cx, event, &mut Scope::with_data(&mut self.app_state),
+            );
+            self.sync_upload_overlay(cx);
+            return;
+        }
         if (back_unhandled || escape) && self.ui.modal(cx, ids!(invite_modal)).is_open() {
             // Give nested confirmations, then the invitation, the same priority
             // as their draw order. Modal owns the cancel scope (including any
@@ -1499,9 +1516,12 @@ impl AppMain for App {
         // Forward events to the MatchEvent trait implementation.
         if owner_dashboard::keyboard::embedded(&self.ui, cx, event) { return; }
         self.match_event(cx, event);
+        self.sync_upload_overlay(cx);
         crate::agent_access::publish(current_user_id(), &self.app_state.agent_access);
         let scope = &mut Scope::with_data(&mut self.app_state);
         self.ui.handle_event(cx, event, scope);
+        // Outside-click dismissal happens inside Modal, without a Hide action.
+        self.sync_upload_overlay(cx);
         owner_dashboard::accessibility::after_event(&self.ui, cx, event);
         // The backend may restore the next account only after every child has
         // consumed ClearAppState, including hidden settings/room widgets.
@@ -2692,5 +2712,50 @@ mod back_navigation_tests {
         assert!(!modal.is_open());
         assert!(browser.browser_id().is_none());
         assert!(!back(&mut cx, &mut app));
+    }
+
+    #[test]
+    fn upload_cancel_keeps_the_covered_web_reader_open() {
+        for escape in [false, true] {
+            let mut cx = Cx::new(Box::new(|_, _| {}));
+            let mut app = embedded_app(&mut cx);
+            let reader_modal = app.ui.modal(&mut cx, ids!(web_browser_modal));
+            let browser = app.ui.web_browser(&mut cx, ids!(web_browser_modal.content));
+            browser.action(&mut cx, reader_modal.clone(), &WebBrowserAction::Open("https://example.org".parse().unwrap()));
+            let browser_id = browser.browser_id();
+            let upload = app.ui.modal(&mut cx, ids!(file_upload_modal));
+            upload.open(&mut cx);
+            AppMain::handle_event(&mut app, &mut cx, &Event::Actions(Vec::new()));
+            if escape {
+                settle_cancel_owner(&mut cx);
+                let key = KeyEvent { key_code: KeyCode::Escape, ..Default::default() };
+                AppMain::handle_event(&mut app, &mut cx, &Event::KeyDown(key.clone()));
+                AppMain::handle_event(&mut app, &mut cx, &Event::KeyUp(key));
+            } else {
+                assert!(back(&mut cx, &mut app));
+            }
+            assert!(!upload.is_open());
+            assert!(reader_modal.is_open(), "Cancelling an upload must preserve the underlying reader");
+            assert_eq!(browser.browser_id(), browser_id);
+            assert_eq!(browser.session().tabs.len(), 1);
+        }
+    }
+
+    #[test]
+    fn upload_hide_keeps_the_docked_reader_tab() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut app = embedded_app(&mut cx);
+        let side = app.ui.mini_apps_side_region(&mut cx, ids!(mini_apps_side));
+        side.web_action(&mut cx, &WebBrowserAction::Open("https://example.org".parse().unwrap()));
+        let reader = side.reader(&mut cx);
+        assert_eq!(reader.session().tabs.len(), 1);
+        let id = reader.browser_id();
+        let upload = app.ui.modal(&mut cx, ids!(file_upload_modal));
+        upload.open(&mut cx);
+        AppMain::handle_event(&mut app, &mut cx, &Event::Actions(Vec::new()));
+        AppMain::handle_event(&mut app, &mut cx, &Event::Actions(vec![Box::new(FileUploadModalAction::Hide)]));
+        assert!(!upload.is_open());
+        assert_eq!(reader.browser_id(), id);
+        assert_eq!(reader.session().tabs.len(), 1);
     }
 }
