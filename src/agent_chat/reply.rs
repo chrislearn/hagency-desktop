@@ -137,7 +137,7 @@ script_mod! {
     mod.widgets.AgentReply = #(AgentReply::register_widget(vm)) {
         ..mod.widgets.View
         visible: false width: Fill height: Fit flow: Down spacing: 4
-        agent_reply_body := HtmlOrPlaintext {}
+        agent_reply_body := HtmlOrPlaintext {selectable: true}
         stream_status := Label {
             visible: false width: Fill height: Fit
             draw_text +: {color: mod.widgets.RINX_MUTED text_style: theme.font_regular{font_size: (10 * mod.widgets.RINX_TEXT_SCALE)}}
@@ -315,6 +315,9 @@ impl AgentReplyRef {
         };
         inner.view.set_visible(cx, true);
         if inner.identity != identity {
+            // PortalList can reuse a row for an identical answer in another
+            // room. Text equality alone must not preserve the old selection.
+            inner.view.html_or_plaintext(cx, ids!(agent_reply_body)).clear_selection(cx);
             cx.stop_timer(inner.timer);
             inner.timer = Timer::empty();
             inner.identity = identity;
@@ -339,6 +342,7 @@ impl AgentReplyRef {
     }
     pub fn hide(&self, cx: &mut Cx) {
         if let Some(mut inner) = self.borrow_mut() {
+            inner.view.html_or_plaintext(cx, ids!(agent_reply_body)).clear_selection(cx);
             cx.stop_timer(inner.timer);
             inner.timer = Timer::empty();
             inner.view.set_visible(cx, false);

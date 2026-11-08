@@ -7784,10 +7784,14 @@ impl Message {
     }
 
     fn open_context_menu(&mut self, cx: &mut Cx, room_screen_widget_uid: WidgetUid, mut details: MessageDetails, abs_pos: DVec2) {
-        let body = self.view.html_or_plaintext(cx, ids!(content.message));
-        let caption = self.view.html_or_plaintext(cx, ids!(content.message.caption_view.caption));
-        let selected = body.selected_text(cx);
-        let selected = if selected.is_empty() { caption.selected_text(cx) } else { selected };
+        let selected = if self.view.widget(cx, ids!(content.agent_reply)).visible() {
+            self.view.html_or_plaintext(cx, ids!(content.agent_reply.agent_reply_body)).selected_text(cx)
+        } else {
+            let body = self.view.html_or_plaintext(cx, ids!(content.message));
+            let caption = self.view.html_or_plaintext(cx, ids!(content.message.caption_view.caption));
+            let selected = body.selected_text(cx);
+            if selected.is_empty() { caption.selected_text(cx) } else { selected }
+        };
         details.selected_text = (!selected.is_empty()).then_some(selected);
         self.is_context_menu_open = true;
         cx.widget_action(
@@ -7840,6 +7844,7 @@ impl Message {
             self.pressed_touch_uid = None;
             self.view.html_or_plaintext(cx, ids!(content.message)).clear_selection(cx);
             self.view.html_or_plaintext(cx, ids!(content.message.caption_view.caption)).clear_selection(cx);
+            self.view.html_or_plaintext(cx, ids!(content.agent_reply.agent_reply_body)).clear_selection(cx);
             self.animator_cut(cx, ids!(bg_hover.off));
         }
 
@@ -7980,6 +7985,10 @@ mod input_bar_focus {
 #[cfg(test)]
 #[path = "room_screen/agent_status_tests.rs"]
 mod agent_chat_status_tests;
+
+#[cfg(all(test, feature = "agent_chat"))]
+#[path = "room_screen/agent_selection_tests.rs"]
+mod agent_chat_selection_tests;
 
 #[cfg(test)]
 mod desktop_information_columns_tests {
