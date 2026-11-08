@@ -84,3 +84,15 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 strip = true
+
+[patch.crates-io]
+
+# Client PR38 recovery fixes: prepared keys, secret import and retryable history recovery.
+matrix-sdk = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-base = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-common = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-crypto = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-indexeddb = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-sqlite = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-store-encryption = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-ui = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }

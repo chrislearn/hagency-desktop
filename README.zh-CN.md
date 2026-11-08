@@ -70,6 +70,9 @@ Agent 加密 Room 执行暂缓，这不等于删除 Matrix 聊天的加密能力
 账本、工作目录及 Codex 关联按完整授权身份隔离。换执行设备不会转让所有权、
 清零成本或重跑未知执行；恢复检查要求时，必须恢复同一主人的完整账本。
 
+设备验证、恢复密钥设置及恢复入口位于 **Settings → Account → Encryption and recovery**。
+已验证的设备读取加密历史仍需房间密钥。见[设备验证与密钥恢复](docs/device-verification-recovery.md)。
+
 ## 构建与开发
 
 主人引擎作为本仓库的 Rust 库维护于 [`crates/hagency-client`](crates/hagency-client/README.md)，无需单独检出 Client 或构建旧网页 UI。安装 CMake 和平台依赖后执行：

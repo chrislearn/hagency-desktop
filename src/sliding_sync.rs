@@ -6582,3 +6582,9 @@ async fn change_account_ui() -> Result<()> {
     Cx::post_action(LoginAction::AccountPickerReady);
     Ok(())
 }
+
+/// Test-only SDK installation without owner, daemon or synchronization startup.
+#[cfg(test)]
+pub(crate) fn install_crypto_test_client(client: Option<Client>) {
+    CLIENT.replace(client, || {});
+}

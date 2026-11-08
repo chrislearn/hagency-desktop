@@ -14,6 +14,11 @@ version = "0.5.0-rc.5"
 metadata.makepad-auto-version = "zqpv-Yj-K7WNVK2I8h5Okhho46Q="
 
 [dependencies]
+hagency-store = { path = "crates/hagency-client/native/hagency-store" }
+cap-std = "=4.0.3"
+cap-fs-ext = "=4.0.3"
+zeroize = "1"
+
 hagency = { path = "crates/hagency-client/native/hagency" }
 hagency-core = { path = "crates/hagency-client/native/hagency-core" }
 hagency-owner-dashboard = { path = "crates/owner-dashboard" }
@@ -151,6 +156,7 @@ reqwest = { version = "0.12", default-features = false, optional = true, feature
 ] }
 
 [dev-dependencies]
+tempfile = "3.24.0"
 # Host unit tests use dashboard snapshots without enabling fixtures in production.
 hagency-owner-dashboard = { path = "crates/owner-dashboard", features = ["fixtures"] }
 # Native writer fixtures must never acquire the user's installation authority.
@@ -259,6 +265,16 @@ name = "palpo_action_room"
 required-features = ["palpo-instrument"]
 
 [patch.crates-io]
+# Client PR38 recovery fixes: prepared keys, secret import and retryable history recovery.
+matrix-sdk = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-base = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-common = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-crypto = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-indexeddb = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-sqlite = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-store-encryption = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+matrix-sdk-ui = { git = "https://github.com/chrislearn/matrix-rust-sdk.git", rev = "c4051424fe9ac2bea56e5e00c900d6c87294c0b7" }
+
 # Octos' existing OpenHarmony ioctl ABI correction for rustyline's nix 0.29.
 nix = { git = "https://github.com/octos-org/octos.git", rev = "deb433e9a452c03d8fe7f4f6a26b42785c47ced7" }
 # Pending additive App Hub contract release; see vendor/octosense-app-contract/RINX-PATCH.md.
