@@ -93,6 +93,7 @@ pub enum Command {
     },
     Initialized,
     RespondRoomHistory { id: RequestId, content: String },
+    RespondRoomFile { call: super::session::RoomFileCall, content: String },
     Request {
         method: String,
         params: Value,
@@ -526,6 +527,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Driver<R
                 .initialize(&client_version, now, response_timeout_ms)
                 .map(|(id, bytes)| (Some(id), bytes)),
             Command::Initialized => self.connection.initialized(now).map(|bytes| (None, bytes)),
+            Command::RespondRoomFile { call, content } => self.connection.respond_room_file(&call, &content, now).map(|bytes| (None, bytes)),
             Command::RespondRoomHistory { id, content } => self.connection.respond_room_history(&id, &content, now).map(|bytes| (None, bytes)),
             Command::Request {
                 method,

@@ -8,12 +8,27 @@ pub(super) struct Documents {
 }
 struct Entry {
     event: String,
+    metadata: Value,
     result: Option<Result<Text, &'static str>>,
     offset: usize,
     read: bool,
 }
 
 impl Documents {
+    pub(super) fn contains(&self, event: &str) -> bool { self.entries.iter().any(|e| e.event == event) }
+    pub(super) fn list(&self, after: usize, limit: usize) -> Value {
+        let mut files = Vec::new();
+        let mut bytes = 0;
+        for entry in self.entries.iter().skip(after).take(limit) {
+            let item = json!({"event_id":entry.event,"metadata":entry.metadata});
+            bytes += item.to_string().len();
+            if bytes > 8 * 1024 { break; }
+            files.push(item);
+        }
+        let next = after + files.len();
+        json!({"files":files,"next_after":(next < self.entries.len()).then_some(next),"scope":"observed_room_history","guidance":"Read earlier pages with read_room_history to discover older attachments."})
+    }
+
     pub(super) fn describe(&mut self, record: &mut Value) {
         if record.get("status").is_some() || !record["attachment"].is_object() {
             return;
@@ -26,6 +41,7 @@ impl Documents {
             None if self.entries.len() < 64 => {
                 self.entries.push(Entry {
                     event: event.into(),
+                    metadata: record["attachment"].clone(),
                     result: None,
                     offset: 0,
                     read: false,

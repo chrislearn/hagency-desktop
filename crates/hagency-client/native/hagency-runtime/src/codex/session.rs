@@ -5,6 +5,8 @@ mod observation;
 mod qualification;
 mod rate_limits;
 mod room_history;
+mod room_files;
+pub use room_files::{RoomFileCall, RoomFileOperation, ROOM_FILE_TOOLS, ROOM_FILE_RESULT_BYTES};
 pub use room_history::{RoomHistoryCall, ROOM_HISTORY_TOOL, ROOM_HISTORY_RESULT_BYTES};
 mod user_input;
 pub use user_input::{
@@ -103,6 +105,7 @@ pub enum ItemPhase {
 
 pub enum Update {
     RoomHistory(RoomHistoryCall),
+    RoomFile(RoomFileCall),
     /// The model asks its user (Codex `request_user_input`). Only a host that
     /// opted in sees this; it must answer exactly once, possibly with nothing.
     UserInput(UserInputRequest),
@@ -151,6 +154,7 @@ pub struct Settings {
     unrestricted: bool,
     task_mcp: Option<TaskMcp>,
     room_history: bool,
+    room_files: bool,
     user_input_tool: bool,
 }
 impl Settings {
@@ -183,6 +187,7 @@ impl Settings {
             unrestricted: false,
             task_mcp: None,
             room_history: false,
+            room_files: false,
             user_input_tool: false,
         })
     }
@@ -268,6 +273,11 @@ impl Settings {
             // step compacted away the last tool results and the Agent searched
             // again without end. The host already bounds each history page by
             // the observed context window.
+        }
+        if self.room_files {
+            let mut tools = params["dynamicTools"].as_array().cloned().unwrap_or_default();
+            tools.extend(room_files::definitions());
+            params["dynamicTools"] = tools.into();
         }
         if let Some(id) = resume {
             params["threadId"] = id.into();

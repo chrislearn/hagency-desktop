@@ -165,8 +165,7 @@ pub(in crate::console) fn history_record(raw: &Value, unavailable: bool) -> Opti
         record["status"] = "unavailable_invalid_message".into();
         record["unavailableReason"] = "body_is_not_text".into();
     }
-    if content["msgtype"] == "m.file"
-        && let Some(metadata) = super::documents::metadata(content)
+    if let Some(metadata) = super::documents::metadata(content)
     {
         // Only a display descriptor reaches the model. URL, key, IV and hash
         // remain in the authenticated event on this Agent's own device.

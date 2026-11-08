@@ -406,6 +406,17 @@ impl OwnedSession {
         .await;
         operation.finish(result)
     }
+    /// File access is limited to the qualified tools mode and the bound room workspace.
+    pub fn enable_shared_room_files(&mut self) -> Result<(), session::Error> {
+        if !self.text_source.has_live_activity() || !self.shared_tools_enabled() { return Err(session::Error::State); }
+        self.session.enable_room_files()
+    }
+    pub async fn respond_shared_room_file(&mut self, call: &session::RoomFileCall, content: String) -> Result<(), session::Error> {
+        if !self.text_source.has_live_activity() { return Err(session::Error::State); }
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.respond_room_file(call, content).await;
+        operation.finish(result)
+    }
     /// The host has bound a read-only history reader to this admitted room.
     pub fn enable_shared_room_history(&mut self) -> Result<(), session::Error> {
         if !self.text_source.has_live_activity() {

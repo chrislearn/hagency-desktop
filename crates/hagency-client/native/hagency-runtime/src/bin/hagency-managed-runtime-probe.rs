@@ -8,6 +8,8 @@ use std::{
 };
 #[path = "history_probe/mod.rs"]
 mod history_probe;
+#[path = "file_probe/mod.rs"]
+mod file_probe;
 fn main() -> io::Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     #[cfg(unix)]
@@ -22,12 +24,17 @@ fn main() -> io::Result<()> {
     fs::write(root.join("process-id"), std::process::id().to_string())?;
     let mut quota = 0;
     let mut history = history_probe::Probe::default();
+    let mut files = file_probe::Probe::default();
     let mut log = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(root.join("methods"))?;
     for line in io::stdin().lock().lines() {
         let v: Value = serde_json::from_str(&line?).map_err(io::Error::other)?;
+        if mode.starts_with("text-workspace-files") && v.get("method").is_none() {
+            files.response(root,&v)?;
+            continue;
+        }
         if mode == "text-room-history-usage" && v.get("method").is_none() {
             history.response(root, &v)?;
             continue;
@@ -145,10 +152,10 @@ fn main() -> io::Result<()> {
             }
             "thread/start" if mode.starts_with("text-workspace") => {
                 let sandbox = match mode.as_ref() {
-                    "text-workspace-standard" | "text-workspace-standard-usage" => {
+                    "text-workspace-standard" | "text-workspace-standard-usage" | "text-workspace-files-standard" => {
                         json!({"type":"workspaceWrite","writableRoots":[v["params"]["cwd"]],"networkAccess":false})
                     }
-                    "text-workspace-yolo" | "text-workspace-yolo-usage" => {
+                    "text-workspace-yolo" | "text-workspace-yolo-usage" | "text-workspace-files-yolo" => {
                         json!({"type":"dangerFullAccess"})
                     }
                     _ => json!({"type":"readOnly","networkAccess":false}),
@@ -197,6 +204,10 @@ fn main() -> io::Result<()> {
         }
         if method == "turn/start" && mode.starts_with("text") {
             io::stdout().flush()?;
+            if mode.starts_with("text-workspace-files") {
+                files.begin()?;
+                continue;
+            }
             if mode == "text-room-history-usage" {
                 history.begin()?;
                 continue;
@@ -421,11 +432,14 @@ fn question_answered(root: &Path, response: &Value) -> io::Result<()> {
 
 /// Codex's resolution of the question, then the rest of the turn.
 fn finish_question_turn(answer: &str) -> io::Result<()> {
-    let usage = json!({"totalTokens":300,"inputTokens":200,"cachedInputTokens":100,"cacheWriteInputTokens":20,"outputTokens":100,"reasoningOutputTokens":0});
     println!(
         "{}",
         json!({"method":"serverRequest/resolved","params":{"threadId":"text-thread","requestId":"question-1"}})
     );
+    finish_text_turn(answer)
+}
+fn finish_text_turn(answer: &str) -> io::Result<()> {
+    let usage = json!({"totalTokens":300,"inputTokens":200,"cachedInputTokens":100,"cacheWriteInputTokens":20,"outputTokens":100,"reasoningOutputTokens":0});
     println!(
         "{}",
         json!({"method":"thread/tokenUsage/updated","params":{"threadId":"text-thread","turnId":"text-turn","tokenUsage":{"total":usage,"last":usage,"modelContextWindow":10000}}})

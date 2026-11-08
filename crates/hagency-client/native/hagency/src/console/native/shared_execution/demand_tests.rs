@@ -267,6 +267,11 @@ pub(super) async fn fixture_budget(tokens: u64) -> (Fixture, SharedExecutionTran
     }
     (f, t, c)
 }
+pub(super) fn activate(f: &Fixture) {
+    let mut state=f.state.lock().unwrap();
+    state.shared.demands.active=true;
+    state.shared.demands.revision=1;
+}
 pub(super) fn offer(f: &Fixture, number: u64) {
     let mut s = f.state.lock().unwrap();
     let c = s.shared.command.clone().unwrap();

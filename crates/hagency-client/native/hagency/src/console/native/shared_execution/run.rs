@@ -473,6 +473,9 @@ async fn work_loop(
                 .enable_shared_room_history()
                 .map_err(|_| failure(409, "shared_history_tool_unavailable"))?;
         }
+        if history.is_some() && process.shared_tools_enabled() {
+            process.enable_shared_room_files().map_err(|_|failure(409,"shared_file_tool_unavailable"))?;
+        }
         super::questions::offer(process);
         process
             .start_shared_text_thread_for_room(&work.room_id)
@@ -488,6 +491,8 @@ async fn work_loop(
     })
     .await?;
     guarded(cancel, a.until, || maybe_renew(io, r, sink, control, a)).await?;
+    let mut files = prepare_while_active(io,r,sink,control,a,cancel,
+        super::files::Files::new(io,&b,&work,process)).await?;
     let (_, p) = proof(io, r, sink, a).await?;
     let call = if let Some(input) = &input {
         r.prepare_shared_input_call(p, work.clone(), input.clone())
@@ -602,6 +607,7 @@ async fn work_loop(
         let question=event.user_input().cloned();
         let withdrawn=event.user_input_resolved().cloned();
         let history_call=event.room_history_call().cloned();
+        let file_call=event.room_file_call().cloned();
         if let (Some(history),hagency_runtime::codex::session::ObservationKind::Usage(evidence))=(history.as_mut(),event.observation().kind()) {history.observe_usage(evidence);}
         let ended = matches!(
             event.observation().kind(),
@@ -623,6 +629,14 @@ async fn work_loop(
             break recorded.ok_or_else(invalid)?;
         }
         if stop_reason.is_some() { continue; }
+        if let Some(call)=file_call {
+            let reader=history.as_ref().ok_or_else(invalid)?;
+            let files=files.as_mut().ok_or_else(invalid)?;
+            guarded(cancel,a.until,|| io.check_running(sink.command())).await?;
+            let content=prepare_while_active(io,r,sink,control,a,cancel,async { Ok(files.handle(&call.operation,reader).await) }).await?;
+            guarded(cancel,a.until,|| io.check_running(sink.command())).await?;
+            guarded(cancel,a.until,||async { process.respond_shared_room_file(&call,content).await.map_err(|_|failure(409,"shared_file_response_failed")) }).await?;
+        }
         if let Some(call)=history_call {
             let reader=history.as_mut().ok_or_else(invalid)?;
             guarded(cancel,a.until,|| io.check_running(sink.command())).await?;

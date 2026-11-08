@@ -106,6 +106,11 @@ fn root(io: &Io, b: &Bound) -> Result<PathBuf, NativeError> {
     hagency_store::private::directory(&root).map_err(store)?;
     Ok(root)
 }
+pub(super) fn file_records(io: &Io, b: &Bound, assignment: &str) -> Result<PathBuf, NativeError> {
+    let parent = root(io,b)?.join("chat-file-receipts");
+    hagency_store::private::directory(&parent).map_err(store)?;
+    Ok(parent.join(sha(assignment)))
+}
 fn device_key(root: &Path, b: &Bound, assignment: &str) -> String {
     format!(
         "{}:{assignment}:{}",
@@ -386,6 +391,7 @@ pub(super) struct CryptoFixture {
     input_delay: Duration,
     sent: Arc<std::sync::Mutex<Vec<(String, String)>>>,
     pub(super) history: Option<Arc<super::history::Fixture>>,
+    pub(super) files: Option<Arc<super::files::tests::Endpoint>>,
     pub(super) questions: Option<Arc<super::questions::Fixture>>,
 }
 #[cfg(test)]
@@ -400,6 +406,7 @@ impl SharedExecutionTransport {
             input_delay: Duration::ZERO,
             sent: sent.clone(),
             history: None,
+            files: None,
             questions: None,
         }));
         (self, sent)
@@ -431,6 +438,11 @@ impl SharedExecutionTransport {
             .unwrap()
             .questions = Some(questions.clone());
         (self, questions)
+    }
+    pub(in crate::console::native) fn with_file_fixture(mut self, records: PathBuf, room: String) -> (Self, Arc<super::files::tests::Endpoint>) {
+        let files = Arc::new(super::files::tests::Endpoint::new(records,room));
+        Arc::get_mut(self.io.crypto_fixture.as_mut().unwrap()).unwrap().files = Some(files.clone());
+        (self,files)
     }
     pub(in crate::console::native) fn with_history_fixture(
         mut self,

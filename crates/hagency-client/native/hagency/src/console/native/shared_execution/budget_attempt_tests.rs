@@ -42,7 +42,7 @@ pub(super) fn management(path: &str, body: &Value, s: &mut super::super::State) 
             let original = s.shared.command.clone().unwrap();
             assert!(s.shared.processes.values().any(|r| r.state == "stopped"));
             s.shared.budget_attempts.command = Some(SharedBudgetAttemptCommand {
-        web_search: false, tool_policy: None,
+        web_search: input.web_search, tool_policy: input.tool_policy,
                 version: 3,
                 capability: SHARED_BUDGET_CAPABILITY.into(),
                 operation: "agent.execution.provision".into(),
@@ -146,8 +146,15 @@ async fn apply_delta(f:&Fixture,c:&SharedRuntimeCommand){
     assert_eq!(f.registry.apply_managed_budget(proof).await.unwrap().state,"applied");
 }
 pub(super) async fn prepared()->(Fixture,SharedExecutionTransport,SharedRuntimeCommand){
+    prepared_with_tools(None).await
+}
+pub(super) async fn prepared_with_tools(tools:Option<bool>)->(Fixture,SharedExecutionTransport,SharedRuntimeCommand){
     let(f,t,c)=attempts::predecessor().await;
     apply_delta(&f,&c).await;
+    if let Some(yolo)=tools {
+        let db=rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap();
+        db.execute("INSERT INTO owner_shared_tool_policies(child_id,yolo,revision) VALUES(?1,?2,1)",rusqlite::params![c.agent_reservation_id,yolo]).unwrap();
+    }
     f.state.lock().unwrap().shared.budget_attempts.lose_start_reply=true;
     assert!(t.start_budget_successor(&f.registry,c.clone()).await.is_err());
     assert_eq!(rows(&f,"owner_shared_budget_start_intents"),1);

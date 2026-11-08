@@ -26,6 +26,8 @@ use matrix_sdk::{
 use sha2::{Digest, Sha256};
 mod history;
 mod documents;
+mod files;
+pub(in crate::console) use documents::RoomFile;
 pub(in crate::console) use history::HistoryBatch;
 use std::{
     collections::HashMap,

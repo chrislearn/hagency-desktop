@@ -151,6 +151,9 @@ impl HistoryIo for Fixture {
 }
 
 impl<S: HistoryIo> Reader<S> {
+    pub(super) fn contains_attachment(&self, event: &str) -> bool { self.documents.contains(event) }
+    pub(super) fn list_attachments(&self, after: usize, limit: usize) -> Value { self.documents.list(after, limit) }
+
     pub(super) async fn prompt(&mut self, text: String) -> String {
         self.context_remaining = self.context_remaining.saturating_sub(text.len());
         // Keep the original question intact even when it nearly fills the

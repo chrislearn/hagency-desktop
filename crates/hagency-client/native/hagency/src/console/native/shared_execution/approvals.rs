@@ -22,8 +22,13 @@ struct Pending {
     deadline: tokio::time::Instant,
     encrypted: Option<EncryptedPending>,
 }
+pub(super) enum RoomCall {
+    History(hagency_runtime::codex::session::RoomHistoryCall),
+    File(hagency_runtime::codex::session::RoomFileCall),
+}
 #[derive(Default)]
 pub(super) struct Approvals {
+    room_calls: Vec<RoomCall>,
     pending: Vec<Pending>,
     /// The model's questions, and Codex's withdrawals of them, that arrived
     /// while a decision was being sent, in arrival order. The driver hands
@@ -40,6 +45,8 @@ pub(super) fn enable(process: &mut OwnedSession) -> Result<(), NativeError> {
     process.enable_owner_wait_expiry().map_err(|_| invalid())
 }
 impl Approvals {
+    pub(super) fn take_room_calls(&mut self) -> Vec<RoomCall> { std::mem::take(&mut self.room_calls) }
+
     /// Question updates observed by `poll`, in order, each handed out once.
     pub(super) fn take_questions(&mut self) -> Vec<super::questions::QuestionUpdate> {
         std::mem::take(&mut self.questions)
@@ -268,6 +275,8 @@ impl Approvals {
                             .shared_event(update, *observation)
                             .map_err(|_| invalid())?;
                         let next = event.approval().cloned();
+                        let history = event.room_history_call().cloned();
+                        let file = event.room_file_call().cloned();
                         let question = event.user_input().cloned();
                         let withdrawn = event.user_input_resolved().cloned();
                         let ended =
@@ -282,6 +291,8 @@ impl Approvals {
                         if ended {
                             return Ok(Some(receipt.ok_or_else(invalid)?));
                         }
+                        self.room_calls.extend(history.map(RoomCall::History));
+                        self.room_calls.extend(file.map(RoomCall::File));
                         if let Some(next) = next {
                             self.register(io, b, work, a, until, process, next).await?;
                         }

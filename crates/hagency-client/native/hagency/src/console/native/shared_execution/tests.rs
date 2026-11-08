@@ -1120,3 +1120,7 @@ pub(crate) fn demand_retry_enabled(s:&super::State)->bool{!s.shared.demands.no_r
 pub(crate) fn context_enabled(s:&super::State)->bool{s.shared.contexts.active}
 #[cfg(feature="shared-context")]
 pub(crate) fn context_v2_enabled(s:&super::State)->bool{s.shared.contexts.active && s.shared.contexts.v2}
+
+#[cfg(feature = "shared-budget-execution")]
+#[path = "file_execution_tests.rs"]
+mod file_execution;
