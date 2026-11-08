@@ -43,6 +43,7 @@ script_mod! {
                             }
                         }
                     }
+                    upload_modal := Modal { content := FileUploadModal {} }
                 }
             }
         }
@@ -190,6 +191,40 @@ impl AppMain for App {
             browser.prepare_shutdown();
         }
         if let Event::Custom(command) = event {
+            if command == "upload:show" {
+                self.ui.modal(cx, ids!(upload_modal)).open(cx);
+            }
+            #[cfg(target_os = "macos")]
+            if command == "upload:inspect" {
+                let window = self.ui.window(cx, ids!(main_window)).window_id().unwrap();
+                let root = std::env::var("RINX_BROWSER_FIXTURE_OUTPUT").unwrap();
+                let browsers = cx.system_browser_count();
+                dispatch2::DispatchQueue::main().exec_async(move || {
+                    use makepad_widgets::makepad_platform::os::apple::{
+                        apple_sys::*, macos::macos_app::try_with_macos_app,
+                    };
+                    use makepad_widgets::makepad_platform::makepad_objc_sys::{class, msg_send};
+                    unsafe fn visible_webviews(view: ObjcId) -> usize {
+                        let hidden: BOOL = unsafe { msg_send![view, isHidden] };
+                        if hidden == YES { return 0; }
+                        let web: BOOL = unsafe { msg_send![view, isKindOfClass: class!(WKWebView)] };
+                        if web == YES { return 1; }
+                        let children: ObjcId = unsafe { msg_send![view, subviews] };
+                        let count: usize = unsafe { msg_send![children, count] };
+                        (0..count).map(|index| unsafe {
+                            let child: ObjcId = msg_send![children, objectAtIndex: index];
+                            visible_webviews(child)
+                        }).sum()
+                    }
+                    let native = try_with_macos_app(|app| app.cocoa_window_for_id(window)).flatten().unwrap();
+                    let visible = unsafe {
+                        let view: ObjcId = msg_send![native, contentView];
+                        visible_webviews(view)
+                    };
+                    std::fs::write(std::path::Path::new(&root).join("upload-native.json"),
+                        serde_json::json!({"visible_webviews":visible,"browsers":browsers}).to_string()).unwrap();
+                });
+            }
             if command == "theme:inspect" {
                 let appearance = rinx::theme::snapshot(cx);
                 let label = self.browser(cx).label(cx, ids!(web_title));
@@ -215,7 +250,22 @@ impl AppMain for App {
             }
         }
         self.match_event(cx, event);
+        let upload = self.ui.modal(cx, ids!(upload_modal));
+        self.browser(cx).set_overlay_occluded(cx, upload.is_open());
+        // The production App gives an upload's cancel scope this same priority.
+        if upload.is_open() && matches!(event, Event::KeyDown(k) | Event::KeyUp(k) if k.key_code == KeyCode::Escape) {
+            self.ui.widget(cx, ids!(upload_modal)).handle_event(cx, event, &mut Scope::empty());
+            self.browser(cx).set_overlay_occluded(cx, upload.is_open());
+            return;
+        }
+        if let Event::Actions(actions) = event {
+            if actions.iter().any(|action| matches!(action.downcast_ref(),
+                Some(rinx::shared::file_upload_modal::FileUploadModalAction::Hide))) {
+                upload.close(cx);
+            }
+        }
         self.ui.handle_event(cx, event, &mut Scope::empty());
+        self.browser(cx).set_overlay_occluded(cx, upload.is_open());
         rinx::theme::packages::after_event(cx, event);
         if matches!(event, Event::WindowCloseRequested(e) if Some(e.window_id) == self.ui.window(cx, ids!(main_window)).window_id())
         {
