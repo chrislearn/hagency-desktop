@@ -26,7 +26,7 @@ pub use settlement::{
 };
 mod reserve;
 mod periods;
-pub use periods::{AGENT_PERIOD_CAPABILITY, ManagedAgentPeriodRenewCommand, ManagedAgentPeriodReceipt, VerifiedManagedAgentPeriodDelivery};
+pub use periods::{ManagedAgentPeriodRenewCommand, ManagedAgentPeriodReceipt, VerifiedManagedAgentPeriodDelivery};
 mod types;
 pub(in crate::domain) use accounting::unsettled_resource;
 #[cfg(feature = "resource-adoption")]
