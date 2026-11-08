@@ -1,0 +1,612 @@
+mod common;
+use common::*;
+use hagency_core::{JSON_SAFE_MAX, tasks::*};
+use hagency_metering::{Framework, observation::UsageObservation};
+use hagency_store::*;
+use serde_json::json;
+mod usage {
+    use super::*;
+    mod admission;
+    mod bounds;
+    mod ceiling;
+    mod ledger;
+    mod vectors;
+}
+
+struct Fixture {
+    root: tempfile::TempDir,
+    db: DomainRepository,
+    engagement: String,
+    next: usize,
+}
+impl Fixture {
+    fn new(framework: Framework) -> Self {
+        Self::with_ceiling(framework, 1000)
+    }
+    fn with_ceiling(framework: Framework, ceiling: u64) -> Self {
+        let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let mut db = DomainRepository::open(&root.path().join("state")).unwrap();
+        db.register(&registration()).unwrap();
+        let mut pool = resource("usage_pool", "usage_seat", ceiling);
+        if framework == Framework::Claude {
+            pool.framework = "claude".into();
+            pool.model = "claude-sonnet-5".into();
+            pool.reasoning = None;
+        }
+        if framework == Framework::Octos {
+            pool.framework = "octos".into();
+            pool.model = "kimi-k3".into();
+            pool.provider = Some("moonshot".into());
+            pool.reasoning = None;
+            pool.octos_profile = Some("coding".into());
+        }
+        db.put_resource(&pool).unwrap();
+        let p = proof(&request("usage_request", "Worker", &pool, 100));
+        let engagement = db.admit(&p, 1000).unwrap();
+        db.approve("approve", &p, 1000).unwrap();
+        let effect = db.claim_effect().unwrap().unwrap();
+        db.observe_effect(
+            &effect.id,
+            effect.fence,
+            &EffectOutcome::Applied {
+                receipt: "offline fixture".into(),
+            },
+        )
+        .unwrap();
+        Self {
+            root,
+            db,
+            engagement: engagement.id,
+            next: 0,
+        }
+    }
+    fn prepare(&mut self) -> (RunnerCapability, OwnedDispatchScope) {
+        self.next += 1;
+        let id = format!("usage_{}", self.next);
+        self.db
+            .register_session(&SessionBinding {
+                id: id.clone(),
+                engagement_id: self.engagement.clone(),
+                room_id: "!project:example.test".into(),
+                thread_root: Some(format!("$thread_{}", self.next)),
+            })
+            .unwrap();
+        self.db
+            .create_canonical_task(&id, &id, "Observe finite usage", 1001)
+            .unwrap();
+        self.db.register_workspace(&id).unwrap();
+        self.db
+            .enqueue_dispatch(&DispatchInput {
+                id: id.clone(),
+                session_id: id.clone(),
+                task_id: Some(id.clone()),
+                resources: vec![ResourceLease {
+                    id,
+                    exclusive: true,
+                }],
+                payload: json!({"untrusted_agent_hint":"someone else"}),
+            })
+            .unwrap();
+        let cap = self
+            .db
+            .claim_dispatch("fixture_runner", 1002, 60000, 120000, 128)
+            .unwrap()
+            .unwrap();
+        let admission = self.db.owned_dispatch_scope(&cap, 1003).unwrap();
+        (cap, admission)
+    }
+    fn start(&mut self) -> (RunnerCapability, OwnedDispatchScope, UsageSource) {
+        let (cap, admission) = self.prepare();
+        let started = self
+            .db
+            .start_owned_dispatch(&cap, admission.fingerprint(), 1004)
+            .unwrap();
+        let source = self.db.bind_usage_source(&cap, &started, 1005).unwrap();
+        (cap, started, source)
+    }
+    fn sql(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(self.root.path().join("state/domain.sqlite3")).unwrap()
+    }
+    fn count(&self, table: &str) -> u64 {
+        self.sql()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
+    fn totals(&self) -> UsageSummary {
+        self.db.usage_summary(&self.engagement).unwrap()
+    }
+}
+fn codex(fresh: u64, output: u64, cached: u64) -> UsageObservation {
+    UsageObservation::parse(Framework::Codex,&json!({"payload":{"info":{"total_token_usage":{"input_tokens":fresh+cached,"output_tokens":output,"cached_input_tokens":cached,"reasoning_output_tokens":0,"total_tokens":fresh+cached+output}}}}).to_string()).unwrap()
+}
+fn claude(input: u64, output: u64, write: u64, read: u64) -> UsageObservation {
+    UsageObservation::parse(Framework::Claude,&json!({"uuid":"message","message":{"usage":{"input_tokens":input,"output_tokens":output,"cache_creation_input_tokens":write,"cache_read_input_tokens":read}}}).to_string()).unwrap()
+}
+fn octos(input: u64, output: u64) -> UsageObservation {
+    use hagency_metering::{TokenCounts, octos_usage::*, runtime_usage::ProjectionDiagnostics};
+    UsageObservation::octos_runtime(OctosUsage {
+        counts: TokenCounts {
+            input: Some(input),
+            output: Some(output),
+            cache_write: Some(30),
+            cache_read: Some(20),
+        },
+        reasoning: Some(2),
+        coverage: Coverage::Session,
+        turns: 1,
+        diagnostics: ProjectionDiagnostics::default(),
+    })
+    .unwrap()
+}
+fn empty() -> UsageObservation {
+    UsageObservation::parse(Framework::Codex, "").unwrap()
+}
+
+#[test]
+fn native_usage_source_authority() {
+    let mut f = Fixture::new(Framework::Codex);
+    let (cap, admission) = f.prepare();
+    assert!(f.db.bind_usage_source(&cap, &admission, 1003).is_err());
+    let started =
+        f.db.start_owned_dispatch(&cap, admission.fingerprint(), 1004)
+            .unwrap();
+    let mut wrong = cap.clone();
+    wrong.secret = "0".repeat(64);
+    assert!(f.db.bind_usage_source(&wrong, &started, 1005).is_err());
+    let source = f.db.bind_usage_source(&cap, &started, 1005).unwrap();
+    assert_eq!(
+        f.db.bind_usage_source(&cap, &started, 1006).unwrap().id(),
+        source.id()
+    );
+    assert_eq!(f.count("usage_sources"), 1);
+    assert!(
+        f.db.record_usage_observation(&source, "wrong_framework", &claude(1, 2, 3, 4), 2000)
+            .is_err()
+    );
+    let mut other = Fixture::new(Framework::Codex);
+    let (_, _, foreign) = other.start();
+    assert!(
+        f.db.record_usage_observation(&foreign, "foreign", &codex(1, 2, 3), 2000)
+            .is_err()
+    );
+    let (_cap, other_scope) = f.prepare();
+    assert!(f.db.bind_usage_source(&cap, &other_scope, 1006).is_err());
+    f.db.revoke("retire", &f.engagement).unwrap();
+    assert_eq!(
+        f.db.bind_usage_source(&cap, &started, 2000).unwrap().id(),
+        source.id()
+    );
+    f.db.record_usage_observation(&source, "historical", &codex(10, 2, 3), 2000)
+        .unwrap();
+    assert!(
+        f.db.check_owned_dispatch(&cap, started.fingerprint(), 2001)
+            .is_err()
+    );
+    assert_eq!(f.totals().known_high_water_lower_bound.unwrap().input, 10);
+    // A Started scope that was never bound before retirement cannot create a new
+    // historical identity by claiming that a completed source path matches.
+    let mut g = Fixture::new(Framework::Codex);
+    let (cap, admission) = g.prepare();
+    let started =
+        g.db.start_owned_dispatch(&cap, admission.fingerprint(), 1004)
+            .unwrap();
+    g.db.revoke("retire", &g.engagement).unwrap();
+    assert!(g.db.bind_usage_source(&cap, &started, 2000).is_err());
+    assert_eq!(g.count("usage_sources"), 0);
+}
+
+#[test]
+fn native_usage_observation_evidence() {
+    let mut f = Fixture::new(Framework::Codex);
+    let (_, _, source) = f.start();
+    let zero = codex(0, 0, 0);
+    assert!(!zero.incomplete());
+    assert!(
+        f.db.usage_period(&f.engagement, UsagePeriodKind::Daily, 2000)
+            .unwrap()
+            .is_none()
+    );
+    f.db.record_usage_observation(&source, "zero", &zero, 2000)
+        .unwrap();
+    let period =
+        f.db.usage_period(&f.engagement, UsagePeriodKind::Daily, 2000)
+            .unwrap()
+            .unwrap();
+    assert_eq!(period.observed_growth.input, Some(0));
+    assert!(!period.incomplete);
+    f.db.record_usage_observation(&source, "growth", &codex(10, 2, 100), 2001)
+        .unwrap();
+    f.db.record_usage_observation(&source, "empty", &empty(), 2002)
+        .unwrap();
+    let summary = f.totals();
+    assert_eq!(summary.latest_counts.unwrap().input, None);
+    assert_eq!(summary.known_high_water_lower_bound.unwrap().input, 10);
+    assert_eq!(summary.historically_incomplete_sources, 1);
+    let malformed = UsageObservation::parse(Framework::Codex, "not json").unwrap();
+    f.db.record_usage_observation(&source, "malformed", &malformed, 2003)
+        .unwrap();
+    let view = f.db.usage_source(&source).unwrap();
+    assert_eq!(
+        view.latest_observation.unwrap()["diagnostics"]["malformedLines"],
+        1
+    );
+    let duplicate =
+        UsageObservation::parse(Framework::Codex, "{\"payload\":{},\"payload\":{}}").unwrap();
+    f.db.record_usage_observation(&source, "parse_error", &duplicate, 2004)
+        .unwrap();
+    let replay =
+        f.db.record_usage_observation(&source, "parse_error", &duplicate, 0)
+            .unwrap();
+    assert!(replay.replayed);
+    let view = f.db.usage_source(&source).unwrap();
+    assert_eq!(view.latest_observation.unwrap()["failure"], "duplicate_key");
+    assert_eq!(view.high_water.cache_read, Some(100));
+    let lower =
+        f.db.record_usage_observation(&source, "regression", &codex(1, 1, 1), 2005)
+            .unwrap();
+    assert!(lower.regressed);
+    let summary = f.totals();
+    assert_eq!(summary.latest_counts.unwrap().input, Some(1));
+    assert_eq!(summary.known_high_water_lower_bound.unwrap().input, 10);
+    assert_eq!(summary.regression_observations, 1);
+    assert_eq!(summary.latest_incomplete_sources, 1);
+    let current = f.db.usage_source(&source).unwrap();
+    assert!(current.latest_incomplete && current.latest_regressed);
+    assert_eq!(summary.historically_incomplete_sources, 1);
+    // A later complete non-regressing snapshot clears only the latest flag;
+    // missing/regressing historical coverage remains sticky across clean data.
+    f.db.record_usage_observation(&source, "recovered_latest", &codex(10, 2, 100), 2006)
+        .unwrap();
+    let summary = f.totals();
+    assert_eq!(summary.latest_incomplete_sources, 0);
+    assert_eq!(summary.historically_incomplete_sources, 1);
+    let view = f.db.usage_source(&source).unwrap();
+    assert!(!view.latest_incomplete && !view.latest_regressed);
+    assert_eq!(view.regressions, 1);
+    let private = UsageObservation::parse(
+        Framework::Codex,
+        &json!({"payload":{"cwd":"/private/credential-home","model":"credential-secret"}})
+            .to_string(),
+    )
+    .unwrap();
+    let encoded = serde_json::to_string(&private).unwrap();
+    assert!(!encoded.contains("credential"));
+    assert!(!format!("{private:?}").contains("private"));
+    assert!(
+        UsageObservation::parse(
+            Framework::Codex,
+            &" ".repeat(hagency_metering::MAX_SNAPSHOT_BYTES + 1)
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn native_usage_restart_and_reappearance() {
+    let mut f = Fixture::new(Framework::Codex);
+    let (cap, started, source) = f.start();
+    f.db.record_usage_observation(&source, "original", &codex(10, 2, 3), 2000)
+        .unwrap();
+    f.db.observe_owned_failure(&cap, OwnedFailure::Cancelled, 2001)
+        .unwrap();
+    let path = f.root.path().join("state");
+    drop(f.db);
+    f.db = DomainRepository::open(&path).unwrap();
+    let restored = f.db.restore_usage_source(source.id()).unwrap();
+    assert_eq!(
+        f.db.bind_usage_source(&cap, &started, 3000).unwrap().id(),
+        restored.id()
+    );
+    // The source file may have been pruned; no replacement identity is created.
+    f.db.record_usage_observation(&restored, "missing", &empty(), 3000)
+        .unwrap();
+    f.db.record_usage_observation(&restored, "reappeared", &codex(10, 2, 3), 3001)
+        .unwrap();
+    assert_eq!(f.totals().known_high_water_lower_bound.unwrap().input, 10);
+    f.db.record_usage_observation(&restored, "new_growth", &codex(15, 3, 4), 3002)
+        .unwrap();
+    let replay =
+        f.db.record_usage_observation(&restored, "original", &codex(10, 2, 3), 0)
+            .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.observed_at, 2000);
+    assert_eq!(f.count("usage_sources"), 1);
+    assert_eq!(f.totals().known_high_water_lower_bound.unwrap().input, 15);
+}
+
+#[test]
+fn native_usage_receipts_and_clock() {
+    let mut f = Fixture::new(Framework::Codex);
+    let (_, _, source) = f.start();
+    f.db.record_usage_observation(&source, "one", &codex(10, 2, 3), 2000)
+        .unwrap();
+    assert!(matches!(
+        f.db.record_usage_observation(&source, "one", &codex(11, 2, 3), 2001),
+        Err(Error::Conflict)
+    ));
+    assert!(
+        f.db.record_usage_observation(&source, "backward", &codex(20, 2, 3), 1999)
+            .is_err()
+    );
+    assert!(
+        f.db.record_usage_observation(&source, "future", &codex(20, 2, 3), u64::MAX)
+            .is_err()
+    );
+    assert_eq!(f.count("usage_receipts"), 1);
+    assert_eq!(f.totals().known_high_water_lower_bound.unwrap().input, 10);
+    f.sql().execute_batch("CREATE TRIGGER reject_usage_receipt BEFORE INSERT ON usage_receipts BEGIN SELECT RAISE(FAIL,'fixture failure'); END;").unwrap();
+    assert!(
+        f.db.record_usage_observation(&source, "atomic", &codex(50, 2, 3), 86400000)
+            .is_err()
+    );
+    assert_eq!(f.count("usage_receipts"), 1);
+    assert_eq!(f.count("usage_periods"), 2);
+    assert_eq!(f.totals().known_high_water_lower_bound.unwrap().input, 10);
+    assert_eq!(
+        f.sql()
+            .query_row("SELECT observed_at FROM usage_clock", [], |r| r
+                .get::<_, u64>(0))
+            .unwrap(),
+        2000
+    );
+    f.sql()
+        .execute_batch("DROP TRIGGER reject_usage_receipt;")
+        .unwrap();
+    f.db.record_usage_observation(&source, "atomic", &codex(50, 2, 3), 3000)
+        .unwrap();
+    assert_eq!(f.totals().known_high_water_lower_bound.unwrap().input, 50);
+}
+
+#[test]
+fn native_usage_migration() {
+    let f = Fixture::new(Framework::Codex);
+    let path = f.root.path().join("state");
+    drop(f.db);
+    let sql = rusqlite::Connection::open(path.join("domain.sqlite3")).unwrap();
+    remove_usage_schema(&sql);
+    // 032's ADD COLUMN is not replay-idempotent: the rewind replays it
+    // over a receipts table that already carries the column, so strip it
+    // first (the 025 replay posture; cf. updated_at in file_delivery.rs).
+    sql.execute_batch("ALTER TABLE runner_sessions DROP COLUMN model_override; ALTER TABLE runner_sessions DROP COLUMN mode_override; ALTER TABLE approval_verdict_receipts DROP COLUMN denial_reason; ALTER TABLE runner_attempts DROP COLUMN park_reason; ALTER TABLE dispatch_inputs DROP COLUMN addressed; DROP TABLE IF EXISTS dispatch_conversation_reads; ALTER TABLE runner_attempts DROP COLUMN started_at; ALTER TABLE runner_attempts DROP COLUMN parked_at; ALTER TABLE runner_attempts DROP COLUMN last_renew_at; ALTER TABLE runner_attempts DROP COLUMN settled_at; ALTER TABLE runner_attempts DROP COLUMN terminal_reason; DROP TABLE IF EXISTS runner_attempt_events; DROP TABLE IF EXISTS agent_fences; DROP TABLE IF EXISTS avatar_requests; DROP TABLE IF EXISTS agent_tombstones; DROP TABLE IF EXISTS delivery_events; DROP TABLE IF EXISTS operator_messages; DROP TABLE IF EXISTS dispatch_activity_events; DROP TABLE IF EXISTS dispatch_activity;  DROP TABLE IF EXISTS pending_invites;  DROP TABLE IF EXISTS ceiling_alert_notes; DROP TABLE IF EXISTS side_registrations; DROP VIEW IF EXISTS current_command_notices; DROP TABLE IF EXISTS command_notice_inspections; DROP TABLE IF EXISTS command_notices; ALTER TABLE final_replies DROP COLUMN incidental; DROP TABLE IF EXISTS operator_tasks; DROP TABLE IF EXISTS operator_task_comments; DROP TABLE IF EXISTS room_trust;")
+         .unwrap();
+    sql.execute_batch("DROP TABLE IF EXISTS agent_lifecycle; DROP TABLE IF EXISTS side_records; DROP TABLE IF EXISTS side_projects;  ALTER TABLE decisions DROP COLUMN kind; ALTER TABLE decisions DROP COLUMN at; DROP TABLE IF EXISTS reminders; DROP TABLE IF EXISTS room_trust;  DROP TABLE IF EXISTS quota_holds; DROP TABLE IF EXISTS owner_anchors; DROP TABLE IF EXISTS joined_rooms; ALTER TABLE engagements DROP COLUMN allocated_tokens; DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=16;").unwrap();
+    drop(sql);
+    for _ in 0..2 {
+        let db = DomainRepository::open(&path).unwrap();
+        assert_eq!(db.usage_summary(&f.engagement).unwrap().sources, 0);
+    }
+    let sql = rusqlite::Connection::open(path.join("domain.sqlite3")).unwrap();
+    assert_eq!(
+        sql.pragma_query_value(None, "user_version", |r| r.get::<_, u64>(0))
+            .unwrap(),
+        hagency_store::DOMAIN_SCHEMA_VERSION as u64
+    );
+    sql.execute_batch(
+        "ALTER TABLE usage_receipts RENAME COLUMN observation TO missing_observation;",
+    )
+    .unwrap();
+    drop(sql);
+    assert!(matches!(DomainRepository::open(&path), Err(Error::Schema)));
+}
+
+/// The fleet totals' three states (backend-v2.js:15700-15720): null is "not
+/// known", never a zero claiming the fleet consumed nothing; the numerator
+/// never travels without its denominator.
+#[test]
+fn native_usage_totals_empty_bound_partial_and_measured() {
+    // Empty: no engagement rows at all — denominator 0, both figures null.
+    let dir = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+    let mut db = DomainRepository::open(&dir.path().join("state")).unwrap();
+    db.register(&registration()).unwrap();
+    let totals = db.usage_totals().unwrap();
+    assert_eq!(totals.agents, 0);
+    assert_eq!(totals.tokens_drawn, None);
+    assert_eq!(totals.tokens_used, None);
+    assert_eq!(totals.tokens_measured_for, 0);
+    assert!(!totals.tokens_partial);
+
+    // Bound but never observed: the source's high water is all-unknown at
+    // bind, so the engagement is NOT measured and the fleet still reports
+    // null — the retained filter is `typeof tokensUsed === 'number'`
+    // (backend-v2.js:15702), and an unobserved agent joins neither sum nor
+    // denominator. Some(0) here would claim the fleet consumed nothing.
+    let mut f = Fixture::new(Framework::Claude);
+    let _ = f.start();
+    let totals = f.db.usage_totals().unwrap();
+    assert_eq!(totals.agents, 1);
+    assert_eq!(totals.tokens_drawn, None);
+    assert_eq!(totals.tokens_used, None);
+    assert_eq!(totals.tokens_measured_for, 0);
+    assert!(!totals.tokens_partial);
+
+    // Partial then measured: one observed agent beside one agent with no
+    // source at all. claude(10, 20, 30, 40) parses to input=10, output=20,
+    // cache_write=30, cache_read=40 (observation.rs counter mapping), so
+    // drawn = 10+20+30 = 60 (the ceiling kinds) and used = 100 (display).
+    let (_, _, source) = f.start();
+    f.db.record_usage_observation(&source, "totals_call", &claude(10, 20, 30, 40), 2000)
+        .unwrap();
+    let mut pool = resource("usage_pool", "usage_seat", 1000);
+    pool.framework = "claude".into();
+    pool.model = "claude-sent-5".into();
+    pool.reasoning = None;
+    f.db.admit(
+        &proof(&request("totals_request", "SecondWorker", &pool, 100)),
+        1000,
+    )
+    .unwrap();
+    let totals = f.db.usage_totals().unwrap();
+    assert_eq!(totals.agents, 2, "the denominator counts both agents");
+    assert_eq!(totals.tokens_drawn, Some(60));
+    assert_eq!(totals.tokens_used, Some(100));
+    assert_eq!(totals.tokens_measured_for, 1);
+    assert!(totals.tokens_partial, "1 of 2 measured is partial");
+}
+
+/// Board #108: a source bound but never observed must not erase its siblings'
+/// measured latest counts. `usage_summary` folded every source's
+/// `latest_counts` through `optional_add`, which nulls a kind when EITHER side
+/// is null — so one unused source (all-unknown at bind) nulled the whole sum
+/// and the live fleet rendered "Latest observed counts: Unknown" beside five
+/// real source rows. The fleet figure already skips an all-unknown source
+/// (`usage_totals`, the retained filter `typeof tokensUsed === 'number'`,
+/// backend-v2.js:15702); the summary follows the same rule now.
+#[test]
+fn native_usage_summary_ignores_a_bound_but_unobserved_source() {
+    let mut f = Fixture::new(Framework::Codex);
+    let (_, _, observed) = f.start();
+    f.db.record_usage_observation(&observed, "measured_call", &codex(7, 2, 3), 2000)
+        .unwrap();
+    // A second source in the SAME engagement, bound and never observed — the
+    // live fleet's exact shape (five measured rows beside an unused dispatch).
+    let _ = f.start();
+    let summary = f.totals();
+    assert_eq!(summary.sources, 2, "both sources are counted");
+    let latest = summary
+        .latest_counts
+        .expect("a measured source publishes its counts");
+    assert_eq!(
+        latest.input,
+        Some(7),
+        "the measured source's figures survive the unobserved sibling"
+    );
+    assert_eq!(latest.output, Some(2));
+    assert_eq!(latest.cache_read, Some(3));
+    assert_eq!(summary.known_high_water_lower_bound.unwrap().input, 7);
+}
+
+/// The all-unknown case is unchanged: a source bound and never observed, with
+/// no measured sibling, keeps the all-unknown shape (`Some` of null kinds),
+/// which renders as Unknown. It must not become a zero claiming the engagement
+/// consumed nothing, nor a bare `null` claiming there is no source at all.
+#[test]
+fn native_usage_summary_all_unobserved_stays_unknown() {
+    let mut f = Fixture::new(Framework::Codex);
+    let _ = f.start();
+    let summary = f.totals();
+    assert_eq!(summary.sources, 1);
+    let latest = summary
+        .latest_counts
+        .expect("a bound source keeps the Some(all-null) shape");
+    assert_eq!(latest.input, None, "unknown, never zero");
+    assert_eq!(latest.output, None);
+}
+
+/// ADR-193: an Octos dispatch's usage source carries framework octos and
+/// takes Octos runtime evidence only; another framework's evidence is refused
+/// both ways.
+#[test]
+fn native_usage_octos_runtime_source() {
+    let mut f = Fixture::new(Framework::Octos);
+    let (_, _, source) = f.start();
+    assert_eq!(
+        f.sql()
+            .query_row("SELECT framework FROM usage_sources", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "octos"
+    );
+    assert!(
+        f.db.record_usage_observation(&source, "codex", &codex(1, 2, 3), 2000)
+            .is_err()
+    );
+    f.db.record_usage_observation(&source, "runtime_v1_1", &octos(10, 7), 2000)
+        .unwrap();
+    let totals = f.totals();
+    assert_eq!(totals.sources, 1);
+    let counts = totals.latest_counts.unwrap();
+    assert_eq!((counts.input, counts.output), (Some(10), Some(7)));
+    let mut other = Fixture::new(Framework::Codex);
+    let (_, _, codex_source) = other.start();
+    assert!(
+        other
+            .db
+            .record_usage_observation(&codex_source, "octos", &octos(1, 1), 2000)
+            .is_err()
+    );
+}
+
+/// ADR-193: migration 69 widens a v68 ledger's framework CHECK to octos and
+/// keeps every source and receipt it holds, each receipt still naming its
+/// source.
+#[test]
+fn native_usage_migration_admits_octos_sources() {
+    let mut f = Fixture::new(Framework::Codex);
+    let (_, _, source) = f.start();
+    f.db.record_usage_observation(&source, "before", &codex(10, 2, 3), 2000)
+        .unwrap();
+    let path = f.root.path().join("state");
+    let engagement = f.engagement.clone();
+    drop(f.db);
+    let sql = rusqlite::Connection::open(path.join("domain.sqlite3")).unwrap();
+    // A v68 ledger: the 017 CHECK names two frameworks. Rewritten here with
+    // foreign keys off; the migration itself runs with them on.
+    common::remove_owner_resource_schema(&sql);
+    sql.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    sql.execute_batch(
+        "CREATE TABLE usage_sources_68 (
+ id TEXT PRIMARY KEY, dispatch_id TEXT NOT NULL REFERENCES runner_dispatches(id),
+ fence INTEGER NOT NULL, engagement_id TEXT NOT NULL REFERENCES engagements(id),
+ identity_digest TEXT NOT NULL, framework TEXT NOT NULL CHECK(framework IN ('claude','codex')),
+ attribution TEXT NOT NULL CHECK(json_valid(attribution)),
+ high_water TEXT NOT NULL CHECK(json_valid(high_water)),
+ latest_counts TEXT NOT NULL CHECK(json_valid(latest_counts)),
+ latest_observation TEXT CHECK(latest_observation IS NULL OR json_valid(latest_observation)),
+ latest_incomplete INTEGER NOT NULL DEFAULT 1 CHECK(latest_incomplete IN (0,1)),
+ latest_regressed INTEGER NOT NULL DEFAULT 0 CHECK(latest_regressed IN (0,1)),
+ historical_incomplete INTEGER NOT NULL DEFAULT 0 CHECK(historical_incomplete IN (0,1)),
+ regressions INTEGER NOT NULL DEFAULT 0, observations INTEGER NOT NULL DEFAULT 0,
+ observed_at INTEGER, UNIQUE(dispatch_id,fence)) STRICT;
+INSERT INTO usage_sources_68 SELECT * FROM usage_sources;
+DROP TABLE usage_sources;
+ALTER TABLE usage_sources_68 RENAME TO usage_sources;
+CREATE INDEX usage_sources_engagement ON usage_sources(engagement_id);
+DROP TABLE management_intents; DROP TABLE management_commands;
+DROP TABLE management_identity;
+DROP TRIGGER IF EXISTS owner_resource_amended_ceiling_retained;DROP TABLE IF EXISTS owner_resource_ceiling_amendments;DROP TABLE IF EXISTS owner_shared_tool_policies;PRAGMA user_version=68;",
+    )
+    .unwrap();
+    assert!(
+        sql.execute("UPDATE usage_sources SET framework='octos'", [])
+            .is_err()
+    );
+    drop(sql);
+    let db = DomainRepository::open(&path).unwrap();
+    let summary = db.usage_summary(&engagement).unwrap();
+    assert_eq!(summary.sources, 1);
+    assert_eq!(summary.latest_counts.unwrap().output, Some(2));
+    drop(db);
+    let sql = rusqlite::Connection::open(path.join("domain.sqlite3")).unwrap();
+    assert_eq!(
+        sql.pragma_query_value(None, "user_version", |r| r.get::<_, u64>(0))
+            .unwrap(),
+        hagency_store::DOMAIN_SCHEMA_VERSION as u64
+    );
+    // The rebuilt receipts reference the rebuilt sources by their own name.
+    let schema: String = sql
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name='usage_receipts'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(schema.contains("source_id TEXT NOT NULL REFERENCES usage_sources(id)"));
+    let receipts: u64 = sql
+        .query_row("SELECT COUNT(*) FROM usage_receipts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(receipts, 1);
+    let orphans: u64 = sql
+        .query_row(
+            "SELECT COUNT(*) FROM usage_receipts r WHERE NOT EXISTS(SELECT 1 FROM usage_sources s WHERE s.id=r.source_id)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(orphans, 0);
+    sql.execute("UPDATE usage_sources SET framework='octos'", [])
+        .unwrap();
+    assert!(
+        sql.execute("UPDATE usage_sources SET framework='hermes'", [])
+            .is_err()
+    );
+}

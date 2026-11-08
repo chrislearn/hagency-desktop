@@ -1,0 +1,118 @@
+[package]
+name = "hagency"
+autobins = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+shared-budget-execution = ["agent-budget", "shared-context", "hagency-store/shared-budget-execution"]
+agent-budget = ["resource-adoption", "hagency-store/agent-budget"]
+shared-context = ["shared-intake", "hagency-store/shared-context", "hagency-runtime/shared-context"]
+shared-intake = ["shared-successors", "hagency-store/shared-intake"]
+default = []
+# Qualification/stop only; no Desktop capability, prompt or shared work route.
+managed-runtime = []
+# Explicit first text-turn opt-in; no mini-app execution capability.
+shared-execution = ["managed-runtime"]
+shared-successors = ["shared-execution"]
+test-support = ["hagency-store/test-support"]
+resource-adoption = ["hagency-store/resource-adoption"]
+
+[dependencies]
+toml = { version = "=1.1.5", default-features = false, features = ["parse", "serde", "std"] }
+percent-encoding = "=2.3.2"
+rusqlite = { workspace = true, features = ["hooks"] }
+hagency-agent-local = { path = "../hagency-agent-local" }
+hagency-core.workspace = true
+hagency-store.workspace = true
+hagency-platform.workspace = true
+hagency-execution.workspace = true
+hagency-matrix.workspace = true
+hagency-palpo.workspace = true
+hagency-runtime.workspace = true
+hagency-files.workspace = true
+hagency-media.workspace = true
+hagency-media-store.workspace = true
+cap-std.workspace = true
+cap-fs-ext.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["process"] }
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+http-body-util.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls-webpki-roots", "rustls-tls-native-roots", "json"] }
+thiserror.workspace = true
+salvo = { workspace = true, features = ["server", "server-handle", "http1", "test"] }
+clap = { workspace = true, features = ["derive"] }
+getrandom.workspace = true
+# The executor's own Agent device for encrypted owner-direct Rooms.
+matrix-sdk = { workspace = true, features = ["e2e-encryption", "markdown", "sqlite", "bundled-sqlite", "rustls-aws-lc-rs", "experimental-send-custom-to-device", "local-server"] }
+# Shared owner-dashboard DTOs served by the owner daemon (ADR 0012).
+hagency-metering.workspace = true
+# Owner daemon peer identity checks (geteuid) for private local IPC, and the
+# owner-root registry's exclusive rename.
+rustix = { workspace = true, features = ["process", "time", "fs"] }
+base64.workspace = true
+subtle.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+hagency-store = { workspace = true, features = ["test-support"] }
+# The offline pins of ADR-182 need the execution crate's diagnostics fault
+# (an unproven stop no real fixture can force); test builds only.
+hagency-execution = { workspace = true, features = ["test-diagnostics"] }
+matrix-sdk-base = { workspace = true, features = ["e2e-encryption"] }
+matrix-sdk-sqlite = { workspace = true, features = ["state-store", "bundled"] }
+matrix-sdk-store-encryption.workspace = true
+matrix-sdk-crypto.workspace = true
+ruma = { workspace = true, features = ["client-api-c", "events"] }
+tokio = { workspace = true, features = ["process"] }
+rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
+rusqlite = { workspace = true, features = ["bundled"] }
+tempfile.workspace = true
+tokio-rustls = { workspace = true, features = ["ring", "tls12"] }
+
+[[bin]]
+name = "hagency-owned-mcp-probe"
+path = "tests/fixtures/owned_mcp_peer.rs"
+
+[[bin]]
+name = "hagency-file-mcp-probe"
+path = "tests/fixtures/file_mcp_peer.rs"
+
+[[bin]]
+name = "hagency-receive-mcp-probe"
+path = "tests/fixtures/receive_mcp_peer.rs"
+
+[[bin]]
+name = "hagency-approval-mcp-probe"
+path = "tests/fixtures/approval_mcp_peer.rs"
+
+[[bin]]
+name = "hagency-login-probe"
+path = "tests/fixtures/login_probe.rs"
+
+[[bin]]
+name = "hagency-sdk-mcp-test-peer"
+path = "tests/fixtures/sdk_mcp_test_peer.rs"
+
+[lints]
+workspace = true
+
+# Explicit isolated acceptance executable: current_exe must implement the real
+# supervisor guardian entry before dispatching the daemon test subprocess.
+[[test]]
+name = "pooled_daemon_crypto"
+harness = false
+required-features = ["test-support", "shared-budget-execution"]
+
+# Test process only; Desktop dispatches the production daemon and guardian.
+[[bin]]
+name = "hagency-owner-test-host"
+path = "tests/fixtures/owner_test_host.rs"

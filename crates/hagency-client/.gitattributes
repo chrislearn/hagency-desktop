@@ -1,0 +1,5 @@
+# Preserve upstream CLI snapshots and published SQL migration bytes exactly.
+# Their whitespace is part of the imported evidence, not newly formatted code.
+native/fixtures/codex-cli/app-server-help-0.153.4.excerpt.txt whitespace=-blank-at-eol
+native/hagency-execution/tests/fixtures/codex-app-server-help.txt whitespace=-blank-at-eol
+native/hagency-store/src/migrations/027-peer-corpus-retention.sql whitespace=-blank-at-eof

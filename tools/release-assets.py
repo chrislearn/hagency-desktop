@@ -37,7 +37,8 @@ def metadata():
     def revision(name):
         return re.search(r'^'+re.escape(name)+r'\s*=\s*\{[^\n]*\brev\s*=\s*"([^"]+)"', manifest, re.M)[1]
     return dict(version=re.search(r'^version\s*=\s*"([^"]+)"', manifest, re.M)[1],
-                sourceCommit=os.environ['GITHUB_SHA'], clientCommit=revision('hagency'),
+                sourceCommit=os.environ['GITHUB_SHA'], clientCommit=os.environ['GITHUB_SHA'],
+                clientPath='crates/hagency-client',
                 makepadCommit=revision('makepad-app-module'))
 
 

@@ -19,16 +19,57 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  native:
-    name: Native build and unit tests
+  libraries:
+    name: Hagency library workspace
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: 4
+      RUST_TEST_THREADS: 4
+      RUST_MIN_STACK: 16777216
+    defaults:
+      run:
+        working-directory: crates/hagency-client
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.0
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/hagency-client -> target
+      - run: brew install cmake
+      - name: Check Linux qualification helper refusals without provisioning
+        run: python3 native/scripts/test-qualify-linux-cgroup.py
+      - name: Preserve the offline runtime peer before feature variants rebuild it
+        run: |
+          cargo build --locked -p hagency-runtime --features shared-context --bin hagency-managed-runtime-probe
+          cp target/debug/hagency-managed-runtime-probe "$RUNNER_TEMP/hagency-library-runtime-probe"
+          echo "HAGENCY_TEST_RUNTIME_PROBE=$RUNNER_TEMP/hagency-library-runtime-probe" >> "$GITHUB_ENV"
+      # These two existing qualification selectors require a live qualified
+      # host; their evidence cannot be supplied by a disposable CI runner.
+      - run: cargo test --locked --workspace --all-targets --no-fail-fast -- --skip native_codex_real_app_server --skip native_two_agent_qualification_records_its_evidence
+      - run: cargo test --locked -p hagency --features shared-budget-execution,resource-adoption --lib
+      # These functional checks retain the production two-second inspection
+      # deadline. Concurrent debug fixture/schema construction can exhaust it.
+      - name: Check bounded empty-device inventory in isolation
+        run: cargo test --locked -p hagency-store --features shared-budget-execution,resource-adoption --lib domain::owner_resources::adoption::empty_device::tests:: -- --test-threads=1
+  native:
+    name: Native build and unit tests
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            tools/hagency-script-review -> target
+            crates/owner-dashboard -> target
+            crates/hagency-client -> target
       - run: brew install cmake
       - run: cargo test --locked --manifest-path crates/miniapp-core/Cargo.toml
       - run: cargo test --locked --manifest-path crates/miniapp-catalog/Cargo.toml

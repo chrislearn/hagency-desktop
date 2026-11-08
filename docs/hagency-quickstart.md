@@ -150,7 +150,7 @@ Room execution is deferred; ordinary Matrix encrypted chat remains available.
 
 Restart recovery restores saved runtime intentions. Its rule is to restore only Room scopes you explicitly started and have not explicitly stopped, using the saved reservation, effort and host-files choice after fresh identity, device, lease, resource and ledger checks. **Stop responding excludes that scope from restart recovery**; a normal app shutdown is not the same instruction. An active Agent or saved model alone is not an instruction to run every Room. Missing resources, unknown costs, revoked membership or another assigned device must block recovery; no model replay or automatic takeover.
 
-Agent Unlimited does not bypass finite Room/member limits or explicit request denial. A sent paused-policy reply is not successful model inference. See the [runtime recovery record](../../hagency-client/docs/design/2026-10-08-agent-runtime-recovery.zh-CN.md) for ordinary/quick restart, explicit Stop exclusion, and remaining untested branches.
+Agent Unlimited does not bypass finite Room/member limits or explicit request denial. A sent paused-policy reply is not successful model inference. See the [runtime recovery record](https://github.com/hagency-org/hagency-client/blob/6cd99ceb84ae407b2315dcd0f5e900022eebac06/docs/design/2026-10-08-agent-runtime-recovery.zh-CN.md) for ordinary/quick restart, explicit Stop exclusion, and remaining untested branches.
 
 ## Failure and recovery states
 
