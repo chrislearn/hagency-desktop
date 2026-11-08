@@ -53,7 +53,8 @@ jobs:
       # These functional checks retain the production two-second inspection
       # deadline. Concurrent debug fixture/schema construction can exhaust it.
       - name: Check bounded empty-device inventory in isolation
-        run: cargo test --locked -p hagency-store --features shared-budget-execution,resource-adoption --lib domain::owner_resources::adoption::empty_device::tests:: -- --test-threads=1
+        run: |
+          cargo test --locked -p hagency-store --features shared-budget-execution,resource-adoption --lib domain::owner_resources::adoption::empty_device::tests:: -- --test-threads=1
   native:
     name: Native build and unit tests
     runs-on: macos-15
