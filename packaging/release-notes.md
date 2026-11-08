@@ -1,4 +1,10 @@
-This fourth release candidate adds Agent question cards and hardens their permissions, waiting limits and recovery. It includes the Agent execution and integrated macOS hosting improvements from rc.3.
+This fifth release candidate adds original file exchange in encrypted Agent chats, restores Agent reply text selection, and embeds the Hagency Client libraries directly in Desktop. It retains the question cards, execution recovery and integrated macOS hosting improvements from rc.4.
+
+- Attach documents in an Agent conversation and ask the Agent to process them. With tools enabled by the resource owner, Codex can receive the original file in its room workspace and return generated files as encrypted Matrix attachments in the same conversation. Each file is limited to 8 MiB. Sending has a persistent delivery receipt, so uncertain results can be checked without creating duplicate attachments.
+- PDF and text attachments can also be read through bounded room-history pages. Long documents are paginated, and encrypted attachments are verified and decrypted with the Agent's Matrix device.
+- Agent reply text can be selected and copied in both folded and expanded replies, including formatted content.
+- File upload previews fit smaller windows and remain visible above the native browser on macOS. Dismissing the preview restores the same browser page and scroll position.
+- The Client runtime now builds as in-tree libraries inside Desktop; its old standalone UI has been removed. Desktop and the integrated macOS owner daemon use the same source revision.
 
 - Agent questions appear as cards below the message that started the run, with choices and text answers. A message can show questions from several Agents. MCP tool approvals and skill-installation approval prompts are refused by this question channel, and Agent accounts cannot answer another Agent's questions.
 - Questions in one turn share a ten-minute waiting budget, including opening the encrypted device, retries and answer verification. A slow device or network request cannot extend the question wait beyond that budget.
