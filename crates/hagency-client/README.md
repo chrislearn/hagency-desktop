@@ -26,6 +26,9 @@ cargo test --locked --manifest-path crates/hagency-client/Cargo.toml --workspace
   --skip native_two_agent_qualification_records_its_evidence
 cargo test --locked --manifest-path crates/hagency-client/Cargo.toml -p hagency \
   --features shared-budget-execution,resource-adoption --lib
+cargo test --locked --manifest-path crates/hagency-client/Cargo.toml -p hagency-store \
+  --features shared-budget-execution,resource-adoption --lib \
+  domain::owner_resources::adoption::empty_device::tests:: -- --test-threads=1
 python3 tools/check-hagency-regressions.py --output .run/regressions
 ```
 
@@ -37,6 +40,10 @@ builds its own offline probe for the encrypted question/history execution checks
 The Linux containment qualification helper and its ordinary-file refusal tests
 remain under `native/scripts`; CI runs the refusal tests without provisioning
 cgroups. Actual containment qualification requires a disposable Linux runner.
+Empty-device inventory checks retain the production two-second inspection limit;
+concurrent debug fixture/schema construction can exhaust that limit and return
+`Busy`. CI runs these functional checks serially, without changing their assertions
+or the production deadline.
 The explicit binaries under `tests/fixtures` are subprocess test peers, not
 packaged applications. `hagency-owner-test-host` exercises state locks, recovery
 and headless HTTP APIs without restoring the old UI.
