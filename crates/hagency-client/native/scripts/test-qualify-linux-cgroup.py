@@ -165,8 +165,12 @@ class ProvisionerRefusal(unittest.TestCase):
                 probe = self.probe_sources(root)
                 stage = qualification.StagedProbes(probe, Path(root))
                 original = Path(root) / "retained-original"
+                # Simulate the owner tampering with the sealed fixture. macOS
+                # requires the source directory to be writable even to rename
+                # it. Keep production staging sealed; only this attack fixture
+                # changes its own retained directory's permissions.
+                os.fchmod(stage.directory, 0o700)
                 if fault == "file":
-                    os.fchmod(stage.directory, 0o700)
                     target = stage.path / qualification.PROBE_NAMES[0]
                     target.rename(original)
                     target.write_bytes(b"replacement must survive")
