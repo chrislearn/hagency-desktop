@@ -180,6 +180,11 @@ impl AppMain for App {
             rinx::hagency::owner_dashboard::register_host_accessibility(cx);
             #[cfg(feature = "onboarding-test-support")]
             if let Ok(size) = std::env::var("HAGENCY_DOCK_REVIEW_SIZE") { self.resize_fixture(cx, &size); }
+            #[cfg(feature = "onboarding-test-support")]
+            if std::env::var("HAGENCY_PERMISSION_REVIEW").as_deref() == Ok("1") {
+                self.prepare_dock(cx);
+                self.ui.mini_apps_side_region(cx, ids!(dock)).open(cx, &MiniAppsAction::OpenAgent);
+            }
         }
         if owner_dashboard::keyboard::embedded(&self.ui, cx, event) { return; }
         if let Event::Custom(command) = event {

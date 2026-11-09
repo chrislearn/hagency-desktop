@@ -2933,5 +2933,19 @@
   "Failed to accept invite to {room}: {error}": "Failed to accept invite to {room}: {error}",
   "Failed to join {room}: {error}": "Failed to join {room}: {error}",
   "Failed to reject invite to {room}: {error}": "Failed to reject invite to {room}: {error}",
-  "Failed to leave {room}: {error}": "Failed to leave {room}: {error}"
+  "Failed to leave {room}: {error}": "Failed to leave {room}: {error}",
+  "Accounts & identity": "Accounts & identity",
+  "Resources & budgets": "Resources & budgets",
+  "Agents & execution": "Agents & execution",
+  "Approvals & access": "Approvals & access",
+  "Files & workspaces": "Files & workspaces",
+  "Additional permissions": "Additional permissions",
+  "Use your Matrix identity and connect or retire provider accounts.": "Use your Matrix identity and connect or retire provider accounts.",
+  "Review, configure, publish and renew resource pools, grants and Agent budgets.": "Review, configure, publish and renew resource pools, grants and Agent budgets.",
+  "Request and manage Agents, tasks, execution and recovery.": "Request and manage Agents, tasks, execution and recovery.",
+  "Review assigned requests and manage approvals, tool permissions and access rules.": "Review assigned requests and manage approvals, tool permissions and access rules.",
+  "Manage workspace status and rules, local drafts, and connection-file imports or downloads.": "Manage workspace status and rules, local drafts, and connection-file imports or downloads.",
+  "Review additional requested capabilities.": "Review additional requested capabilities.",
+  "Store this app’s data on this device.": "Store this app’s data on this device.",
+  "Expand a group to review its complete permissions.": "Expand a group to review its complete permissions."
 }
