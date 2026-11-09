@@ -70,6 +70,7 @@ pub struct TypingNotice {
     #[deref] view: View,
     #[apply_default] animator: Animator,
     #[rust] expiry: Timer,
+    #[rust] expires_at: Option<std::time::Instant>,
 }
 
 impl Widget for TypingNotice {
@@ -83,6 +84,9 @@ impl Widget for TypingNotice {
     }
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
+        // A room can temporarily stop forwarding timer events while its board
+        // is visible. Recheck the lease when the notice is drawn again.
+        if self.expires_at.is_some_and(|at| std::time::Instant::now() >= at) { self.clear(cx); }
         self.view.draw_walk(cx, scope, walk)
     }
 }
@@ -103,6 +107,7 @@ impl TypingNotice {
     fn clear(&mut self, cx: &mut Cx) {
         cx.stop_timer(self.expiry);
         self.expiry = Timer::empty();
+        self.expires_at = None;
         self.animator_cut(cx, ids!(typing_notice_animator.hide));
         self.view.bouncing_dots(cx, ids!(bouncing_dots)).stop_animation(cx);
         self.view.label(cx, ids!(typing_label)).set_text(cx, "");
@@ -117,6 +122,7 @@ impl TypingNotice {
             return;
         };
         self.expiry = cx.start_timeout(STALE_TYPING_SECS);
+        self.expires_at = Some(std::time::Instant::now() + std::time::Duration::from_secs_f64(STALE_TYPING_SECS));
         // Set the typing notice text and make its view visible.
         self.view.label(cx, ids!(typing_label)).set_text(cx, &typing_notice_text);
         self.view.set_visible(cx, true);
@@ -184,6 +190,28 @@ mod expiry_tests {
         assert_eq!(widget.label(&mut cx,ids!(typing_label)).text(),"");
         assert_eq!(widget.borrow::<TypingNotice>().unwrap().expiry.0,Timer::empty().0);
     }
+    #[test]
+    fn returning_from_a_hidden_view_clears_an_expired_notice_even_if_its_timer_was_not_delivered() {
+        use makepad_widgets::makepad_draw::cx_draw::CxDraw;
+        let (mut cx,widget)=fixture();
+        {
+            let mut notice=widget.borrow_mut::<TypingNotice>().unwrap();
+            notice.show_or_hide(&mut cx,&["Old room".into()]);
+            notice.expires_at=Some(std::time::Instant::now()-std::time::Duration::from_secs(1));
+        }
+        // No timer event is sent. The first resumed draw must expire it.
+        let pass=DrawPass::new(&mut cx);pass.set_size(&mut cx,dvec2(430.0,100.0));
+        let mut list=DrawList2d::new(&mut cx);let event=DrawEvent::default();
+        let mut draw=CxDraw::new(&mut cx,&event);let mut cx2d=Cx2d::new(&mut draw);
+        cx2d.begin_pass(&pass,None);list.begin_always(&mut cx2d);
+        cx2d.begin_root_turtle(dvec2(430.0,100.0),Layout::flow_down());
+        widget.draw_walk_all(&mut cx2d,&mut Scope::empty(),Walk{width:Size::Fixed(430.0),height:Size::Fit{min:None,max:None},..Walk::default()});
+        cx2d.end_pass_sized_turtle();list.end(&mut cx2d);cx2d.end_pass(&pass);
+        drop(cx2d);drop(draw);
+        assert!(!widget.visible());
+        assert!(widget.borrow::<TypingNotice>().unwrap().expires_at.is_none());
+    }
+
     #[test]
     fn stop_room_reset_and_background_clear_the_timer_and_old_identity() {
         let (mut cx,widget)=fixture();
