@@ -387,7 +387,6 @@ script_mod! {
                 timestamp := Timestamp {
                     margin: Inset{ top: 5.9 }
                 }
-                edited_indicator := EditedIndicator { }
                 tsp_sign_indicator := TspSignIndicator { }
             }
 
@@ -431,6 +430,7 @@ script_mod! {
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
                 link_preview_view := mod.widgets.LinkPreview {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                edited_indicator := EditedIndicator {}
                 delivery_status := View {
                     width: Fill,
                     height: Fit
@@ -447,10 +447,6 @@ script_mod! {
     let MobileMessageProfile = View {
         width: 40 height: Fit flow: Down spacing: 3
         avatar := MobileAvatar {width: 40 height: 40}
-        edited_indicator := EditedIndicator {
-            width: Fill
-            edit_html +: {width: Fill font_size: (8 * mod.widgets.RINX_TEXT_SCALE) font_color: mod.widgets.RINX_MUTED body: #(crate::i18n::tr("edited")) i18n_body: "edited"}
-        }
         tsp_sign_indicator := TspSignIndicator {}
     }
     let MobileMessageContent = View {
@@ -483,6 +479,7 @@ script_mod! {
                 agent_usage := mod.widgets.AgentUsage {show_toggle: false}
             link_preview_view := mod.widgets.LinkPreview {font_size: mod.widgets.MOBILE_MESSAGE_FONT_SIZE}
             download_section := mod.widgets.MessageDownloadSection {}
+            edited_indicator := EditedIndicator {}
         }
         mobile_reply_preview := mod.widgets.MobileRepliedToMessage {}
         View {
@@ -545,6 +542,7 @@ script_mod! {
             }
         }
         download_section := mod.widgets.MessageDownloadSection {}
+        edited_indicator := EditedIndicator {}
         mobile_reply_preview := mod.widgets.MobileRepliedToMessage {}
         View {
             width: Fill height: Fit flow: Right
@@ -597,7 +595,6 @@ script_mod! {
                 timestamp := Timestamp {
                     margin: Inset{top: 2.5}
                 }
-                edited_indicator := EditedIndicator { }
                 tsp_sign_indicator := TspSignIndicator { }
             }
             content := View {
@@ -624,6 +621,7 @@ script_mod! {
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
                 link_preview_view := mod.widgets.LinkPreview {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                edited_indicator := EditedIndicator {}
                 delivery_status := View {
                     width: Fill,
                     height: Fit
@@ -664,6 +662,7 @@ script_mod! {
                     }
                 }
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                edited_indicator := EditedIndicator {}
                 delivery_status := View {
                     width: Fill,
                     height: Fit,
@@ -700,6 +699,7 @@ script_mod! {
                     }
                 }
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                edited_indicator := EditedIndicator {}
                 delivery_status := View {
                     width: Fill,
                     height: Fit,
@@ -6050,7 +6050,7 @@ fn populate_message_view(
 
     // Set the "edited" indicator if this message was edited, otherwise hide it
     // (this widget may be reused for a non-edited message at the same row).
-    let edited_indicator = item.edited_indicator(cx, ids!(profile.edited_indicator));
+    let edited_indicator = item.edited_indicator(cx, ids!(edited_indicator));
     if msg_like_content.as_message().is_some_and(|m| m.is_edited()) {
         #[cfg(feature = "agent_chat")]
         let streaming = crate::agent_chat::reply::event_is_live(event_tl_item)
