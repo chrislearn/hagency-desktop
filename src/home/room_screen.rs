@@ -5820,8 +5820,7 @@ fn populate_message_view(
     if !used_cached_item {
         // Redacted messages must never show reactions, even if the SDK still reports some.
         let reactions = (!matches!(msg_like_content.kind, MsgLikeKind::Redacted))
-            .then(|| event_tl_item.content().reactions())
-            .flatten();
+            .then(|| event_tl_item.reactions());
         item.reaction_list(cx, ids!(content.reaction_list)).set_list(
             cx,
             reactions,

@@ -4,7 +4,7 @@ use crate::{matrix_context::SessionPin, sliding_sync::get_client};
 use anyhow::{Context, Result, ensure};
 use matrix_sdk::Client;
 use matrix_sdk_base::crypto::secret_storage::SecretStorageKey;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use zeroize::Zeroizing;
 
 static OPERATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -70,18 +70,13 @@ async fn identity(
     client: &Client,
     pin: &SessionPin,
 ) -> Result<Option<matrix_sdk::encryption::identities::UserIdentity>> {
-    let pinned = pin.clone();
-    let fence = Arc::new(matrix_sdk::HttpRequestFence::new(move || {
-        pinned.is_current()
-    }));
-    Ok(client
+    current(pin)?;
+    let own = client
         .encryption()
-        .request_user_identity_with_fence(
-            client.user_id().context("No user")?,
-            client.device_id().context("No device")?,
-            fence,
-        )
-        .await?)
+        .request_user_identity(client.user_id().context("No user")?)
+        .await?;
+    current(pin)?;
+    Ok(own)
 }
 fn master(identity: &Option<matrix_sdk::encryption::identities::UserIdentity>) -> Option<String> {
     identity
@@ -375,7 +370,7 @@ async fn perform(client: &Client, pin: &SessionPin, op: Operation) -> Result<Opt
                         .encryption()
                         .recovery()
                         .enable()
-                        .with_prepared_key(key)
+                        .with_key(&key)
                         .await?,
                 );
                 ensure!(*returned == *saved, "Recovery key confirmation failed");
