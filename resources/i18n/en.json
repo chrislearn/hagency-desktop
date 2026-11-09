@@ -2947,5 +2947,7 @@
   "Manage workspace status and rules, local drafts, and connection-file imports or downloads.": "Manage workspace status and rules, local drafts, and connection-file imports or downloads.",
   "Review additional requested capabilities.": "Review additional requested capabilities.",
   "Store this app’s data on this device.": "Store this app’s data on this device.",
-  "Expand a group to review its complete permissions.": "Expand a group to review its complete permissions."
+  "Expand a group to review its complete permissions.": "Expand a group to review its complete permissions.",
+  "Show {count} room updates": "Show {count} room updates",
+  "Hide {count} room updates": "Hide {count} room updates"
 }

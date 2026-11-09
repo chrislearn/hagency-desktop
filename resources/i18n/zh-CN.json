@@ -2947,5 +2947,7 @@
   "Manage workspace status and rules, local drafts, and connection-file imports or downloads.": "管理工作区状态与规则、本地草稿，以及连接文件的导入或下载。",
   "Review additional requested capabilities.": "查看其他申请的能力。",
   "Store this app’s data on this device.": "在此设备上保存此应用的数据。",
-  "Expand a group to review its complete permissions.": "展开任意分组，查看其完整权限。"
+  "Expand a group to review its complete permissions.": "展开任意分组，查看其完整权限。",
+  "Show {count} room updates": "展开 {count} 条会话更新",
+  "Hide {count} room updates": "收起 {count} 条会话更新"
 }
