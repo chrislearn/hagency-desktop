@@ -2949,5 +2949,20 @@
   "Store this app’s data on this device.": "在此设备上保存此应用的数据。",
   "Expand a group to review its complete permissions.": "展开任意分组，查看其完整权限。",
   "Show {count} room updates": "展开 {count} 条会话更新",
-  "Hide {count} room updates": "收起 {count} 条会话更新"
+  "Hide {count} room updates": "收起 {count} 条会话更新",
+  "No spaces\nmatch.": "没有匹配的\n空间。",
+  "Found no\njoined spaces.": "尚未加入\n任何空间。",
+  "Found no joined spaces.": "尚未加入任何空间。",
+  "Found 1 joined space.": "已加入 1 个空间。",
+  "Found {count} joined spaces.": "已加入 {count} 个空间。",
+  "{count} of {total} spaces": "{count} / {total} 个空间",
+  "Always approve for this session": "本次会话始终批准",
+  "Next request": "下一条请求",
+  "{agent} · Permission request": "{agent} · 权限请求",
+  "Waiting for encrypted permission details…": "正在等待加密的权限详情…",
+  "Decision sent; waiting for Agent": "决定已发送，等待 Agent",
+  "Approval becomes available after the encrypted details arrive.": "收到加密详情后才能批准。",
+  "Waiting for resource owner {owner}": "等待资源所有者 {owner} 批准",
+  "Session approval covers this Codex session only. It ends when this run stops.": "会话批准仅限当前 Codex 会话，运行结束即失效。",
+  "Could not confirm permission status; retrying.": "无法确认权限状态，正在重试。"
 }

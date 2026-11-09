@@ -54,11 +54,11 @@ script_mod! {
         }
         hint := Label {width: Fill height: Fit draw_text.color: mod.widgets.RINX_MUTED}
         actions := View {width: Fill height: Fit flow: Down spacing: 4
-            once := Button {width: Fill text: "Approve once / 仅批准一次"}
-            session := Button {width: Fill text: "Always approve for this session / 本次会话始终批准"}
-            deny := Button {width: Fill text: "Deny / 拒绝"}
+            once := Button {width: Fill text: #(crate::i18n::tr("Approve once")) i18n_text: "Approve once"}
+            session := Button {width: Fill text: #(crate::i18n::tr("Always approve for this session")) i18n_text: "Always approve for this session"}
+            deny := Button {width: Fill text: #(crate::i18n::tr("Deny")) i18n_text: "Deny"}
         }
-        next := Button {text: "Next request / 下一条请求" visible: false}
+        next := Button {text: #(crate::i18n::tr("Next request")) i18n_text: "Next request" visible: false}
     }
 }
 #[derive(Script,ScriptHook,Widget)]
@@ -95,20 +95,20 @@ impl SharedPermissionNotice {
         let Some(row)=self.rows.get(self.selected) else {
             self.view.set_visible(cx,!self.execution_text.is_empty() || !self.error.is_empty());
             self.view.widget(cx,ids!(next)).set_visible(cx,false);
-            self.view.label(cx,ids!(title)).set_text(cx,if self.error.is_empty(){crate::i18n::tr(&self.execution_text)}else{&self.error});
+            self.view.label(cx,ids!(title)).set_text(cx,if self.error.is_empty(){crate::i18n::tr(&self.execution_text)}else{crate::i18n::tr(&self.error)});
             self.view.redraw(cx);return;
         };
         let a=&row["approval"];
         let pending=row["decision"].is_null();let can=row["canDecide"]==true && pending && !self.loading && self.error.is_empty();
         self.view.set_visible(cx,true);
-        self.view.label(cx,ids!(title)).set_text(cx,&format!("{} · Permission request / 权限请求",a["agentName"].as_str().unwrap_or("Agent")));
+        self.view.label(cx,ids!(title)).set_text(cx,&crate::i18n::format("{agent} · Permission request", &[("agent",a["agentName"].as_str().unwrap_or("Agent").to_owned())]));
         self.view.label(cx,ids!(context)).set_text(cx,&format!("{} · {}",a["requesterMxid"].as_str().unwrap_or(""),a["eventId"].as_str().unwrap_or("")));
-        self.view.label(cx,ids!(details)).set_text(cx,&if row["encryptedPending"]==true {"Waiting for encrypted permission details… / 正在等待加密的权限详情…".into()}else{serde_json::to_string_pretty(&a["request"]).unwrap_or_default()});
-        let hint=if !pending {"Decision sent; waiting for Agent / 决定已发送，等待 Agent".to_owned()}
-        else if row["encryptedPending"]==true {"Approval becomes available after the encrypted details arrive. / 收到加密详情后才能批准。".into()}
-        else if row["canDecide"]!=true {format!("Waiting for resource owner {} / 等待资源所有者批准",a["ownerMxid"].as_str().unwrap_or(""))}
-        else {"Session approval covers this Codex session only. It ends when this run stops. / 会话批准仅限当前 Codex 会话，运行结束即失效。".into()};
-        self.view.label(cx,ids!(hint)).set_text(cx,if self.error.is_empty(){&hint}else{&self.error});
+        self.view.label(cx,ids!(details)).set_text(cx,&if row["encryptedPending"]==true {crate::i18n::tr("Waiting for encrypted permission details…").into()}else{serde_json::to_string_pretty(&a["request"]).unwrap_or_default()});
+        let hint=if !pending {crate::i18n::tr("Decision sent; waiting for Agent").to_owned()}
+        else if row["encryptedPending"]==true {crate::i18n::tr("Approval becomes available after the encrypted details arrive.").into()}
+        else if row["canDecide"]!=true {crate::i18n::format("Waiting for resource owner {owner}", &[("owner",a["ownerMxid"].as_str().unwrap_or("").to_owned())])}
+        else {crate::i18n::tr("Session approval covers this Codex session only. It ends when this run stops.").into()};
+        self.view.label(cx,ids!(hint)).set_text(cx,if self.error.is_empty(){&hint}else{crate::i18n::tr(&self.error)});
         self.view.button(cx,ids!(once)).set_enabled(cx,can);
         self.view.button(cx,ids!(session)).set_enabled(cx,can && a["request"]["sessionAllowed"]==true);
         self.view.button(cx,ids!(deny)).set_enabled(cx,can);
@@ -146,7 +146,7 @@ impl Widget for SharedPermissionNotice {
                     self.loading=false;
                     match &done.value {
                         Ok(value)=>{self.error.clear();self.execution_busy=execution_busy(value,&self.room,&self.thread);self.execution_text=execution_notice(value,&self.room,&self.thread).unwrap_or_default().into();self.rows=value["approvals"].as_array().cloned().unwrap_or_default().into_iter().filter(|r|r["approval"]["roomId"]==self.room && (self.thread.is_empty() || r["approval"]["threadRoot"]==self.thread)).take(16).collect();if self.selected>=self.rows.len(){self.selected=0;}self.render(cx);},
-                        Err(_)=>{self.error="Could not confirm permission status; retrying. / 无法确认权限状态，正在重试。".into();self.render(cx);},
+                        Err(_)=>{self.error="Could not confirm permission status; retrying.".into();self.render(cx);},
                     }
                     if self.active{self.timer=cx.start_timeout(2.0);}
                 }
