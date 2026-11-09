@@ -2947,5 +2947,20 @@
   "Manage workspace status and rules, local drafts, and connection-file imports or downloads.": "Manage workspace status and rules, local drafts, and connection-file imports or downloads.",
   "Review additional requested capabilities.": "Review additional requested capabilities.",
   "Store this app’s data on this device.": "Store this app’s data on this device.",
-  "Expand a group to review its complete permissions.": "Expand a group to review its complete permissions."
+  "Expand a group to review its complete permissions.": "Expand a group to review its complete permissions.",
+  "No spaces\nmatch.": "No spaces\nmatch.",
+  "Found no\njoined spaces.": "Found no\njoined spaces.",
+  "Found no joined spaces.": "Found no joined spaces.",
+  "Found 1 joined space.": "Found 1 joined space.",
+  "Found {count} joined spaces.": "Found {count} joined spaces.",
+  "{count} of {total} spaces": "{count} of {total} spaces",
+  "Always approve for this session": "Always approve for this session",
+  "Next request": "Next request",
+  "{agent} · Permission request": "{agent} · Permission request",
+  "Waiting for encrypted permission details…": "Waiting for encrypted permission details…",
+  "Decision sent; waiting for Agent": "Decision sent; waiting for Agent",
+  "Approval becomes available after the encrypted details arrive.": "Approval becomes available after the encrypted details arrive.",
+  "Waiting for resource owner {owner}": "Waiting for resource owner {owner}",
+  "Session approval covers this Codex session only. It ends when this run stops.": "Session approval covers this Codex session only. It ends when this run stops.",
+  "Could not confirm permission status; retrying.": "Could not confirm permission status; retrying."
 }
