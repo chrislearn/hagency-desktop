@@ -80,28 +80,24 @@ impl Widget for TypingNotice {
     }
 }
 
+fn typing_text(users: &[String]) -> Option<String> {
+    let (key, values) = match users {
+        [] => return None,
+        [user] => ("{user} is typing", vec![("user", user.clone())]),
+        [user1, user2] => ("{user1} and {user2} are typing", vec![("user1", user1.clone()), ("user2", user2.clone())]),
+        [user1, user2, user3] => ("{user1}, {user2}, and {user3} are typing", vec![("user1", user1.clone()), ("user2", user2.clone()), ("user3", user3.clone())]),
+        [user1, user2, others @ ..] => ("{user1}, {user2}, and {count} others are typing", vec![("user1", user1.clone()), ("user2", user2.clone()), ("count", others.len().to_string())]),
+    };
+    Some(crate::i18n::format(key, &values) + " ")
+}
+
 impl TypingNotice {
     /// Shows or hides the typing notice based on whether there are any typing users.
     fn show_or_hide(&mut self, cx: &mut Cx, typing_users: &[String]) {
-        let typing_notice_text = match typing_users {
-            [] => {
-                // Animate out the typing notice view (sliding it out towards the bottom).
-                self.animator_play(cx, ids!(typing_notice_animator.hide));
-                self.view.bouncing_dots(cx, ids!(bouncing_dots)).stop_animation(cx);
-                return;
-            }
-            [user] => format!("{user} is typing "),
-            [user1, user2] => format!("{user1} and {user2} are typing "),
-            [user1, user2, others @ ..] => {
-                if others.len() > 1 {
-                    format!("{user1}, {user2}, and {} are typing ", others[0])
-                } else {
-                    format!(
-                        "{user1}, {user2}, and {} others are typing ",
-                        others.len()
-                    )
-                }
-            }
+        let Some(typing_notice_text) = typing_text(typing_users) else {
+            self.animator_play(cx, ids!(typing_notice_animator.hide));
+            self.view.bouncing_dots(cx, ids!(bouncing_dots)).stop_animation(cx);
+            return;
         };
         // Set the typing notice text and make its view visible.
         self.view.label(cx, ids!(typing_label)).set_text(cx, &typing_notice_text);
@@ -119,5 +115,18 @@ impl TypingNoticeRef {
         if let Some(mut inner) = self.borrow_mut() {
             inner.show_or_hide(cx, typing_users);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn typing_names_and_other_count_cover_one_two_three_and_many_people() {
+        let users = ["Alice", "Bob", "Carol", "Dora"].map(str::to_owned);
+        assert_eq!(super::typing_text(&[]), None);
+        assert_eq!(super::typing_text(&users[..1]).unwrap(), "Alice is typing ");
+        assert_eq!(super::typing_text(&users[..2]).unwrap(), "Alice and Bob are typing ");
+        assert_eq!(super::typing_text(&users[..3]).unwrap(), "Alice, Bob, and Carol are typing ");
+        assert_eq!(super::typing_text(&users).unwrap(), "Alice, Bob, and 2 others are typing ");
     }
 }

@@ -246,8 +246,8 @@ script_mod! {
                 title := SheetCaption {}
                 SheetGroup {padding: 12 spacing: 10
                     choices := View {width: Fill height: Fit flow: Right spacing: 6
-                        automatic := RinxKeyButton {width: Fill height: 44 margin: 0 text: "Automatic"}
-                        manual := RinxKeyButton {width: Fill height: 44 margin: 0 text: "Manual"}
+                        automatic := RinxKeyButton {width: Fill height: 44 margin: 0 text: #(crate::i18n::tr("Automatic"))}
+                        manual := RinxKeyButton {width: Fill height: 44 margin: 0 text: #(crate::i18n::tr("Manual"))}
                     }
                     note := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
                 }
