@@ -3775,7 +3775,7 @@ impl RoomScreen {
         }
 
         // Hide the typing notice view initially.
-        self.view(cx, ids!(typing_notice)).set_visible(cx, false);
+        self.view.typing_notice(cx, ids!(typing_notice)).clear(cx);
         // If the room is loaded, we need to get a few key states:
         // 1. Get the current user's power levels for this room so that we can
         //    show/hide UI elements based on the user's permissions.
@@ -4150,6 +4150,7 @@ impl RoomScreen {
             return;
         }
 
+        self.view.typing_notice(cx, ids!(typing_notice)).clear(cx);
         self.hide_timeline();
         // Opening or restoring a conversation gives the timeline the full width.
         // Information is shown only after an explicit click on its header icon.
@@ -4178,6 +4179,7 @@ impl RoomScreen {
     }
 
     pub fn hide_displayed_room(&mut self, cx: &mut Cx) {
+        self.view.typing_notice(cx, ids!(typing_notice)).clear(cx);
         self.view.action_room_board(cx, ids!(actions_board)).select(cx, None);
         if self.tl_state.is_some() {
             self.hide_timeline();
