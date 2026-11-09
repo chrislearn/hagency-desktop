@@ -76,3 +76,29 @@ mod tests {
         assert!(!item.button(&mut cx,ids!(system_updates)).visible());
     }
 }
+
+#[cfg(test)]
+mod native_routing_tests {
+    use super::*;
+    #[test]
+    fn room_lookup_reaches_timeline_beside_detached_status_and_recovers_an_empty_cache() {
+        let mut cx = Cx::new(Box::new(|_,_|{}));
+        let root = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);crate::app::register_widgets(vm);
+            vm.bx.captured_errors=Some(Vec::new());
+            let value=script_eval!(vm,{mod.widgets.RoomScreen {}});
+            let root=WidgetRef::script_from_value(vm,value);
+            assert!(vm.take_errors().is_empty());root
+        });
+        let mut screen=root.borrow_mut::<RoomScreen>().unwrap();
+        let mut stale=screen.cached_widget_refs(&mut cx);
+        assert!(!stale.portal_list.is_empty(), "detached status must not exclude the main room view from widget lookup");
+        assert!(!stale.loading_pane.is_empty());
+        assert!(!stale.user_profile_sliding_pane.is_empty());
+        assert!(!stale.room_input_popup_menu.is_empty());
+        let expected=stale.portal_list.widget_uid();
+        stale.portal_list=WidgetRef::empty().as_portal_list();
+        screen.cached_refs=Some(stale);
+        assert_eq!(screen.cached_widget_refs(&mut cx).portal_list.widget_uid(),expected);
+    }
+}

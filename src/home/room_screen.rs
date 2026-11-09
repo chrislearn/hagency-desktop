@@ -1223,7 +1223,7 @@ pub(crate) fn index_of_event(
 /// The main widget that displays a single Matrix room.
 #[derive(Script, Widget)]
 pub struct RoomScreen {
-    #[deref] view: View,
+    #[find] #[deref] view: View,
     #[find] #[live] agent_status: WidgetRef,
     #[rust] agent_status_drawn: bool,
 
@@ -1433,17 +1433,6 @@ impl Widget for RoomScreen {
             }
 
             for (index, wr) in portal_list.items_with_actions(actions) {
-                if wr.button(cx, ids!(system_updates)).clicked(actions) {
-                    if let Some(tl) = self.tl_state.as_mut() {
-                        if let Some(event) = tl.items.get(index).and_then(|item| item.as_event()) {
-                            let id = event.identifier();
-                            if !tl.expanded_system_updates.remove(&id) { tl.expanded_system_updates.insert(id); }
-                        }
-                    }
-                    self.relayout_redraws_left = 12;
-                    self.relayout_last_first_id = usize::MAX;
-                    cx.redraw_all();
-                }
                 // Handle a hover-in action on the reaction list: show a reaction summary.
                 let reaction_list = wr.reaction_list(cx, ids!(reaction_list));
                 if let RoomScreenTooltipActions::HoverInReactionButton {
@@ -1793,6 +1782,24 @@ impl Widget for RoomScreen {
                 self.view.view(cx, ids!(room_screen_wrapper)).handle_event(cx, event, &mut Scope::empty());
             }
         });
+        // Handle disclosures in the room-local capture. Native pointer actions
+        // are consumed here before the app routes higher-level room actions.
+        let disclosure_rows = portal_list.items_with_actions(&actions_generated_within_this_room_screen);
+        let mut handled_disclosures = HashSet::new();
+        for (index, wr) in disclosure_rows {
+            if !handled_disclosures.insert(index) { continue; }
+            if wr.button(cx, ids!(system_updates)).clicked(&actions_generated_within_this_room_screen) {
+                if let Some(tl) = self.tl_state.as_mut() {
+                    if let Some(event) = tl.items.get(index).and_then(|item| item.as_event()) {
+                        let id = event.identifier();
+                        if !tl.expanded_system_updates.remove(&id) { tl.expanded_system_updates.insert(id); }
+                    }
+                }
+                self.relayout_redraws_left = 12;
+                self.relayout_last_first_id = usize::MAX;
+                cx.redraw_all();
+            }
+        }
         // Here, we handle and remove any general actions that are relevant to only this RoomScreen.
         // Removing the handled actions ensures they are not mistakenly handled by other RoomScreen widget instances.
         actions_generated_within_this_room_screen.retain(|action| {
@@ -4300,7 +4307,12 @@ impl RoomScreen {
     /// Returns the widget refs used on every event, caching them if None.
     fn cached_widget_refs(&mut self, cx: &mut Cx) -> RoomScreenWidgetRefs {
         if let Some(refs) = &self.cached_refs {
-            return refs.clone();
+            // The adaptive room view may not have materialized on the first
+            // event. Never retain an empty reference for all later interactions.
+            if !refs.portal_list.is_empty() && !refs.user_profile_sliding_pane.is_empty()
+                && !refs.loading_pane.is_empty() && !refs.room_input_popup_menu.is_empty() {
+                return refs.clone();
+            }
         }
         let refs = RoomScreenWidgetRefs {
             portal_list: self.portal_list(cx, ids!(timeline.list)),

@@ -113,7 +113,7 @@ def main():
         ("upload-preview", "shared::file_upload_modal::tests"),
         ("compact-mentions", "shared::mention"),
         ("chat-information-layout", "desktop_information_columns_tests"),
-        ("system-update-disclosures", "home::room_screen::system_updates::tests"),
+        ("system-update-disclosures", "home::room_screen::system_updates::"),
         ("typing-expiry", "room::typing_notice::"),
         ("typing-broadcast", "room::room_input_bar::typing_broadcast_tests"),
         ("chat-layout", "home::main_desktop_ui::chat_layout_tests"),
