@@ -666,7 +666,7 @@ impl NavigationTabBar {
             return;
         }
         self.approval_alert = Some(alert);
-        let color = if alert { self.appearance.role("color.status.danger.foreground") } else { self.appearance.ink };
+        let color = if alert { self.appearance.role("color.status.danger.foreground") } else { self.appearance.nav_ink() };
         script_apply_eval!(cx, icon, {draw_icon +: {color: #(color)}});
         label.set_text(cx, &text);
         label.set_text_color(cx, color);

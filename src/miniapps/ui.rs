@@ -439,7 +439,8 @@ script_mod! {
                 RinxPageTitle {width: Fill text: #(crate::i18n::tr("Hagency permissions")) i18n_text: "Hagency permissions"}
                 account := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
                 RinxLabel {width: Fill flow: Flow.Right{wrap: true}
-                    text: #(crate::i18n::tr("Hagency uses your current Matrix account.")) i18n_text: "Hagency uses your current Matrix account."
+                    text: #(crate::i18n::tr("Hagency uses your current Matrix account to manage Agents on this computer: connect a coding tool, create Agents, and run them in rooms you choose."))
+                    i18n_text: "Hagency uses your current Matrix account to manage Agents on this computer: connect a coding tool, create Agents, and run them in rooms you choose."
                 }
                 RinxHint {width: Fill flow: Flow.Right{wrap: true}
                     text: #(crate::i18n::tr("Expand a group to review its complete permissions.")) i18n_text: "Expand a group to review its complete permissions."
