@@ -63,7 +63,7 @@ use crate::{
         },
         image_viewer::{ImageViewerAction, ImageViewerMetaData, LoadState},
         jump_to_bottom_button::{
-            JumpToBottomButtonWidgetExt, UnreadMessageCount, SCROLL_TO_BOTTOM_SPEED,
+            JumpToBottomButtonRef, JumpToBottomButtonWidgetExt, UnreadMessageCount, SCROLL_TO_BOTTOM_SPEED,
         },
         popup_list::{PopupKind, enqueue_popup_notification},
         restore_status_view::RestoreStatusViewWidgetExt,
@@ -1121,6 +1121,17 @@ struct ReadReceiptState {
     last_user_scroll_travel: f64,
 }
 
+/// Whether this batch contains only the scroll notification already handled
+/// by this RoomScreen. Other actions must still reach its child widgets.
+fn only_timeline_scroll_actions(actions: &Actions, timeline_uid: WidgetUid) -> bool {
+    !actions.is_empty() && actions.iter().all(|action| {
+        action.as_widget_action().is_some_and(|action| {
+            action.widget_uid == timeline_uid
+                && matches!(action.action.downcast_ref::<PortalListAction>(), Some(PortalListAction::Scroll))
+        })
+    })
+}
+
 impl ReadReceiptState {
     /// Starts the read receipt timer for a direct user interaction.
     ///
@@ -1264,6 +1275,7 @@ struct RoomScreenWidgetRefs {
     user_profile_sliding_pane: UserProfileSlidingPaneRef,
     loading_pane: LoadingPaneRef,
     room_input_popup_menu: RoomInputPopupMenuRef,
+    jump_to_bottom_button: JumpToBottomButtonRef,
 }
 
 impl Drop for RoomScreen {
@@ -1363,6 +1375,7 @@ impl Widget for RoomScreen {
             user_profile_sliding_pane,
             loading_pane,
             room_input_popup_menu,
+            jump_to_bottom_button,
         } = self.cached_widget_refs(cx);
 
         let is_pane_shown = loading_pane.is_currently_shown(cx)
@@ -1688,7 +1701,7 @@ impl Widget for RoomScreen {
             }
 
             // Handle the jump to bottom button: update its visibility, and handle clicks.
-            self.jump_to_bottom_button(cx, ids!(jump_to_bottom_button)).update_from_actions(
+            jump_to_bottom_button.update_from_actions(
                 cx,
                 &portal_list,
                 actions,
@@ -1753,6 +1766,15 @@ impl Widget for RoomScreen {
                     self.history_jump_started = false;
                 }
             }
+        }
+
+        // Read receipts and the jump button already consumed this list's scroll
+        // notification above. Do not revisit every retained message for that
+        // action alone; mixed action batches still reach the whole subtree.
+        if let Event::Actions(actions) = event
+            && only_timeline_scroll_actions(actions, portal_list.widget_uid())
+        {
+            return;
         }
 
         // Forward the event to the inner timeline view, but capture any actions it produces
@@ -4258,6 +4280,7 @@ impl RoomScreen {
             user_profile_sliding_pane: self.user_profile_sliding_pane(cx, ids!(user_profile_sliding_pane)),
             loading_pane: self.loading_pane(cx, ids!(loading_pane)),
             room_input_popup_menu: self.room_input_popup_menu(cx, ids!(room_input_popup_menu)),
+            jump_to_bottom_button: self.jump_to_bottom_button(cx, ids!(jump_to_bottom_button)),
         };
         self.cached_refs = Some(refs.clone());
         refs
@@ -7414,6 +7437,12 @@ impl Widget for Message {
         }
 
         let Some(d) = self.details.as_ref() else { return };
+        // Frame ticks still reach child animations, but do not need reply,
+        // context-menu or message hit tests on every scrolling frame.
+        if matches!(event, Event::NextFrame(_)) {
+            self.view.handle_event(cx, event, scope);
+            return;
+        }
         let room_screen_widget_uid = d.room_screen_widget_uid;
         let thread_root_event_id = d.thread_root_event_id.clone();
 
@@ -7989,6 +8018,33 @@ mod agent_chat_status_tests;
 #[cfg(all(test, feature = "agent_chat"))]
 #[path = "room_screen/agent_selection_tests.rs"]
 mod agent_chat_selection_tests;
+
+#[cfg(test)]
+mod scroll_action_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_current_timeline_scroll_batch_can_skip_child_dispatch() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let timeline = WidgetUid(1);
+        let other = WidgetUid(2);
+        assert!(!only_timeline_scroll_actions(&[], timeline));
+        let scroll = cx.capture_actions(|cx| cx.widget_action(timeline, PortalListAction::Scroll));
+        assert!(only_timeline_scroll_actions(&scroll, timeline));
+        let other_scroll = cx.capture_actions(|cx| cx.widget_action(other, PortalListAction::Scroll));
+        assert!(!only_timeline_scroll_actions(&other_scroll, timeline));
+        let mixed = cx.capture_actions(|cx| {
+            cx.widget_action(timeline, PortalListAction::Scroll);
+            cx.widget_action(timeline, PortalListAction::ReachedStart);
+        });
+        assert!(!only_timeline_scroll_actions(&mixed, timeline));
+        let general = cx.capture_actions(|cx| {
+            cx.widget_action(timeline, PortalListAction::Scroll);
+            cx.action("other action");
+        });
+        assert!(!only_timeline_scroll_actions(&general, timeline));
+    }
+}
 
 #[cfg(test)]
 mod desktop_information_columns_tests {

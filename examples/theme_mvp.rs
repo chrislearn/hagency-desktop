@@ -321,6 +321,24 @@ impl AppMain for App {
                     rinx::shared::popup_list::PopupKind::Info,
                     Some(180.),
                 ),
+                "theme:popup-static" => rinx::shared::popup_list::enqueue_popup_notification(
+                    "Persistent theme notification",
+                    rinx::shared::popup_list::PopupKind::Info,
+                    None,
+                ),
+                #[cfg(feature = "palpo-instrument")]
+                "perf:start" => {
+                    cx.perf_monitor = Default::default();
+                    cx.perf_monitor.set_enabled(true);
+                }
+                #[cfg(feature = "palpo-instrument")]
+                "perf:stop" => {
+                    let frames = cx.perf_monitor.frames_painted();
+                    cx.perf_monitor.set_enabled(false);
+                    if let Some(path) = std::env::var_os("HAGENCY_PERF_OUTPUT") {
+                        std::fs::write(path, json!({"frames_painted": frames}).to_string()).unwrap();
+                    }
+                }
                 _ => {}
             }
         }
