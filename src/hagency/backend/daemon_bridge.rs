@@ -10,6 +10,14 @@ impl Service {
         hosting::execution(&self.0.locations, &self.0.origin, &self.0.owner)
     }
 
+    pub(super) fn local_management_only(&self) -> Result<bool, String> {
+        match self.execution()? {
+            Execution::InProcess => Ok(false),
+            Execution::Setup(_) => Ok(true),
+            Execution::Daemon { .. } => Err("owner_daemon_management_required".into()),
+        }
+    }
+
     /// The daemon home when the daemon hosts this owner.
     pub(super) fn daemon_home(&self) -> Result<Option<PathBuf>, String> {
         Ok(match self.execution()? {
@@ -34,10 +42,9 @@ impl Service {
     /// `native_owner`), so permission and Agent requests keep working.
     pub(super) async fn remote_client(&self) -> Result<Option<Arc<ControllerClient>>, String> {
         self.check()?;
-        let mut native = self.0.native.lock().await;
         let home = match self.execution()? {
             Execution::Daemon { home } => home,
-            other => {
+            _ => {
                 if self
                     .0
                     .remote
@@ -51,33 +58,11 @@ impl Service {
                 return Ok(None);
             }
         };
-        let registered = self
-            .0
-            .native_retirement
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        if let Some(owner) = native.as_ref().cloned().or(registered) {
-            owner.retire();
-            #[cfg(feature = "resource-adoption")]
-            {
-                self.0.allocations.retire();
-                self.0.allocations.drain().await;
-            }
-            #[cfg(feature = "shared-execution")]
-            {
-                self.0.shared.retire();
-                self.0.shared.drain().await;
-            }
-            owner.suspend().await.map_err(|e| e.code)?;
-            native.take();
-            self.0
-                .native_retirement
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .take();
-        }
+        self.release_local_for_daemon().await?;
         self.check()?;
+        if self.daemon_home()?.as_ref() != Some(&home) {
+            return Err("daemon_owner_assignment_changed".into());
+        }
         let mut slot = self.0.remote.lock().unwrap_or_else(|p| p.into_inner());
         Ok(Some(
             slot.get_or_insert_with(|| {
@@ -90,6 +75,57 @@ impl Service {
             })
             .clone(),
         ))
+    }
+
+    /// Drain accepted activation before taking the native lock: its task needs
+    /// that lock to finish. Keep both task and owner in their slots across a
+    /// cancelled waiter or failed drain. Completed selections also own the
+    /// canonical registry writer, even after the native owner has suspended.
+    pub(super) async fn release_local_for_daemon(&self) -> Result<(), String> {
+        #[cfg(feature = "resource-adoption")]
+        let mut activation = self.0.activation.lock().await;
+        #[cfg(feature = "resource-adoption")]
+        if matches!(*activation, super::adoption::ActivationTask::Running(_)) {
+            let _ = Self::await_activation(&mut activation).await;
+        }
+        let mut native = self.0.native.lock().await;
+        let registered = self
+            .0
+            .native_retirement
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let owner = native.as_ref().cloned().or(registered);
+        if let Some(owner) = &owner {
+            owner.retire();
+        }
+        #[cfg(feature = "resource-adoption")]
+        {
+            self.0.allocations.retire();
+            self.0.allocations.drain().await;
+        }
+        #[cfg(feature = "shared-execution")]
+        {
+            self.0.shared.retire();
+            self.0.shared.drain().await;
+        }
+        if let Some(owner) = owner {
+            self.close_native_owner(&owner).await?;
+            native.take();
+            self.0
+                .native_retirement
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+        }
+        #[cfg(feature = "resource-adoption")]
+        {
+            self.0.adopted_initialization.lock()
+                .map_err(|_| "management_unavailable")?.take();
+            *activation = super::adoption::ActivationTask::Empty;
+            self.0.adoption_pending.store(false, std::sync::atomic::Ordering::Release);
+        }
+        Ok(())
     }
 
     /// The signed-in account (server origin and owner) this service pins.

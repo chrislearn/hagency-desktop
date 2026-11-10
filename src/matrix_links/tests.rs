@@ -331,6 +331,14 @@ async fn scope_original_client_nonce_and_dismissal_reject_late_results() {
             ))
             .is_empty()
     );
+    // The first-run Agent entry is also a navigation that replaces a pending link.
+    let agent_link = Ticket::new(&room.client());
+    let mut agent_controller = controller_for(&agent_link, Phase::Resolving, None);
+    let actions = cx.capture_actions(|cx| cx.action(crate::miniapps::MiniAppsAction::OpenAgent));
+    for action in &actions {
+        agent_controller.observe_navigation(action);
+    }
+    assert!(!agent_link.is_current());
     let fresh = Ticket::new(&room.client());
     controller = controller_for(
         &fresh,
