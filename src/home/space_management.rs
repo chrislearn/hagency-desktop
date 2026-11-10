@@ -528,7 +528,7 @@ script_mod! {
         label_walk: Walk{width: 0 height: 0 margin: Inset{}}
         draw_bg +: {
             color: mod.widgets.RINX_BORDER color_active: mod.widgets.RINX_ACCENT
-            knob_color: uniform(#fff)
+            knob_color: uniform(mod.widgets.RINX_ON_ACCENT)
             pixel: fn() {
                 let sdf = Sdf2d.viewport(self.pos * self.rect_size)
                 let p = (self.rect_size - vec2(44.0, 26.0)) * 0.5
