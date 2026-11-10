@@ -41,7 +41,9 @@ article-makepad = { path = "crates/article-makepad" }
 ## all of makepad to its own prepared checkout of the same OctoSense-org/makepad
 ## revision (OctoSense's .sources/makepad), whatever URL a crate names it by.
 makepad-app-module = { git = "https://www.github.com/OctoSense-org/makepad.git", rev = "a0ad1839c61cecbd7e83251cfb7d50d7a725ee48", optional = true }
-# JIT PORT GAP: makepad-html-renderer (OctoSense-org/makepad-html) is fork-API; html_preview is off on the jit line.
+## The HTML/CSS article preview's renderer. Branch `hagency-jit` of that repository is its main
+## plus one manifest change (makepad-widgets without the `serde` feature the JIT line lacks).
+makepad-html-renderer = { package = "makepad-html", git = "https://github.com/OctoSense-org/makepad-html", rev = "d5172d37e83cd7883fe7493b7beccb6c6ad3f702", optional = true, features = ["makepad"] }
 # makepad-widgets = { git = "https://github.com/makepad/makepad", branch = "dev" }
 # makepad-code-editor = { git = "https://github.com/makepad/makepad", branch = "dev" }
 
@@ -225,7 +227,7 @@ octos-remote = ["octosense-app-peers/ws"]
 ## Rinx as an OctoSense app module (`rinx::module::RINX_MODULE`).
 octosense-module = ["dep:makepad-app-module"]
 ## Experimental CPU HTML/CSS article preview; the native editor stays available.
-html_preview = []
+html_preview = ["dep:makepad-html-renderer"]
 # Compatibility for existing Rinx build commands.
 article_blitz = ["html_preview"]
 ## Enables experimental support for using TSP wallets.

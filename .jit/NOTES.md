@@ -8,7 +8,9 @@ It runs two ways from the same sources:
   0.1 s instead of a 10–37 s cargo rebuild and restart;
 - as a plain `cargo build`, which is what CI and release packaging use.
 
-STATUS 10 Nov 2026: runs signed in. Checked on an Apple silicon Mac only (see "Not verified").
+STATUS 10 Nov 2026: runs signed in, `html_preview` included. The JIT run is checked on an Apple
+silicon Mac; the cargo build has also been run on Linux x86_64 and arm64, Intel macOS and Windows
+(see "Platforms the build was run on").
 
 ## Setup
 
@@ -77,6 +79,14 @@ Results on 10 Nov 2026 (Apple silicon Mac):
   x86_64, Windows) compile and link this line.
 - `cargo check --locked --no-default-features --features agent_chat` fails here exactly as it
   does on the fork line (`OwnerGrant*` imports); it is not a port problem.
+- With `html_preview`: `cargo test --locked --features agent_chat,octosense-module,html_preview
+  --lib` 808 passed, 0 failed, 2 ignored; `$relax test rinx --lib --allow-c --features
+  agent_chat,html_preview -- --test-threads=4` 806 passed, 0 failed, 2 ignored (peak resident
+  memory of the JIT run: about 20 GB).
+
+A JIT compiler fault can take tens of GB before it stops (a single-file test with
+`#[derive(Debug)]` on a 300-variant enum reached 69 GB). On a shared machine run `relax` and
+`makepad run` experiments under a memory limit.
 
 ## Signed-in session test
 
@@ -91,6 +101,60 @@ The app signs in only to Hagency servers through browser OAuth. For a headless r
 Checked this way, cold cache and warm: sign-in through the UI, the room list, a timeline with
 state events, plain and HTML messages, a mermaid diagram and a link with its preview card, a
 markdown message sent from the composer, quit, and session restore on the next start.
+
+## HTML/CSS preview (`html_preview`)
+
+The feature is on again. `makepad-html-renderer` is OctoSense-org/makepad-html at branch
+`hagency-jit`: that repository's main plus one manifest line (makepad-widgets without the
+`serde` feature, which this line's makepad-widgets does not have). The renderer's code is what
+the app pinned before the port. As before the port it is not a default feature:
+
+    cargo build --features html_preview
+    .sources/makepad/target/release/makepad run --allow-c rinx --features html_preview
+
+It is the Article editor's "HTML/CSS preview (experimental)" page, and it opens only for an
+article whose source is HTML (one imported from an `.html` file). From a room: composer plus
+menu, Article editor, the article, Full preview, then the preview button. A published one is
+under Published, Publication record, read full article.
+
+Checked on 10 Nov 2026 with the cargo build and with the JIT run, both headless: the page
+reports "HTML/CSS preview ready", and the two builds draw the same bitmap for the same article
+(headings, bold text, a list, a bordered table, a link; 268,400 pixels compared, none differ).
+The app's sanitizer removes `<style>` blocks before the renderer sees the document.
+
+## Platforms the build was run on
+
+10 Nov 2026, the cargo build, driven headless through the makepad remote instrument:
+
+- macOS arm64: everything in this file.
+- Linux x86_64 (Ubuntu, headless Wayland): the signed-in session test above, end to end. A
+  bare Ubuntu host needs `libfontconfig1-dev` to build.
+- Linux arm64, macOS x86_64 and Windows x86_64 (GitHub runners): the app starts, draws the
+  sign-in screen, takes text input and a button press, reaches the single sign-on screen through
+  HTTP discovery against a loopback stub, and quits with exit code 0. It was not signed in there.
+- Windows needed a makepad fix, which the pin has: on a machine whose only Direct3D adapter is
+  the software one (a VM, a CI runner) the device was refused and the app exited at startup.
+  `release-verify.yml` smoke-tests the Windows installer on such a runner.
+
+The JIT runner itself (`makepad run`) was run on macOS arm64 only. On Linux x86_64 it builds and
+then stops in makepad's own crates (jetscii's SSE4.2 imports, a const-evaluation cycle in
+`makepad_hal::ledger::Pool::ALL`, a `UniformBufferBindings` layout mismatch, a
+`ScriptTypeObject` field). It was not tried on Windows.
+
+## Fixed in makepad after the port
+
+In the pin since OctoSense-org/makepad#137:
+
+- RoomScreen is a view that also names a widget (`#[deref]` plus `#[find]`), and the widget
+  derive listed only the named widget's children for such a type. About twenty lookups from
+  `self` came back empty in the cargo build and in the JIT run alike; the composer's plus menu
+  never opened. No app change was needed.
+- The Direct3D device on a software adapter (above).
+- What `html_preview` needed from the JIT compiler: a derive declared through a dependency's
+  macro (stylo's `MallocSizeOf`), `smallvec::smallvec!` by path, enums with hundreds of variants
+  (stylo's property enums), and 41 NEON intrinsics for the renderer's SIMD layer.
+- On Linux a bundled static library (sqlite) is linked from the build script that made it, not
+  from a system copy of the same name.
 
 ## What the port changed in the app
 
@@ -114,18 +178,23 @@ Marked `JIT PORT` in the source.
 - System browser: no navigation policy (`spawn` cannot pin a card to one document), no JS
   bridge, no WebView2 data directory. The fork had these on Windows only, so on macOS the two
   builds behave the same; a Windows build of this line would lose them.
-- `html_preview` is off: `makepad-html-renderer` is written against the fork's API. The feature
-  is not a default one and release builds did not enable it.
 - `Cx::show_notification` is a no-op. On the fork it did something on Android only.
 - AES, PMULL and CRC intrinsics are scalar under the JIT: correct, slower than native. A cargo
   build is not affected.
+- The runner's log lists compile errors for bodies it checks ahead of use (211 lines on 10 Nov):
+  moxcms's NEON colour conversions, which miss 22 intrinsics, and a few `Debug` / `Display`
+  impls and admin endpoints in serde_json, zerovec, deranged, cap-std and ruma. None was
+  reached in the runs above, and nothing in the app asks `image` for a colour-space conversion,
+  which is what would reach moxcms. They are JIT compiler gaps; a cargo build is not affected.
 - Mobile packaging: `.github/actions/setup-cargo-makepad` reads a makepad git revision from
   `Cargo.lock`, and on this line makepad is a path checkout, so the iOS and Android jobs need
   their own port.
 
 ## Not verified
 
-- Linux and Windows: the app compiles and links in CI, but it has not been run there.
+- Linux and Windows beyond what "Platforms the build was run on" lists: no signed-in run on
+  Windows, Linux arm64 or Intel macOS, and `html_preview` was built and run on macOS arm64 only.
+- The JIT runner on Linux and Windows (see the same section).
 - iOS and Android: not built (see the mobile packaging gap above).
 - Release packaging (`release.yml`, `release-verify.yml`) on this line.
 - Hagency services behind sign-in (owner daemon, Pasion, Agents): the test front serves only
