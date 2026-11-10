@@ -1,4 +1,23 @@
 use super::*;
+use super::{Pending, Ticket};
+
+#[test]
+fn native_app_open_routes_matrix_urls_and_ignores_other_items() {
+    use makepad_widgets::makepad_platform::event::{AppOpenEvent, AppOpenItem, AppOpenSource};
+    let event = AppOpenEvent {
+        source: AppOpenSource::System,
+        items: vec![
+            AppOpenItem::Path("/tmp/example.txt".into()),
+            AppOpenItem::Url("https://example.org/".into()),
+            AppOpenItem::Url("matrix:r/alias:test".into()),
+        ],
+    };
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    let actions = cx.capture_actions(|cx| handle_app_open(cx, &event));
+    assert_eq!(actions.len(), 1);
+    assert!(matches!(actions[0].downcast_ref::<LinkAction>(), Some(LinkAction::Open(Ok(_), _, _))));
+}
+
 #[test]
 fn parsing_keeps_targets_via_actions_and_consumes_native_failures() {
     let link = parse("https://matrix.to/#/!room:test/$event?via=one.test&via=two.test")

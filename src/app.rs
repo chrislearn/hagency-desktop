@@ -387,9 +387,6 @@ impl MatchEvent for App {
                 let effects = self.matrix_link_navigation.action(link);
                 self.apply_matrix_link_effects(cx, effects);
             }
-            if let Some(link) = action.downcast_ref::<makepad_widgets::makepad_platform::event::NativeDeepLink>() {
-                crate::matrix_links::open(&link.url);
-            }
             if let Some(update) = action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalsUpdate>() {
                 if crate::hagency::pending_approvals::apply(cx, update) {
                     cx.action(crate::hagency::pending_approvals::PendingApprovalsChanged);
@@ -1442,6 +1439,9 @@ impl AppMain for App {
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
         crate::shared::system_browser::handle_event(cx, event);
+        if let Event::AppOpen(open) = event {
+            crate::matrix_links::handle_app_open(cx, open);
+        }
         let effects = self.matrix_link_navigation.poll();
         self.apply_matrix_link_effects(cx, effects);
         if matches!(event, Event::BackPressed {..} | Event::KeyDown(KeyEvent {key_code: KeyCode::Escape, ..}))

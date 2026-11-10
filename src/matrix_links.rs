@@ -117,6 +117,15 @@ pub(crate) fn open(url: &str) -> bool {
     true
 }
 
+/// Route URLs delivered by the operating system or a subsequent app launch.
+pub(crate) fn handle_app_open(cx: &mut Cx, event: &makepad_widgets::makepad_platform::event::AppOpenEvent) {
+    for item in &event.items {
+        if let Some(link) = item.url().and_then(parse) {
+            cx.action(opening(link));
+        }
+    }
+}
+
 fn opening(link: Result<Link, String>) -> LinkAction {
     let epoch = crate::account_session::epoch();
     let ticket = crate::sliding_sync::get_client().map(|client| Ticket::new(&client));
