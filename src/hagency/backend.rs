@@ -634,13 +634,11 @@ impl Service {
         // as permission and Agent requests, but restores no runtime and starts
         // no pool worker. Once the daemon hosts it, `remote_client` retires
         // this owner before attaching.
-        let management_only = match self.execution()? {
-            crate::hagency::hosting::Execution::InProcess => false,
-            crate::hagency::hosting::Execution::Daemon { .. } => return Err("owner_daemon_management_required".into()),
-            crate::hagency::hosting::Execution::Setup(_) => true,
-        };
-        let native = {
+        let (native, management_only) = {
             let mut native = self.0.native.lock().await;
+            // Recheck after waiting: a completed daemon handoff must not be
+            // followed by a caller reopening the old in-process owner.
+            let management_only = self.local_management_only()?;
             self.check()?;
             #[cfg(feature = "resource-adoption")]
             self.drain_adoption_source(&mut native).await?;
@@ -696,7 +694,7 @@ impl Service {
                 }
                 *native = Some(owner);
             }
-            native.as_ref().unwrap().clone()
+            (native.as_ref().unwrap().clone(), management_only)
         };
         if !management_only {
             #[cfg(feature = "resource-adoption")]

@@ -412,7 +412,7 @@ impl MatchEvent for App {
                     let text = crate::hagency::pending_questions::announcement(&agent_name);
                     enqueue_popup_notification(text.clone(), PopupKind::Info, Some(20.0));
                     // A no-op on backends without system notifications.
-                    cx.show_notification(&agent_name, &text);
+                    crate::jit_compat::show_notification(cx, &agent_name, &text);
                 }
                 self.ui.redraw(cx);
             }
@@ -1233,18 +1233,10 @@ impl App {
         let Some(workspace) = host.take_for_dock(cx, window) else { return };
         self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).restore_workspace(cx, workspace);
         self.ui.redraw(cx);
+        // JIT PORT: upstream queues ShowWindow, which brings the window in front
+        // and activates the app without re-entering AppKit from this handler.
         #[cfg(target_os = "macos")]
-        if let Some(main) = self.ui.window(cx, ids!(main_window)).window_id() {
-            // Activate outside the UI borrow: AppKit may re-enter the event handler.
-            dispatch2::DispatchQueue::main().exec_async(move || {
-                use makepad_widgets::makepad_platform::os::apple::macos::macos_app::{
-                    activate_cocoa_window_on_pointer_down, try_with_macos_app,
-                };
-                if let Some(native) = try_with_macos_app(|app| app.cocoa_window_for_id(main)).flatten() {
-                    activate_cocoa_window_on_pointer_down(native);
-                }
-            });
-        }
+        self.ui.window(cx, ids!(main_window)).set_visible(cx, true);
     }
 
     fn sync_upload_overlay(&self, cx: &mut Cx) {
@@ -1417,7 +1409,7 @@ impl AppMain for App {
         });
         crate::theme::init_standalone(vm);
         #[cfg(any(target_os = "macos", target_os = "ios"))]
-        crate::apple_fonts::install(vm);
+        crate::apple_fonts::install_over_theme_builds(vm); // JIT PORT: see the fn
         makepad_widgets::widgets_mod(vm);
         makepad_widgets::desktop_style::apply_widgets(vm);
         register_widgets(vm);
@@ -1425,6 +1417,7 @@ impl AppMain for App {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        crate::shared::system_browser::handle_event(cx, event);
         crate::theme::system::handle_event(cx, event);
         if self.approvals_timer.is_event(event).is_some() {
             crate::hagency::pending_approvals::poll();
@@ -1776,7 +1769,7 @@ impl App {
                         key: KeyCode::KeyQ,
                         shift: false,
                         enabled: true,
-                    }],
+                    dock: false,}],
                 },
                 MacosMenu::Sub {
                     name: "View".into(),
@@ -1787,14 +1780,14 @@ impl App {
                             key: KeyCode::Equals,
                             shift: true,
                             enabled: true,
-                        },
+                        dock: false,},
                         MacosMenu::Item {
                             name: "Zoom Out".into(),
                             command: live_id!(zoom_out),
                             key: KeyCode::Minus,
                             shift: false,
                             enabled: true,
-                        },
+                        dock: false,},
                         MacosMenu::Line,
                         MacosMenu::Item {
                             name: "Reset Zoom".into(),
@@ -1802,7 +1795,7 @@ impl App {
                             key: KeyCode::Key0,
                             shift: false,
                             enabled: true,
-                        },
+                        dock: false,},
                     ],
                 },
             ],
@@ -2279,8 +2272,10 @@ mod restore_owner_tests {
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct SavedDockState {
     /// All items contained in the dock, keyed by their room or space ID.
+    #[serde(with = "crate::dock_serde::dock_items")]
     pub dock_items: HashMap<LiveId, DockItem>,
     /// The rooms that are currently open, keyed by their room or space ID.
+    #[serde(with = "crate::dock_serde::live_id_map")]
     pub open_rooms: HashMap<LiveId, SelectedRoom>,
     /// The order in which room/thread tabs were last viewed,
     /// from oldest at the front to most recent at the end.

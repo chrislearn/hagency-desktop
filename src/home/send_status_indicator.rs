@@ -300,19 +300,19 @@ impl Widget for SendStatusIndicator {
             Hit::FingerHoverIn(..) | Hit::FingerLongPress(_) => {
                 let mut options = CalloutTooltipOptions {
                     position: TooltipPosition::Left,
-                    bg_color: self.appearance.surface,
-                    text_color: self.appearance.ink,
+                    bg_color: Some(self.appearance.surface),
+                    text_color: Some(self.appearance.ink),
                     ..Default::default()
                 };
                 match self.info.as_ref().map(|d| d.icon) {
                     Some(SendStatusIcon::Sent) => {
-                        options.bg_color = self.appearance.role("color.status.success.background");
+                        options.bg_color = Some(self.appearance.role("color.status.success.background"));
                         options.text_color =
-                            self.appearance.role("color.status.success.foreground");
+                            Some(self.appearance.role("color.status.success.foreground"));
                     }
                     Some(SendStatusIcon::Retry | SendStatusIcon::Failed) => {
-                        options.bg_color = self.appearance.role("color.status.danger.background");
-                        options.text_color = self.appearance.role("color.status.danger.foreground");
+                        options.bg_color = Some(self.appearance.role("color.status.danger.background"));
+                        options.text_color = Some(self.appearance.role("color.status.danger.foreground"));
                     }
                     _ => {}
                 }
