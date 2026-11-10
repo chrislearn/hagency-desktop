@@ -119,6 +119,7 @@ pub mod media_cache;
 pub mod verification;
 
 pub mod utils;
+mod matrix_links;
 mod http;
 pub mod temp_storage;
 pub mod location;

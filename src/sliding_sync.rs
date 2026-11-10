@@ -6595,3 +6595,9 @@ async fn change_account_ui() -> Result<()> {
 pub(crate) fn install_crypto_test_client(client: Option<Client>) {
     CLIENT.replace(client, || {});
 }
+
+/// Isolated Matrix link tests install no sync service, owner or daemon.
+#[cfg(test)]
+pub(crate) fn install_link_test_client(client: Option<Client>) {
+    CLIENT.replace(client, || {});
+}

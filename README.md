@@ -57,6 +57,11 @@ The default mini-app catalog has no Palpo app. Hagency management uses the nativ
 Projects and Agents pages; the former Palpo resource/coordinator workflow is retired.
 Agent encrypted-Room execution is deferred; this does not remove Matrix chat crypto.
 
+Matrix room, alias and event links open inside the app. Links to rooms you have
+not joined show a confirmation first; message links select their original Room
+or thread. User links in conversations retain the profile pane. See
+[Matrix link navigation](docs/matrix-links.md).
+
 The renderer remains experimental; arbitrary WeChat HTML import and complete
 WeChat compatibility are not claimed. See the [article integration evidence](lab/article-html-integration/README.md).
 

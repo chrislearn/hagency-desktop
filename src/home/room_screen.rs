@@ -44,7 +44,7 @@ use crate::{
         user_profile::{ShowUserProfileAction, UserProfile, UserProfileAndRoomId, UserProfilePaneAction, UserProfilePaneInfo, UserProfileSlidingPaneRef, UserProfileSlidingPaneWidgetExt},
         user_profile_cache,
     },
-    room::{BasicRoomDetails, reply_preview::{CollapsiblePreviewRef, CollapsiblePreviewWidgetRefExt}, room_input_bar::{RoomInputBarState, RoomInputBarWidgetRefExt}, typing_notice::TypingNoticeWidgetExt},
+    room::{reply_preview::{CollapsiblePreviewRef, CollapsiblePreviewWidgetRefExt}, room_input_bar::{RoomInputBarState, RoomInputBarWidgetRefExt}, typing_notice::TypingNoticeWidgetExt},
     shared::{
         attachment_download::{
             enqueue_already_downloading_notification, DownloadDisplayState, DownloadKind,
@@ -1265,6 +1265,7 @@ pub struct RoomScreen {
     /// This lets us ignore a response that arrives after the user gave up on it.
     #[rust] pending_read_receipt_jump: Option<OwnedUserId>,
     #[rust] pending_history_jump: Option<OwnedEventId>,
+    #[rust] matrix_link_ticket: Option<crate::matrix_links::Ticket>,
     #[rust] history_jump_started: bool,
     /// Fires when a background search for a jumped-to event has gone quiet.
     #[rust] jump_search_timer: Timer,
@@ -1380,6 +1381,12 @@ impl Widget for RoomScreen {
             jump_to_bottom_button,
         } = self.cached_widget_refs(cx);
 
+        if self.matrix_link_ticket.as_ref().is_some_and(|ticket| !ticket.is_current()) {
+            self.matrix_link_ticket = None;
+            self.pending_history_jump = None;
+            self.history_jump_started = false;
+            loading_pane.hide(cx);
+        }
         let is_pane_shown = loading_pane.is_currently_shown(cx)
             || user_profile_sliding_pane.is_currently_shown(cx);
         let is_popup_menu_open = room_input_popup_menu.is_open();
@@ -2961,46 +2968,12 @@ impl RoomScreen {
                     );
                     true
                 }
-                MatrixId::Room(room_id) => {
-                    if self.room_name_id.as_ref().is_some_and(|r| r.room_id() == room_id) {
-                        enqueue_popup_notification(
-                            "You are already viewing that room.",
-                            PopupKind::Info,
-                            Some(4.0),
-                        );
-                        return true;
-                    }
-                    if let Some(room_name_id) = cx.get_global::<RoomsListRef>().get_room_name(room_id) {
-                        cx.action(AppStateAction::NavigateToRoom {
-                            room_to_close: None,
-                            destination_room: BasicRoomDetails::Name(room_name_id),
-                        });
-                        return true;
-                    } else {
-                        log!("TODO: fetch and display room preview for room {}", room_id);
-                    }
-                    false
-                }
-                MatrixId::RoomAlias(room_alias) => {
-                    log!("TODO: open room alias {}", room_alias);
-                    // TODO: open a room loading screen that shows a spinner
-                    //       while our background async task calls Client::resolve_room_alias()
-                    //       and then either jumps to the room if known, or fetches and displays
-                    //       a room preview for that room.
-                    false
-                }
-                MatrixId::Event(room_id, event_id) => {
-                    log!("TODO: open event {} in room {}", event_id, room_id);
-                    // TODO: this requires the same first step as the `MatrixId::Room` case above,
-                    //       but then we need to call Room::event_with_context() to get the event
-                    //       and its context (surrounding events ?).
-                    false
-                }
                 _ => false,
             }
         };
 
         if let HtmlLinkAction::Clicked { url, .. } = action.as_widget_action().cast() {
+            if !crate::matrix_links::is_user_profile_link(&url) && crate::matrix_links::open(&url) { return true; }
             let mut link_was_handled = false;
             if let Ok(matrix_to_uri) = MatrixToUri::parse(&url) {
                 link_was_handled |= handle_matrix_link(matrix_to_uri.id(), matrix_to_uri.via());
@@ -3023,6 +2996,7 @@ impl RoomScreen {
             true
         }
         else if let RobrixHtmlLinkAction::ClickedMatrixLink { url, matrix_id, via, .. } = action.as_widget_action().cast() {
+            if !crate::matrix_links::is_user_profile_link(&url) && crate::matrix_links::open(&url) { return true; }
             let link_was_handled = handle_matrix_link(&matrix_id, &via);
             if !link_was_handled {
                 log!("Opening URL \"{}\"", url);
@@ -3964,6 +3938,7 @@ impl RoomScreen {
         self.read_receipt_state.clear();
         // Closing/hiding the room should cancel any pending jump/search.
         self.pending_read_receipt_jump = None;
+        self.matrix_link_ticket = None;
         self.pending_history_jump = None;
         self.history_jump_started = false;
         self.jump_search_timer = Timer::empty();
@@ -4512,10 +4487,36 @@ impl RoomScreen {
 }
 
 impl RoomScreenRef {
+    #[cfg(test)]
+    pub(crate) fn assert_matrix_link_target(&self, cx: &Cx, navigation: &crate::matrix_links::Navigation) {
+        let inner=self.borrow().expect("linked native RoomScreen");
+        let expected=match &navigation.selected {
+            crate::app::SelectedRoom::Thread {room_name_id,thread_root_event_id} => TimelineKind::Thread {
+                room_id:room_name_id.room_id().clone(),thread_root_event_id:thread_root_event_id.clone()},
+            selected => TimelineKind::MainRoom {room_id:selected.room_id().clone()},
+        };
+        assert_eq!(inner.timeline_kind.as_ref(),Some(&expected));
+        assert_eq!(inner.pending_history_jump,navigation.event);
+        assert_eq!(inner.view.room_input_bar(cx,ids!(room_input_bar)).matrix_link_context(),Some(expected));
+        assert!(inner.matrix_link_ticket.as_ref().is_some_and(|ticket|ticket.is_current()));
+    }
+    #[cfg(test)]
+    pub(crate) fn assert_matrix_link_cancelled(&self) {
+        let inner=self.borrow().unwrap();
+        assert!(inner.pending_history_jump.is_none());
+        assert!(inner.matrix_link_ticket.is_none());
+    }
+
+    pub(crate) fn jump_to_matrix_event(&self, cx: &mut Cx, event: OwnedEventId, ticket: crate::matrix_links::Ticket) {
+        if !ticket.is_current() { return; }
+        self.jump_to_history_event(cx, event);
+        if let Some(mut inner) = self.borrow_mut() { inner.matrix_link_ticket = Some(ticket); }
+    }
     pub fn jump_to_history_event(&self, cx: &mut Cx, event: OwnedEventId) {
         if let Some(mut inner) = self.borrow_mut() {
             inner.view.action_room_board(cx, ids!(actions_board)).show_history(cx);
             inner.view.view(cx, ids!(room_screen_wrapper)).set_visible(cx, true);
+            inner.matrix_link_ticket = None;
             inner.pending_history_jump = Some(event);
             inner.history_jump_started = false;
             inner.redraw(cx);

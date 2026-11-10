@@ -109,6 +109,7 @@ def main():
         ("device-recovery-session", "matrix_context::tests::recovery_session_pin"),
         ("recovery-room-resume", "crypto_recovery_resume_tests"),
         ("recovery-settings-resume", "recovery_closing_settings"),
+        ("matrix-link-navigation", "matrix_links::tests"),
         ("link-preview", "link_preview"),
         ("linkify", "linkify"),
         ("activity", "shared_permission_notice"),
