@@ -227,10 +227,7 @@ fn run_args(args: Vec<OsString>) -> i32 {
         eprintln!("Error: {code}");
         return 1;
     }
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match daemon_runtime() {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("Error: {error}");
@@ -245,6 +242,17 @@ fn run_args(args: Vec<OsString>) -> i32 {
             1
         }
     }
+}
+
+#[cfg(unix)]
+fn daemon_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    // launchd does not inherit the Desktop launcher's RUST_MIN_STACK. Native
+    // adoption and budget recovery futures need the same stack in this entry
+    // point, including unoptimized builds and blocking initialization workers.
+    tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
 }
 
 #[cfg(not(unix))]
@@ -466,6 +474,37 @@ mod tests {
     }
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn daemon_workers_have_stack_without_launcher_environment() {
+        const CHILD: &str = "HAGENCY_DAEMON_STACK_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            #[inline(never)]
+            fn native_stack_work() {
+                let mut frame = [0_u8; 3 * 1024 * 1024];
+                let frame = std::hint::black_box(&mut frame);
+                frame[0] = 17;
+                frame[frame.len() - 1] = 29;
+                assert_eq!(std::hint::black_box(frame[0] + frame[frame.len() - 1]), 46);
+            }
+            let runtime = daemon_runtime().unwrap();
+            runtime.block_on(async {
+                tokio::spawn(async { native_stack_work() }).await.unwrap();
+                tokio::task::spawn_blocking(native_stack_work).await.unwrap();
+            });
+            return;
+        }
+        // CI normally exports RUST_MIN_STACK, which hid the launchd failure.
+        // Isolate the environment change and a possible stack-overflow abort.
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "daemon::cli::tests::daemon_workers_have_stack_without_launcher_environment", "--nocapture"])
+            .env(CHILD, "1")
+            .env_remove("RUST_MIN_STACK")
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"), "stack probe must execute");
+    }
 
     fn parse(args: &[&str]) -> Result<Command, clap::Error> {
         Invocation::try_parse_from(args).map(|i| {

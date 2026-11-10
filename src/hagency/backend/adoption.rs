@@ -120,6 +120,7 @@ impl Service {
         }
         let _native = self.0.native.lock().await;
         self.check()?;
+        self.local_management_only()?;
         *self
             .0
             .adopted_initialization
@@ -168,6 +169,7 @@ impl Service {
     pub(super) async fn load_adopted_initialization(
         &self,
     ) -> Result<Option<AdoptedManagementSelection>, String> {
+        self.local_management_only()?;
         let existing = self
             .0
             .adopted_initialization
@@ -182,6 +184,7 @@ impl Service {
                 .await
                 .map_err(|e| e.code)?;
         self.check()?;
+        self.local_management_only()?;
         *self
             .0
             .adopted_initialization

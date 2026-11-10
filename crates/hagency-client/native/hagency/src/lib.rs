@@ -8,6 +8,7 @@ use hagency_store::{DomainStore, Error, Store};
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod test_support {
+    pub use hagency_store::owner_resources::OwnerResourceRegistry;
     pub fn initialize_resource_authority_at(
         root: &std::path::Path,
     ) -> Result<(), hagency_platform::legacy_writer::Error> {
