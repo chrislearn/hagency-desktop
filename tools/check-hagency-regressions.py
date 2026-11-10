@@ -103,6 +103,7 @@ def main():
         ("agent-question-cards", "hagency::pending_questions::tests"),
         ("shared-worker", "hagency::backend::shared_worker::tests"),
         ("chat-mermaid", "shared::chat_mermaid::tests"),
+        ("matrix-link-navigation", "matrix_links::tests"),
         ("link-preview", "link_preview"),
         ("linkify", "linkify"),
         ("activity", "shared_permission_notice"),
