@@ -505,7 +505,7 @@ script_mod! {
         View {width: Fill height: 40 margin: Inset{right: 20} spacing: 10 align: Align{y: 0.5}
             back := RinxBackButton {visible: false}
             heading := Text {text: #(crate::i18n::tr("Agent spaces")) i18n_text: "Agent spaces" draw_text.text_style: theme.font_bold{font_size: (16 * mod.widgets.RINX_TEXT_SCALE)}}
-            loading_status := LoadingSpinner {visible: false width: 18 height: 18 draw_bg +: {color: mod.widgets.RINX_MUTED stroke_width: 2.0}}
+            loading_status := PacedLoadingSpinner {visible: false width: 18 height: 18 draw_bg +: {color: mod.widgets.RINX_MUTED stroke_width: 2.0}}
             new_item := Primary {text: #(crate::i18n::tr("Create a space or room…")) i18n_text: "Create a space or room…"}
             refresh := Action {text: #(crate::i18n::tr("Refresh")) i18n_text: "Refresh"}
         }

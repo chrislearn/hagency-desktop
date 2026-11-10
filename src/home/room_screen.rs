@@ -63,7 +63,7 @@ use crate::{
         },
         image_viewer::{ImageViewerAction, ImageViewerMetaData, LoadState},
         jump_to_bottom_button::{
-            JumpToBottomButtonWidgetExt, UnreadMessageCount, SCROLL_TO_BOTTOM_SPEED,
+            JumpToBottomButtonRef, JumpToBottomButtonWidgetExt, UnreadMessageCount, SCROLL_TO_BOTTOM_SPEED,
         },
         popup_list::{PopupKind, enqueue_popup_notification},
         restore_status_view::RestoreStatusViewWidgetExt,
@@ -387,7 +387,6 @@ script_mod! {
                 timestamp := Timestamp {
                     margin: Inset{ top: 5.9 }
                 }
-                edited_indicator := EditedIndicator { }
                 tsp_sign_indicator := TspSignIndicator { }
             }
 
@@ -431,6 +430,7 @@ script_mod! {
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
                 link_preview_view := mod.widgets.LinkPreview {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                edited_indicator := EditedIndicator {}
                 delivery_status := View {
                     width: Fill,
                     height: Fit
@@ -447,10 +447,6 @@ script_mod! {
     let MobileMessageProfile = View {
         width: 40 height: Fit flow: Down spacing: 3
         avatar := MobileAvatar {width: 40 height: 40}
-        edited_indicator := EditedIndicator {
-            width: Fill
-            edit_html +: {width: Fill font_size: (8 * mod.widgets.RINX_TEXT_SCALE) font_color: mod.widgets.RINX_MUTED body: #(crate::i18n::tr("edited")) i18n_body: "edited"}
-        }
         tsp_sign_indicator := TspSignIndicator {}
     }
     let MobileMessageContent = View {
@@ -483,6 +479,7 @@ script_mod! {
                 agent_usage := mod.widgets.AgentUsage {show_toggle: false}
             link_preview_view := mod.widgets.LinkPreview {font_size: mod.widgets.MOBILE_MESSAGE_FONT_SIZE}
             download_section := mod.widgets.MessageDownloadSection {}
+            edited_indicator := EditedIndicator {}
         }
         mobile_reply_preview := mod.widgets.MobileRepliedToMessage {}
         View {
@@ -545,6 +542,7 @@ script_mod! {
             }
         }
         download_section := mod.widgets.MessageDownloadSection {}
+        edited_indicator := EditedIndicator {}
         mobile_reply_preview := mod.widgets.MobileRepliedToMessage {}
         View {
             width: Fill height: Fit flow: Right
@@ -597,7 +595,6 @@ script_mod! {
                 timestamp := Timestamp {
                     margin: Inset{top: 2.5}
                 }
-                edited_indicator := EditedIndicator { }
                 tsp_sign_indicator := TspSignIndicator { }
             }
             content := View {
@@ -624,6 +621,7 @@ script_mod! {
                 agent_usage := mod.widgets.AgentUsage {width: Fill{max: mod.widgets.RINX_READING_WIDTH} show_toggle: false}
                 link_preview_view := mod.widgets.LinkPreview {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                edited_indicator := EditedIndicator {}
                 delivery_status := View {
                     width: Fill,
                     height: Fit
@@ -664,6 +662,7 @@ script_mod! {
                     }
                 }
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                edited_indicator := EditedIndicator {}
                 delivery_status := View {
                     width: Fill,
                     height: Fit,
@@ -700,6 +699,7 @@ script_mod! {
                     }
                 }
                 download_section := mod.widgets.MessageDownloadSection {width: Fill{max: mod.widgets.RINX_READING_WIDTH}}
+                edited_indicator := EditedIndicator {}
                 delivery_status := View {
                     width: Fill,
                     height: Fit,
@@ -1123,6 +1123,17 @@ struct ReadReceiptState {
     last_user_scroll_travel: f64,
 }
 
+/// Whether this batch contains only the scroll notification already handled
+/// by this RoomScreen. Other actions must still reach its child widgets.
+fn only_timeline_scroll_actions(actions: &Actions, timeline_uid: WidgetUid) -> bool {
+    !actions.is_empty() && actions.iter().all(|action| {
+        action.as_widget_action().is_some_and(|action| {
+            action.widget_uid == timeline_uid
+                && matches!(action.action.downcast_ref::<PortalListAction>(), Some(PortalListAction::Scroll))
+        })
+    })
+}
+
 impl ReadReceiptState {
     /// Starts the read receipt timer for a direct user interaction.
     ///
@@ -1266,6 +1277,7 @@ struct RoomScreenWidgetRefs {
     user_profile_sliding_pane: UserProfileSlidingPaneRef,
     loading_pane: LoadingPaneRef,
     room_input_popup_menu: RoomInputPopupMenuRef,
+    jump_to_bottom_button: JumpToBottomButtonRef,
 }
 
 impl Drop for RoomScreen {
@@ -1365,6 +1377,7 @@ impl Widget for RoomScreen {
             user_profile_sliding_pane,
             loading_pane,
             room_input_popup_menu,
+            jump_to_bottom_button,
         } = self.cached_widget_refs(cx);
 
         let is_pane_shown = loading_pane.is_currently_shown(cx)
@@ -1690,7 +1703,7 @@ impl Widget for RoomScreen {
             }
 
             // Handle the jump to bottom button: update its visibility, and handle clicks.
-            self.jump_to_bottom_button(cx, ids!(jump_to_bottom_button)).update_from_actions(
+            jump_to_bottom_button.update_from_actions(
                 cx,
                 &portal_list,
                 actions,
@@ -1755,6 +1768,15 @@ impl Widget for RoomScreen {
                     self.history_jump_started = false;
                 }
             }
+        }
+
+        // Read receipts and the jump button already consumed this list's scroll
+        // notification above. Do not revisit every retained message for that
+        // action alone; mixed action batches still reach the whole subtree.
+        if let Event::Actions(actions) = event
+            && only_timeline_scroll_actions(actions, portal_list.widget_uid())
+        {
+            return;
         }
 
         // Forward the event to the inner timeline view, but capture any actions it produces
@@ -3781,8 +3803,8 @@ impl RoomScreen {
             });
         }
 
-        // Hide the typing notice view initially.
-        self.view(cx, ids!(typing_notice)).set_visible(cx, false);
+        // Stop the previous room's typing animation before showing this timeline.
+        self.view.typing_notice(cx, ids!(typing_notice)).reset(cx);
         // If the room is loaded, we need to get a few key states:
         // 1. Get the current user's power levels for this room so that we can
         //    show/hide UI elements based on the user's permissions.
@@ -4185,6 +4207,7 @@ impl RoomScreen {
     }
 
     pub fn hide_displayed_room(&mut self, cx: &mut Cx) {
+        self.view.typing_notice(cx, ids!(typing_notice)).reset(cx);
         self.view.action_room_board(cx, ids!(actions_board)).select(cx, None);
         if self.tl_state.is_some() {
             self.hide_timeline();
@@ -4317,6 +4340,7 @@ impl RoomScreen {
             user_profile_sliding_pane: self.user_profile_sliding_pane(cx, ids!(user_profile_sliding_pane)),
             loading_pane: self.loading_pane(cx, ids!(loading_pane)),
             room_input_popup_menu: self.room_input_popup_menu(cx, ids!(room_input_popup_menu)),
+            jump_to_bottom_button: self.jump_to_bottom_button(cx, ids!(jump_to_bottom_button)),
         };
         self.cached_refs = Some(refs.clone());
         refs
@@ -6111,7 +6135,7 @@ fn populate_message_view(
 
     // Set the "edited" indicator if this message was edited, otherwise hide it
     // (this widget may be reused for a non-edited message at the same row).
-    let edited_indicator = item.edited_indicator(cx, ids!(profile.edited_indicator));
+    let edited_indicator = item.edited_indicator(cx, ids!(edited_indicator));
     if msg_like_content.as_message().is_some_and(|m| m.is_edited()) {
         #[cfg(feature = "agent_chat")]
         let streaming = crate::agent_chat::reply::event_is_live(event_tl_item)
@@ -7477,6 +7501,12 @@ impl Widget for Message {
         }
 
         let Some(d) = self.details.as_ref() else { return };
+        // Frame ticks still reach child animations, but do not need reply,
+        // context-menu or message hit tests on every scrolling frame.
+        if matches!(event, Event::NextFrame(_)) {
+            self.view.handle_event(cx, event, scope);
+            return;
+        }
         let room_screen_widget_uid = d.room_screen_widget_uid;
         let thread_root_event_id = d.thread_root_event_id.clone();
 
@@ -8054,9 +8084,114 @@ mod agent_chat_status_tests;
 mod agent_chat_selection_tests;
 
 #[cfg(test)]
+mod scroll_action_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_current_timeline_scroll_batch_can_skip_child_dispatch() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let timeline = WidgetUid(1);
+        let other = WidgetUid(2);
+        assert!(!only_timeline_scroll_actions(&[], timeline));
+        let scroll = cx.capture_actions(|cx| cx.widget_action(timeline, PortalListAction::Scroll));
+        assert!(only_timeline_scroll_actions(&scroll, timeline));
+        let other_scroll = cx.capture_actions(|cx| cx.widget_action(other, PortalListAction::Scroll));
+        assert!(!only_timeline_scroll_actions(&other_scroll, timeline));
+        let mixed = cx.capture_actions(|cx| {
+            cx.widget_action(timeline, PortalListAction::Scroll);
+            cx.widget_action(timeline, PortalListAction::ReachedStart);
+        });
+        assert!(!only_timeline_scroll_actions(&mixed, timeline));
+        let general = cx.capture_actions(|cx| {
+            cx.widget_action(timeline, PortalListAction::Scroll);
+            cx.action("other action");
+        });
+        assert!(!only_timeline_scroll_actions(&general, timeline));
+    }
+}
+
+#[cfg(test)]
 mod desktop_information_columns_tests {
     use super::*;
     use makepad_widgets::makepad_draw::cx_draw::CxDraw;
+
+    #[cfg(feature = "onboarding-test-support")]
+    #[test]
+    fn agent_picker_receives_input_outside_its_sidebar() {
+        use std::cell::Cell;
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let root = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.RoomScreen {desktop_chat_header.visible: true}});
+            let root = WidgetRef::script_from_value(vm, value);
+            root.register_as_ui_root(vm);
+            root
+        });
+        let mut screen = root.borrow_mut::<RoomScreen>().unwrap();
+        screen.room_name_id = Some(RoomNameId::empty("!review:example.invalid".try_into().unwrap()));
+        screen.chat_info_requested = true;
+        draw(&mut cx, &mut screen, 1280.0);
+        screen.view.mobile_chat_info(&mut cx, ids!(desktop_chat_info)).review_agent_picker(&mut cx, "ready");
+        let dropdown = screen.view.view(&mut cx, ids!(desktop_chat_info_panel)).drop_down(&mut cx, ids!(my_agents));
+        dropdown.set_selected_item(&mut cx, 0);
+        let pass = DrawPass::new(&mut cx);pass.set_size(&mut cx, dvec2(1280.0, 900.0));
+        let mut list = DrawList2d::new(&mut cx);
+        let overlay = Overlay {draw_list: DrawList::new(&mut cx)};
+        let mut render = |cx: &mut Cx, screen: &mut RoomScreen| {
+            cx.redraw_all();
+            let event = DrawEvent::default();let mut draw = CxDraw::new(cx, &event);let mut cx = Cx2d::new(&mut draw);
+            cx.begin_pass(&pass, None);list.begin_always(&mut cx);overlay.begin(&mut cx);
+            cx.begin_root_turtle(dvec2(1280.0,900.0), Layout::flow_overlay());
+            screen.view.draw_walk_all(&mut cx, &mut Scope::empty(), Walk {
+                width: Size::Fixed(1280.0), height: Size::Fixed(760.0), ..Walk::default()
+            });
+            overlay.end(&mut cx);cx.end_pass_sized_turtle();list.end(&mut cx);cx.end_pass(&pass);
+        };
+        let click = |cx: &mut Cx, screen: &mut RoomScreen, point: Vec2d| {
+            for event in [
+                Event::MouseDown(MouseDownEvent {abs: point, button: MouseButton::PRIMARY,
+                    window_id: WindowId(0,0), modifiers: KeyModifiers::default(),
+                    handled: Cell::new(Area::Empty), time: 1.0}),
+                Event::MouseUp(MouseUpEvent {abs: point, button: MouseButton::PRIMARY,
+                    window_id: WindowId(0,0), modifiers: KeyModifiers::default(), time: 1.1}),
+            ] {
+                let actions = cx.capture_actions(|cx| screen.handle_event(cx, &event, &mut Scope::empty()));
+                screen.handle_event(cx, &Event::Actions(actions), &mut Scope::empty());
+            }
+        };
+        render(&mut cx, &mut screen);
+        let rect = dropdown.area().rect(&cx);
+        assert!(rect.size.x > 100.0, "the real picker must be open");
+        let point = rect.pos + rect.size * 0.5;
+        assert!(!screen.is_over_desktop_chat_info(&mut cx, &Event::MouseDown(MouseDownEvent {
+            abs: point, button: MouseButton::PRIMARY, window_id: WindowId(0,0),
+            modifiers: KeyModifiers::default(), handled: Cell::new(Area::Empty), time: 1.0,
+        })), "the full-window modal must extend outside the sidebar");
+        click(&mut cx, &mut screen, point);
+        render(&mut cx, &mut screen);
+        let mut agent_item = WidgetRef::empty();
+        dropdown.borrow().unwrap().children(&mut |id, item| {if id == LiveId(1) {agent_item = item;}});
+        let rect = agent_item.area().rect(&cx);
+        assert!(rect.size.x > 100.0, "the eligible Agent must appear in the popup");
+        click(&mut cx, &mut screen, rect.pos + rect.size * 0.5);
+        assert_eq!(dropdown.selected_item(), 1, "the timeline must not consume the Agent selection");
+        // Escape dismisses the modal even when its dropdown is still open.
+        // The dropdown must retire its popup and sweep lock along with it.
+        dropdown.borrow_mut().unwrap().set_active(&mut cx);
+        render(&mut cx, &mut screen);
+        let panel = screen.view.view(&mut cx, ids!(desktop_chat_info_panel));
+        let modal = panel.modal(&mut cx, ids!(agent_picker_modal));
+        // Modal closes itself before emitting its tagged dismissal action.
+        // Deliver that framework boundary without depending on an OS key loop.
+        modal.close(&mut cx);
+        let actions = cx.capture_actions(|cx| cx.widget_action(modal.widget_uid(), ModalAction::Dismissed));
+        screen.handle_event(&mut cx, &Event::Actions(actions), &mut Scope::empty());
+        assert!(!modal.is_open());
+        let mut hidden_menu_items = 0;
+        dropdown.borrow().unwrap().children(&mut |_, _| hidden_menu_items += 1);
+        assert_eq!(hidden_menu_items, 0, "dismissing the picker must also retire its dropdown's input capture");
+    }
 
     #[cfg(feature = "agent_chat")]
     #[test]

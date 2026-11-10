@@ -17,10 +17,36 @@
 //! --home <home>`, so it works for every executable that calls this entry.
 use std::ffi::{OsStr, OsString};
 #[cfg(unix)]
+use super::host;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 
 /// The argument that selects the daemon command line.
 pub const SUBCOMMAND: &str = "daemon";
+/// A bounded, versioned display event; never an authorization receipt.
+pub const ENROLLMENT_REGISTERING_LINE: &str = "HAGENCY_ENROLLMENT_NATIVE_REGISTRATION_V1";
+
+#[cfg(unix)]
+async fn observe_enrollment<T>(
+    future: impl std::future::Future<Output = T>,
+    control: std::sync::Arc<host::EnrollmentControl>,
+    on_registration: impl Fn(),
+) -> T {
+    tokio::pin!(future);
+    let mut timer = tokio::time::interval(std::time::Duration::from_millis(100));
+    let mut reported = false;
+    loop {
+        tokio::select! {
+            result = &mut future => return result,
+            _ = timer.tick() => {
+                if !reported && control.native_registration_started() {
+                    reported = true;
+                    on_registration();
+                }
+            }
+        }
+    }
+}
 /// Development builds only: an explicitly isolated installation, which the
 /// LaunchAgent of such a build repeats before [`SUBCOMMAND`].
 #[cfg(all(feature = "test-support", feature = "resource-adoption"))]
@@ -201,10 +227,7 @@ fn run_args(args: Vec<OsString>) -> i32 {
         eprintln!("Error: {code}");
         return 1;
     }
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
+    let runtime = match daemon_runtime() {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("Error: {error}");
@@ -219,6 +242,17 @@ fn run_args(args: Vec<OsString>) -> i32 {
             1
         }
     }
+}
+
+#[cfg(unix)]
+fn daemon_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    // launchd does not inherit the Desktop launcher's RUST_MIN_STACK. Native
+    // adoption and budget recovery futures need the same stack in this entry
+    // point, including unoptimized builds and blocking initialization workers.
+    tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
 }
 
 #[cfg(not(unix))]
@@ -329,6 +363,11 @@ pub async fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
                     Ok(())
                 },
             );
+            let enrollment = observe_enrollment(enrollment, control.clone(), || {
+                use std::io::Write;
+                println!("{ENROLLMENT_REGISTERING_LINE}");
+                let _ = std::io::stdout().flush();
+            });
             let report = if cancel_on_stdin_close {
                 let (cancel, cancelled) = tokio::sync::oneshot::channel();
                 // A detached OS reader must not keep the Tokio runtime alive
@@ -416,8 +455,56 @@ pub async fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn enrollment_progress_is_reported_before_the_original_future_finishes() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        let control = Arc::new(super::host::EnrollmentControl::default());
+        control.accept_native().unwrap();
+        let count = AtomicUsize::new(0);
+        super::observe_enrollment(async {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            assert_eq!(count.load(Ordering::Acquire), 1);
+        }, control, || { count.fetch_add(1, Ordering::AcqRel); }).await;
+        let cancelled = Arc::new(super::host::EnrollmentControl::default());
+        cancelled.cancel();
+        super::observe_enrollment(async {
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        }, cancelled, || { panic!("cancelled OAuth is not native registration"); }).await;
+    }
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn daemon_workers_have_stack_without_launcher_environment() {
+        const CHILD: &str = "HAGENCY_DAEMON_STACK_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            #[inline(never)]
+            fn native_stack_work() {
+                let mut frame = [0_u8; 3 * 1024 * 1024];
+                let frame = std::hint::black_box(&mut frame);
+                frame[0] = 17;
+                frame[frame.len() - 1] = 29;
+                assert_eq!(std::hint::black_box(frame[0] + frame[frame.len() - 1]), 46);
+            }
+            let runtime = daemon_runtime().unwrap();
+            runtime.block_on(async {
+                tokio::spawn(async { native_stack_work() }).await.unwrap();
+                tokio::task::spawn_blocking(native_stack_work).await.unwrap();
+            });
+            return;
+        }
+        // CI normally exports RUST_MIN_STACK, which hid the launchd failure.
+        // Isolate the environment change and a possible stack-overflow abort.
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "daemon::cli::tests::daemon_workers_have_stack_without_launcher_environment", "--nocapture"])
+            .env(CHILD, "1")
+            .env_remove("RUST_MIN_STACK")
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"), "stack probe must execute");
+    }
 
     fn parse(args: &[&str]) -> Result<Command, clap::Error> {
         Invocation::try_parse_from(args).map(|i| {

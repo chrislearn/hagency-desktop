@@ -3,6 +3,10 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[cfg(all(unix, feature = "resource-adoption"))]
+#[path = "daemon_handoff_tests.rs"]
+mod daemon_handoff_tests;
+
 // The real desktop registration/retirement code and real native owner are used,
 // without touching the process-wide SDK account, CURRENT or any saved profile.
 struct Directory(PathBuf);
