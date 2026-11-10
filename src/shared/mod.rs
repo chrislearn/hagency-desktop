@@ -28,6 +28,7 @@ pub mod styles;
 pub mod text_or_image;
 pub mod timestamp;
 pub mod bouncing_dots;
+pub mod paced_spinner;
 pub mod unread_badge;
 pub mod verification_badge;
 pub mod restore_status_view;
@@ -64,6 +65,7 @@ pub fn script_mod(vm: &mut ScriptVm) {
     html_or_plaintext::script_mod(vm);
     agent_usage::script_mod(vm);
     bouncing_dots::script_mod(vm);
+    paced_spinner::script_mod(vm);
     jump_to_bottom_button::script_mod(vm);
     popup_list::script_mod(vm);
     verification_badge::script_mod(vm);

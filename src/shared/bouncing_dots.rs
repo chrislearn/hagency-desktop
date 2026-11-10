@@ -83,7 +83,7 @@ impl Widget for BouncingDots {
             if let Some(started_at) = self.started_at {
                 let now = Cx::monotonic_now();
                 // Retained draw calls can outlive a hidden tab. Stop ticking if
-                // this draw list is no longer attached; draw_walk resumes it.
+                // this draw list is no longer attached.
                 let attached = if now >= self.next_visibility_check {
                     self.next_visibility_check = now + DOTS_VISIBILITY_CHECK_SECONDS;
                     self.is_attached(cx)
@@ -98,6 +98,19 @@ impl Widget for BouncingDots {
                     // A one-shot timer also stops naturally if the widget is removed.
                     self.schedule(cx, now);
                 }
+            }
+        }
+        // A Dock can reattach its cached draw list without drawing the child
+        // again. Probe once on navigation; hidden tabs do not keep a timer.
+        if self.started_at.is_some() && self.view.visible
+            && matches!(event, Event::Actions(_) | Event::Custom(_))
+        {
+            let now = Cx::monotonic_now();
+            if self.timer.is_empty() || now > self.timer_due_at + 0.1 {
+                // A covered parent may not have forwarded the last timeout.
+                cx.stop_timer(self.timer);
+                self.next_visibility_check = 0.0;
+                self.schedule(cx, now);
             }
         }
         self.view.handle_event(cx, event, scope);
