@@ -4,9 +4,9 @@
 
 ## 源码布局与构建
 
-Cargo 直接从 `https://github.com/hagency-org/hagency-client.git` 的 `work/hagency-client-local-20261028` 分支
-获取主人引擎，Cargo.lock 锁定具体提交，无需同级 client 源码目录。在 Desktop
-checkout 中构建：
+主人引擎位于 `crates/hagency-client`，保留独立的 Rust 库工作区。Desktop 和
+owner-dashboard 通过仓库内路径依赖它，构建与发布检查使用同一份源码。无需同级
+Client 检出、远程提交指针或旧网页 UI 构建。详见[库说明](../crates/hagency-client/README.md)。
 
 Desktop 固定 Rust 1.98.0，server 使用自己的工具链。macOS 需要 Xcode command-line
 tools 和 CMake（`brew install cmake`）；Linux 需要 CMake、Clang/libclang、OpenSSL、

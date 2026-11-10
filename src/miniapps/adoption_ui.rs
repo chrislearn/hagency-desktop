@@ -240,7 +240,7 @@ mod enabled {
             self.view.view(cx, ids!(app_content)).set_visible(cx, false);
             self.view.view(cx, ids!(approval)).set_visible(cx, false);
             self.view
-                .label(cx, ids!(adoption_confirmation.scroll.owner))
+                .label(cx, ids!(adoption_confirmation.sheet_scroll.owner))
                 .set_text(cx, prompt.flow.account());
             let tr = crate::i18n::tr;
             let empty_setup = matches!(&prompt.phase,Phase::Review(review) if review.context().kind == DeviceSetupKind::EmptyDevice);
@@ -251,14 +251,14 @@ mod enabled {
             } else {
                 "Review resource migration"
             };
-            self.view.label(cx, ids!(adoption_confirmation.scroll.heading.title)).set_text(cx, tr(heading));
+            self.view.label(cx, ids!(adoption_confirmation.sheet_scroll.heading.title)).set_text(cx, tr(heading));
             let choosing = matches!(prompt.phase, Phase::Choose(_));
             self.view
-                .view(cx, ids!(adoption_confirmation.scroll.choices))
+                .view(cx, ids!(adoption_confirmation.sheet_scroll.choices))
                 .set_visible(cx, choosing);
             if choosing {
                 self.view
-                    .widget(cx, ids!(adoption_confirmation.scroll.choices.tokens))
+                    .widget(cx, ids!(adoption_confirmation.sheet_scroll.choices.tokens))
                     .set_text(cx, &prompt.tokens);
             }
             let(mut status,details,primary)=match &prompt.phase {
@@ -284,13 +284,13 @@ mod enabled {
                 status = tr(message("management_scope_changed")).into();
             }
             self.view
-                .label(cx, ids!(adoption_confirmation.scroll.status))
+                .label(cx, ids!(adoption_confirmation.sheet_scroll.status))
                 .set_text(cx, &status);
             self.view
-                .label(cx, ids!(adoption_confirmation.scroll.details.copy))
+                .label(cx, ids!(adoption_confirmation.sheet_scroll.details.copy))
                 .set_text(cx, &details);
             self.view
-                .view(cx, ids!(adoption_confirmation.scroll.details))
+                .view(cx, ids!(adoption_confirmation.sheet_scroll.details))
                 .set_visible(cx, !details.is_empty());
             self.view
                 .button(cx, ids!(adoption_confirmation.buttons.primary))
@@ -345,7 +345,7 @@ mod enabled {
             {
                 prompt.tokens = self
                     .view
-                    .widget(cx, ids!(adoption_confirmation.scroll.choices.tokens))
+                    .widget(cx, ids!(adoption_confirmation.sheet_scroll.choices.tokens))
                     .text();
             }
         }
@@ -360,7 +360,7 @@ mod enabled {
             }
             if matches!(prompt.phase, Phase::Choose(_)) && !valid_tokens(&prompt.tokens) {
                 self.view
-                    .label(cx, ids!(adoption_confirmation.scroll.status))
+                    .label(cx, ids!(adoption_confirmation.sheet_scroll.status))
                     .set_text(cx, crate::i18n::tr(message("invalid_adoption_budget")));
                 return;
             }
@@ -437,12 +437,12 @@ mod enabled {
                 .area();
             let mut targets = Vec::new();
             if matches!(prompt.phase, Phase::Choose(_)) {
-                let decrease=self.view.button(cx, ids!(adoption_confirmation.scroll.choices.tokens.decrease));
-                let increase=self.view.button(cx, ids!(adoption_confirmation.scroll.choices.tokens.increase));
+                let decrease=self.view.button(cx, ids!(adoption_confirmation.sheet_scroll.choices.tokens.decrease));
+                let increase=self.view.button(cx, ids!(adoption_confirmation.sheet_scroll.choices.tokens.increase));
                 if !decrease.disabled(cx) {targets.push(decrease.area());}
                 targets.push(
                     self.view
-                        .text_input(cx, ids!(adoption_confirmation.scroll.choices.tokens.input))
+                        .text_input(cx, ids!(adoption_confirmation.sheet_scroll.choices.tokens.input))
                         .area(),
                 );
                 if !increase.disabled(cx) {targets.push(increase.area());}
@@ -687,7 +687,7 @@ mod tests {
             .repeat(80);
             panel
                 .view
-                .label(&cx, ids!(adoption_confirmation.scroll.details.copy))
+                .label(&cx, ids!(adoption_confirmation.sheet_scroll.details.copy))
                 .set_text(&mut cx, &long);
             if cn {
                 for (id, text) in [

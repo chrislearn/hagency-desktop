@@ -1,6 +1,6 @@
 //! In-app reader for ordinary chat links, backed by the platform browser.
 use makepad_widgets::*;
-use makepad_widgets::makepad_platform::event::NativeSystemBrowserNavigation;
+use crate::shared::system_browser::{NativeSystemBrowserNavigation, SystemBrowserCx, SystemBrowserCx2d, SystemBrowserId};
 use url::Url;
 use std::sync::Arc;
 use ruma::{OwnedEventId, OwnedRoomId, OwnedUserId};
@@ -149,6 +149,9 @@ pub struct WebBrowser {
     restore_after_theme: bool,
     #[rust]
     host_hidden: bool,
+    /// Native browser views sit above the GPU surface, including its modals.
+    #[rust]
+    overlay_occluded: bool,
 }
 
 impl ScriptHook for WebBrowser {
@@ -755,7 +758,7 @@ impl Widget for WebBrowser {
         while let Some(item) = self.view.draw_walk(cx, scope, walk).step() {
             if let Some(mut bar) = item.as_tab_bar().borrow_mut() {
                 let walk = bar.walk(cx);
-                bar.begin(cx, self.active_tab, walk);
+                bar.begin(cx, self.active_tab, true, walk);
                 for tab in &self.tabs {
                     let title = tab.title();
                     let label = shorten_title(&title);
@@ -766,7 +769,8 @@ impl Widget for WebBrowser {
         }
         if let Some(id) = self.browser_id() {
             let area = self.view(cx, ids!(web_surface)).area();
-            let visible = !self.host_hidden && self.active().is_some_and(|tab| tab.status.is_none());
+            let visible = !self.host_hidden && !self.overlay_occluded
+                && self.active().is_some_and(|tab| tab.status.is_none());
             cx.system_browser(id).update(area, visible);
         }
         DrawStep::done()
@@ -774,6 +778,19 @@ impl Widget for WebBrowser {
 }
 
 impl WebBrowserRef {
+    /// Hide the native surface while a foreground dialog covers this host.
+    /// Detaching keeps the page, navigation history, form inputs and scroll alive.
+    pub fn set_overlay_occluded(&self, cx: &mut Cx, occluded: bool) {
+        if let Some(mut inner) = self.borrow_mut() {
+            if inner.overlay_occluded == occluded { return; }
+            inner.overlay_occluded = occluded;
+            if occluded {
+                if let Some(id) = inner.browser_id() { cx.system_browser(id).detach(); }
+            }
+            inner.redraw(cx);
+        }
+    }
+
     /// Background dock tabs keep their browser session without covering the foreground tab.
     pub fn set_host_visible(&self, cx: &mut Cx, visible: bool) {
         if let Some(mut inner) = self.borrow_mut() {

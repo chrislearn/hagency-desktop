@@ -20,7 +20,8 @@ pub fn controls(root: &WidgetRef, cx: &Cx) -> Vec<WidgetRef> {
     fn visit(root: &WidgetRef, cx: &Cx, seen: &mut HashSet<WidgetUid>, out: &mut Vec<WidgetRef>) {
         if !root.visible() || !seen.insert(root.widget_uid()) || seen.len() > 8192 { return; }
         let interactive = root.borrow::<Button>().is_some_and(|button| button.enabled())
-            || root.borrow::<TextInput>().is_some() || root.borrow::<DropDown>().is_some();
+            || root.borrow::<TextInput>().is_some() || root.borrow::<DropDown>().is_some()
+            || root.borrow::<CheckBox>().is_some();
         if interactive && root.area().is_valid(cx) { out.push(root.clone()); }
         root.children(&mut |_, child| visit(&child, cx, seen, out));
     }
@@ -101,14 +102,14 @@ fn reveal(cx: &mut Cx, target: Area, defer_oversized: bool) {
     }
 }
 
-/// Returns true only when this scope consumed the key. Embedded scopes let
-/// Tab leave their first/last control; the standalone window wraps normally.
+/// Returns true only when this scope consumed the key. Without `wrap`, Tab
+/// may leave the first/last control for the host's own navigation.
 pub fn handle(root: &WidgetRef, cx: &mut Cx, key: &KeyEvent, wrap: bool) -> bool {
     if key.is_repeat || key.modifiers.is_primary() || key.modifiers.alt { return false; }
     if !matches!(key.key_code, KeyCode::Tab | KeyCode::ReturnKey | KeyCode::Space | KeyCode::Escape) { return false; }
     let controls = controls(root, cx);
     let current = controls.iter().position(|widget| widget.area() == cx.key_focus());
-    // Embedded hosts may only handle a scope that already owns focus. Empty
+    // Without wrap, only a scope that already owns focus is handled. Empty
     // focus belongs to the window, which chooses its own first navigation stop.
     if !wrap && current.is_none() { return false; }
     if key.key_code == KeyCode::Tab {
@@ -133,11 +134,17 @@ pub fn handle(root: &WidgetRef, cx: &mut Cx, key: &KeyEvent, wrap: bool) -> bool
             dropdown.set_active(cx);
             return true;
         }
+        if let Some(mut check) = control.borrow_mut::<CheckBox>() {
+            let active = !check.active(cx);
+            check.set_active(cx, active, Animate::Yes);
+            cx.widget_action(control.widget_uid(), CheckBoxAction::Change(active));
+            return true;
+        }
     }
     false
 }
 
-/// Embedded hosts retain navigation outside the dashboard. Discover only a
+/// The host retains navigation outside the dashboard. Discover only a
 /// visible dashboard; a hidden Agent tab cannot intercept chat typing.
 pub fn embedded(root: &WidgetRef, cx: &mut Cx, event: &Event) -> bool {
     let Event::KeyDown(key) = event else { return false };

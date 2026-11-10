@@ -274,7 +274,11 @@ struct Inner {
     // A completed OAuth sign-in permits one native registration. Restoring an
     // active native session also discards it; it cannot authorize a later revoke.
     explicit_reenrollment: std::sync::atomic::AtomicBool,
-    state: PathBuf,
+    /// The registry and daemon home that decide who executes this owner.
+    locations: crate::hagency::hosting::Locations,
+    /// The account's one owner root on this computer (ADR-192). An error is
+    /// reported by the operations that need the root, not by Matrix-only ones.
+    state: Result<PathBuf, String>,
     native: tokio::sync::Mutex<Option<NativeOwner>>,
     remote: Mutex<Option<Arc<::hagency::daemon::bridge::ControllerClient>>>,
     // Separate from the async initialization/cleanup lock: account transitions
@@ -297,14 +301,14 @@ struct Inner {
 #[derive(Clone)]
 pub struct Service(Arc<Inner>);
 impl Service {
-    fn state_for(origin: &str, owner: &str) -> Result<PathBuf, String> {
-        let identity = serde_json::to_vec(&(origin, owner)).map_err(|_| "invalid_account_identity")?;
-        let original=crate::app_data_dir().join("native-owner").join(blake3::hash(&identity).to_hex().as_str());
-        let home=crate::hagency::owner_dashboard::endpoint().home;
-        if let Some(enrolled)=::hagency::daemon::enrollment::Enrollment::load(&home).map_err(|e|e.code().to_owned())? {
-            if enrolled.owner==owner && enrolled.origin.trim_end_matches('/')==origin.trim_end_matches('/') && !original.exists(){return Ok(enrolled.owner_root)}
-        }
-        Ok(original)
+    /// The account's one owner root on this computer (ADR-192): see
+    /// [`crate::hagency::hosting::sign_in_root`].
+    fn state_for(locations: &crate::hagency::hosting::Locations, origin: &str, owner: &str) -> Result<PathBuf, String> {
+        crate::hagency::hosting::sign_in_root(locations, crate::app_data_dir(), origin, owner)
+    }
+    /// The owner root, for operations that open or revoke it in this process.
+    fn root(&self) -> Result<&std::path::Path, String> {
+        self.0.state.as_deref().map_err(Clone::clone)
     }
     pub fn for_current() -> Result<Self, String> {
         if PROCESS_CLOSING.load(std::sync::atomic::Ordering::Acquire)
@@ -353,7 +357,11 @@ impl Service {
                 }
             });
         }
-        let state = Self::state_for(&origin, &owner)?;
+        let locations = crate::hagency::hosting::Locations::system()?;
+        let state = Self::state_for(&locations, &origin, &owner);
+        if let Err(code) = &state {
+            makepad_widgets::warning!("Owner root unavailable: {code}");
+        }
         let service = Self(Arc::new(Inner {
             encrypted_approvals: Some(::hagency::encrypted_approvals::Inbox::attach(&client)),
             origin,
@@ -363,6 +371,7 @@ impl Service {
             explicit_reenrollment: std::sync::atomic::AtomicBool::new(
                 signin::consume(&client, epoch, client_revision),
             ),
+            locations,
             state,
             native: tokio::sync::Mutex::new(None),
             remote: Mutex::new(None),
@@ -619,10 +628,18 @@ impl Service {
         invited_agent_joined(&value, &agent, room)
     }
     async fn native_owner(&self) -> Result<NativeOwner, String> {
-        let native = {
+        // On macOS only the owner daemon executes (ADR-192). An account the
+        // daemon does not host (another account is hosted, or hosting is not
+        // set up) still opens its own root here for management requests such
+        // as permission and Agent requests, but restores no runtime and starts
+        // no pool worker. Once the daemon hosts it, `remote_client` retires
+        // this owner before attaching.
+        let (native, management_only) = {
             let mut native = self.0.native.lock().await;
+            // Recheck after waiting: a completed daemon handoff must not be
+            // followed by a caller reopening the old in-process owner.
+            let management_only = self.local_management_only()?;
             self.check()?;
-            if self.daemon_assignment()?.is_some() { return Err("owner_daemon_management_required".into()); }
             #[cfg(feature = "resource-adoption")]
             self.drain_adoption_source(&mut native).await?;
             if native.is_none() {
@@ -633,7 +650,7 @@ impl Service {
                 #[cfg(feature = "resource-adoption")]
                 let opened = if let Some(selection) = &selected {
                     selection.open_for_onboarding_with_matrix_guarded(
-                        &self.0.state, &self.0.origin, &self.0.owner,
+                        self.root()?, &self.0.origin, &self.0.owner,
                         Arc::new(SdkTokens(Arc::downgrade(&self.0))),
                         |owner| self.register_native_owner(owner).map_err(|code| source_error(&code)),
                     ).await
@@ -662,7 +679,7 @@ impl Service {
                 let restore_legacy = selected.is_none();
                 #[cfg(not(feature = "resource-adoption"))]
                 let restore_legacy = true;
-                if restore_legacy {
+                if restore_legacy && !management_only {
                     log_runtime_recovery(owner.restore_runtime_intents().await);
                 }
                 if let Err(error) = self.check() {
@@ -677,17 +694,20 @@ impl Service {
                 }
                 *native = Some(owner);
             }
-            native.as_ref().unwrap().clone()
+            (native.as_ref().unwrap().clone(), management_only)
         };
-        #[cfg(feature = "resource-adoption")]
-        self.start_allocation_worker(&native).await;
-        #[cfg(feature = "shared-execution")]
-        self.start_shared_worker(&native).await;
+        if !management_only {
+            #[cfg(feature = "resource-adoption")]
+            self.start_allocation_worker(&native).await;
+            #[cfg(feature = "shared-execution")]
+            self.start_shared_worker(&native).await;
+        }
         Ok(native)
     }
     async fn open_legacy_owner(&self) -> Result<NativeOwner, NativeError> {
+        let root = self.root().map_err(|code| NativeError { status: 409, code })?;
         NativeOwner::open_with_matrix_guarded(
-            &self.0.state, &self.0.origin, &self.0.owner,
+            root, &self.0.origin, &self.0.owner,
             Arc::new(SdkTokens(Arc::downgrade(&self.0))),
             |owner| self.register_native_owner(owner).map_err(|code| source_error(&code)),
         ).await

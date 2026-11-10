@@ -3,6 +3,13 @@
 - Date: 2026-11-01
 - Status: Implemented and built; automated runtime and numerical UX gates passed.
   Manual VoiceOver release acceptance remains open.
+- Amended 2026-11-05 by Client ADR-192, "One owner identity per computer"
+  (hagency-client `knowledge/decisions/adr-192-one-owner-identity-per-computer.md`):
+  Hagency Hosting is folded into Hagency Desktop. The standalone macOS app,
+  dashboard handover between hosts and setup launch are removed; the owner
+  daemon runs from the Desktop binary, and Desktop's Agent → Hosting page sets
+  up, shows, stops and uninstalls hosting. Standalone-controller text below is
+  historical.
 - Required product direction: independent background hosting, one dashboard
   available standalone and inside Hagency, and iOS-style UX scoring above 95/100.
 - Extends [ADR 0009](0009-shared-reloadable-themes.md) for shared themes and
@@ -20,8 +27,8 @@ consume it without keeping the full chat application open.
 
 The original source review used Desktop c984ed91, Client 779bceb5, and Server 98fb33d.
 The table records that starting point, rather than the implementation's current
-acceptance status. Build and operating instructions are in the
-[Hagency Hosting guide](../../packaging/owner-controller/README.md).
+acceptance status. Native accessibility build and test instructions are in the
+[owner accessibility guide](../../packaging/owner-accessibility/README.md).
 
 | Existing component | Reuse and remaining work |
 | --- | --- |

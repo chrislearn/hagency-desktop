@@ -1,10 +1,10 @@
-//! Shared Hagency owner dashboard (ADR 0012).
+//! Hagency owner hosting dashboard (ADR 0012, ADR-192).
 //!
-//! One reusable Makepad widget, [`widget::OwnerDashboard`], mounted by the
-//! standalone macOS controller and by Hagency's Agent page. The host owns all
-//! IO: it feeds snapshots and command results in and performs the semantic
-//! [`DashboardAction`]s the widget emits. [`transport`] provides the shared
-//! nonblocking owner-daemon connector both hosts use.
+//! One Makepad widget, [`widget::OwnerDashboard`], mounted on the Hosting page
+//! of Hagency Desktop's Agent mini-app. The host owns all IO: it feeds
+//! snapshots, command results and its hosting setup state in, and performs
+//! the semantic [`DashboardAction`]s the widget emits. [`transport`] provides
+//! the nonblocking owner-daemon connector.
 //!
 //! Data contract: [`dto`] re-exports `hagency_metering::dashboard`.
 pub use hagency_metering::dashboard as dto;
@@ -14,9 +14,6 @@ pub mod picker;
 mod activity_text;
 pub mod format;
 pub mod date_range;
-pub mod handover;
-pub mod handover_bridge;
-pub mod setup_launch;
 pub mod i18n;
 pub mod keyboard;
 pub mod accessibility;
@@ -32,8 +29,8 @@ pub use format::Clock;
 pub use i18n::Locale;
 pub use widget::{OwnerDashboard, OwnerDashboardRef, OwnerDashboardWidgetExt, OwnerDashboardWidgetRefExt};
 pub use model::{
-    CommandKind, CommandResult, CommandTicket, ConnectionStatus, DashboardAction, DashboardState, HostMode, Tab,
-    ViewState, NavigationIntent,
+    CommandKind, CommandResult, CommandTicket, ConnectionStatus, DashboardAction, DashboardState, HostOptions,
+    SetupNeed, SetupProgress, SetupView, Tab, ViewState,
 };
 
 /// Registers dashboard tokens, controls and the `OwnerDashboard` widget.
@@ -47,3 +44,4 @@ pub fn script_mod(vm: &mut makepad_widgets::ScriptVm) {
 }
 
 mod command_store;
+mod private_files;

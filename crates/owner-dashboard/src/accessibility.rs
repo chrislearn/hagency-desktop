@@ -1,4 +1,4 @@
-//! Shared window semantics and action routing for both native dashboard hosts.
+//! Window semantics and action routing for the dashboard and its host.
 //!
 //! Call `after_event` after the host has delivered an event to its entire UI.
 //! This composes the dashboard with surrounding host controls under one window

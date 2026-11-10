@@ -36,7 +36,6 @@ use crate::octoscript_apps::{MiniAppsAction, MiniAppsPanelWidgetRefExt};
 use crate::miniapps::window::MiniAppsWindowHostWidgetRefExt;
 use crate::miniapps::side::MiniAppsSideRegionWidgetRefExt;
 use crate::hagency::ui::{HagencyAction, HagencyPanelWidgetRefExt};
-use crate::hagency::owner_dashboard::Coordinator as OwnerDashboardCoordinator;
 use crate::settings::theme_studio::{ThemeStudioAction, ThemeStudioWidgetRefExt};
 use crate::article_app::{ArticleAction, ArticlePanelWidgetRefExt};
 use crate::mini_app::{MiniAppAction, MiniAppPanelWidgetRefExt};
@@ -254,7 +253,8 @@ pub struct App {
     /// is told within the request's two-minute window wherever they are.
     #[rust] approvals_timer: Timer,
     #[rust] lifecycle: AppLifecycle,
-    #[rust] owner_dashboard: OwnerDashboardCoordinator,
+    /// A resume of hosting that Desktop paused at its last quit is running.
+    #[rust] hosting_resume: bool,
     /// The details of a room we're waiting on to be loaded so that we can navigate to it.
     /// This can be either a room we're waiting to join, or one we're waiting to be invited to.
     /// Also includes an optional room ID to be closed once the awaited room has been loaded.
@@ -347,6 +347,22 @@ impl MatchEvent for App {
         if self.ui.button(cx, ids!(hagency_management_modal.content.close)).clicked(actions) {
             cx.action(HagencyAction::Close);
         }
+        for action in actions {
+            match action.downcast_ref::<crate::hagency::owner_dashboard::HostingAction>() {
+                Some(crate::hagency::owner_dashboard::HostingAction::KeepRunning(keep)) => {
+                    self.app_state.app_prefs.keep_hosting_after_quit = *keep;
+                    self.app_state.app_prefs.on_hosting_changed(cx);
+                }
+                Some(crate::hagency::owner_dashboard::HostingAction::Resumed { owner, settled }) => {
+                    self.hosting_resume = false;
+                    if *settled && current_user_id().is_some_and(|id| id.as_str() == owner) {
+                        self.app_state.app_prefs.hosting_paused_on_quit = false;
+                        self.app_state.app_prefs.on_hosting_changed(cx);
+                    }
+                }
+                None => {}
+            }
+        }
         let invite_confirmation_modal_content = self.ui.confirmation_modal(cx, ids!(invite_confirmation_modal.content));
         if let Some(_accepted) = invite_confirmation_modal_content.closed(actions) {
             self.ui.modal(cx, ids!(invite_confirmation_modal)).close(cx);
@@ -371,6 +387,33 @@ impl MatchEvent for App {
             }
             if let Some(decided) = action.downcast_ref::<crate::hagency::pending_approvals::PendingApprovalDecided>() {
                 crate::hagency::pending_approvals::apply_decided(decided);
+                self.ui.redraw(cx);
+            }
+            // Agent questions: a card's click produced an answer to send, an
+            // answer was sent (or not), or cards arrived from the room.
+            if let Some(request) = action.downcast_ref::<crate::hagency::pending_questions::QuestionAnswerRequested>() {
+                crate::hagency::pending_questions::send(request.clone());
+            }
+            if let Some(sent) = action.downcast_ref::<crate::hagency::pending_questions::QuestionAnswerSent>()
+                && crate::hagency::pending_questions::sent(sent)
+            {
+                if sent.result.is_err() {
+                    enqueue_popup_notification(
+                        crate::i18n::tr("Could not send the answer. Please try again."),
+                        PopupKind::Error,
+                        Some(8.0),
+                    );
+                }
+                cx.action(crate::hagency::pending_questions::PendingQuestionsChanged);
+                self.ui.redraw(cx);
+            }
+            if action.downcast_ref::<crate::hagency::pending_questions::PendingQuestionsChanged>().is_some() {
+                for (_, agent_name) in crate::hagency::pending_questions::take_announcements() {
+                    let text = crate::hagency::pending_questions::announcement(&agent_name);
+                    enqueue_popup_notification(text.clone(), PopupKind::Info, Some(20.0));
+                    // A no-op on backends without system notifications.
+                    crate::jit_compat::show_notification(cx, &agent_name, &text);
+                }
                 self.ui.redraw(cx);
             }
             if let Some(action) = action.downcast_ref::<crate::accounts::AccountAction>() {
@@ -1188,18 +1231,20 @@ impl App {
         let Some(workspace) = host.take_for_dock(cx, window) else { return };
         self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).restore_workspace(cx, workspace);
         self.ui.redraw(cx);
+        // JIT PORT: upstream queues ShowWindow, which brings the window in front
+        // and activates the app without re-entering AppKit from this handler.
         #[cfg(target_os = "macos")]
-        if let Some(main) = self.ui.window(cx, ids!(main_window)).window_id() {
-            // Activate outside the UI borrow: AppKit may re-enter the event handler.
-            dispatch2::DispatchQueue::main().exec_async(move || {
-                use makepad_widgets::makepad_platform::os::apple::macos::macos_app::{
-                    activate_cocoa_window_on_pointer_down, try_with_macos_app,
-                };
-                if let Some(native) = try_with_macos_app(|app| app.cocoa_window_for_id(main)).flatten() {
-                    activate_cocoa_window_on_pointer_down(native);
-                }
-            });
-        }
+        self.ui.window(cx, ids!(main_window)).set_visible(cx, true);
+    }
+
+    fn sync_upload_overlay(&self, cx: &mut Cx) {
+        let occluded = self.ui.modal(cx, ids!(file_upload_modal)).is_open();
+        // Only browsers in this content host are covered. A popped-out reader
+        // remains visible in its own window, and background dock tabs stay hidden.
+        self.ui.mini_apps_side_region(cx, ids!(mini_apps_side)).reader(cx)
+            .set_overlay_occluded(cx, occluded);
+        self.ui.web_browser(cx, ids!(web_browser_modal.content))
+            .set_overlay_occluded(cx, occluded);
     }
 
     fn clear_session_ui(&mut self, cx: &mut Cx) {
@@ -1357,7 +1402,7 @@ impl AppMain for App {
         });
         crate::theme::init_standalone(vm);
         #[cfg(any(target_os = "macos", target_os = "ios"))]
-        crate::apple_fonts::install(vm);
+        crate::apple_fonts::install_over_theme_builds(vm); // JIT PORT: see the fn
         makepad_widgets::widgets_mod(vm);
         makepad_widgets::desktop_style::apply_widgets(vm);
         register_widgets(vm);
@@ -1365,22 +1410,11 @@ impl AppMain for App {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        crate::shared::system_browser::handle_event(cx, event);
         crate::theme::system::handle_event(cx, event);
         if self.approvals_timer.is_event(event).is_some() {
             crate::hagency::pending_approvals::poll();
-        }
-        if let Some(restore) = self.owner_dashboard.handle_event(cx, event) {
-            if let crate::hagency::owner_dashboard::EmbeddedAction::Restore { id, ref view } = restore
-                && view.intent == Some(owner_dashboard::NavigationIntent::ReviewApprovals)
-                && let Some(owner) = view.owner_id.clone()
-            {
-                // The MiniApp acknowledges only after its same-owner landing
-                // is installed. Restoring Hosting alone is not acceptance.
-                self.dock_mini_apps_action(cx, &MiniAppsAction::ReviewOwnerApprovals { owner, handover_id: Some(id) });
-            } else {
-                self.dock_mini_apps_action(cx, &MiniAppsAction::OpenAgent);
-                cx.action(restore);
-            }
+            self.resume_hosting_paused_at_quit();
         }
         // Peek at Back instead of `back_pressed()`, which marks it handled: Back
         // is taken only when it closes one of these modals. Otherwise it goes on
@@ -1388,6 +1422,13 @@ impl AppMain for App {
         // (OctoSense leaves the app; Android backgrounds it).
         let back_unhandled = matches!(event, Event::BackPressed { handled } if !handled.get());
         let escape = matches!(event, Event::KeyDown(k) | Event::KeyUp(k) if k.key_code == KeyCode::Escape);
+        if (back_unhandled || escape) && self.ui.modal(cx, ids!(file_upload_modal)).is_open() {
+            self.ui.widget(cx, ids!(file_upload_modal)).handle_event(
+                cx, event, &mut Scope::with_data(&mut self.app_state),
+            );
+            self.sync_upload_overlay(cx);
+            return;
+        }
         if (back_unhandled || escape) && self.ui.modal(cx, ids!(invite_modal)).is_open() {
             // Give nested confirmations, then the invitation, the same priority
             // as their draw order. Modal owns the cancel scope (including any
@@ -1468,9 +1509,12 @@ impl AppMain for App {
         // Forward events to the MatchEvent trait implementation.
         if owner_dashboard::keyboard::embedded(&self.ui, cx, event) { return; }
         self.match_event(cx, event);
+        self.sync_upload_overlay(cx);
         crate::agent_access::publish(current_user_id(), &self.app_state.agent_access);
         let scope = &mut Scope::with_data(&mut self.app_state);
         self.ui.handle_event(cx, event, scope);
+        // Outside-click dismissal happens inside Modal, without a Hide action.
+        self.sync_upload_overlay(cx);
         owner_dashboard::accessibility::after_event(&self.ui, cx, event);
         // The backend may restore the next account only after every child has
         // consumed ClearAppState, including hidden settings/room widgets.
@@ -1718,7 +1762,7 @@ impl App {
                         key: KeyCode::KeyQ,
                         shift: false,
                         enabled: true,
-                    }],
+                    dock: false,}],
                 },
                 MacosMenu::Sub {
                     name: "View".into(),
@@ -1729,14 +1773,14 @@ impl App {
                             key: KeyCode::Equals,
                             shift: true,
                             enabled: true,
-                        },
+                        dock: false,},
                         MacosMenu::Item {
                             name: "Zoom Out".into(),
                             command: live_id!(zoom_out),
                             key: KeyCode::Minus,
                             shift: false,
                             enabled: true,
-                        },
+                        dock: false,},
                         MacosMenu::Line,
                         MacosMenu::Item {
                             name: "Reset Zoom".into(),
@@ -1744,7 +1788,7 @@ impl App {
                             key: KeyCode::Key0,
                             shift: false,
                             enabled: true,
-                        },
+                        dock: false,},
                     ],
                 },
             ],
@@ -1874,6 +1918,20 @@ impl App {
         }
     }
 
+    /// Resume hosting that Desktop paused at its last quit, off the UI thread.
+    /// A service that is not reachable yet is retried on the next tick.
+    fn resume_hosting_paused_at_quit(&mut self) {
+        if !self.app_state.app_prefs.hosting_paused_on_quit || self.hosting_resume || self.lifecycle.shutdown_started {
+            return;
+        }
+        let Some(owner) = current_user_id() else { return };
+        let owner = owner.to_string();
+        self.hosting_resume = std::thread::Builder::new().name("owner-hosting-resume".into()).spawn(move || {
+            let settled = crate::hagency::hosting::resume_after_start(&owner);
+            Cx::post_action(crate::hagency::owner_dashboard::HostingAction::Resumed { owner, settled });
+        }).is_ok();
+    }
+
     fn handle_shutdown(&mut self, cx: &mut Cx) {
         if self.lifecycle.shutdown_started {
             // log!("Ignoring duplicate shutdown lifecycle event.");
@@ -1881,6 +1939,15 @@ impl App {
         }
         self.lifecycle.shutdown_started = true;
         crate::hagency::backend::Service::begin_process_shutdown();
+
+        // The owner chose not to keep the resource pool running after Desktop
+        // quits: pause hosting now, and resume it at the next start.
+        if !self.app_state.app_prefs.keep_hosting_after_quit
+            && let Some(owner) = current_user_id()
+            && crate::hagency::hosting::pause_for_quit(owner.as_str(), Duration::from_secs(10))
+        {
+            self.app_state.app_prefs.hosting_paused_on_quit = true;
+        }
 
         self.persist_runtime_state(cx, "shutdown");
 
@@ -2114,6 +2181,7 @@ pub struct AppState {
 impl AppState {
     fn clear_for_session_end(&mut self) {
         crate::hagency::pending_approvals::forget_identity();
+        crate::hagency::pending_questions::forget_identity();
         *self = Self::default();
     }
 }
@@ -2197,8 +2265,10 @@ mod restore_owner_tests {
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct SavedDockState {
     /// All items contained in the dock, keyed by their room or space ID.
+    #[serde(with = "crate::dock_serde::dock_items")]
     pub dock_items: HashMap<LiveId, DockItem>,
     /// The rooms that are currently open, keyed by their room or space ID.
+    #[serde(with = "crate::dock_serde::live_id_map")]
     pub open_rooms: HashMap<LiveId, SelectedRoom>,
     /// The order in which room/thread tabs were last viewed,
     /// from oldest at the front to most recent at the end.
@@ -2637,5 +2707,50 @@ mod back_navigation_tests {
         assert!(!modal.is_open());
         assert!(browser.browser_id().is_none());
         assert!(!back(&mut cx, &mut app));
+    }
+
+    #[test]
+    fn upload_cancel_keeps_the_covered_web_reader_open() {
+        for escape in [false, true] {
+            let mut cx = Cx::new(Box::new(|_, _| {}));
+            let mut app = embedded_app(&mut cx);
+            let reader_modal = app.ui.modal(&mut cx, ids!(web_browser_modal));
+            let browser = app.ui.web_browser(&mut cx, ids!(web_browser_modal.content));
+            browser.action(&mut cx, reader_modal.clone(), &WebBrowserAction::Open("https://example.org".parse().unwrap()));
+            let browser_id = browser.browser_id();
+            let upload = app.ui.modal(&mut cx, ids!(file_upload_modal));
+            upload.open(&mut cx);
+            AppMain::handle_event(&mut app, &mut cx, &Event::Actions(Vec::new()));
+            if escape {
+                settle_cancel_owner(&mut cx);
+                let key = KeyEvent { key_code: KeyCode::Escape, ..Default::default() };
+                AppMain::handle_event(&mut app, &mut cx, &Event::KeyDown(key.clone()));
+                AppMain::handle_event(&mut app, &mut cx, &Event::KeyUp(key));
+            } else {
+                assert!(back(&mut cx, &mut app));
+            }
+            assert!(!upload.is_open());
+            assert!(reader_modal.is_open(), "Cancelling an upload must preserve the underlying reader");
+            assert_eq!(browser.browser_id(), browser_id);
+            assert_eq!(browser.session().tabs.len(), 1);
+        }
+    }
+
+    #[test]
+    fn upload_hide_keeps_the_docked_reader_tab() {
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let mut app = embedded_app(&mut cx);
+        let side = app.ui.mini_apps_side_region(&mut cx, ids!(mini_apps_side));
+        side.web_action(&mut cx, &WebBrowserAction::Open("https://example.org".parse().unwrap()));
+        let reader = side.reader(&mut cx);
+        assert_eq!(reader.session().tabs.len(), 1);
+        let id = reader.browser_id();
+        let upload = app.ui.modal(&mut cx, ids!(file_upload_modal));
+        upload.open(&mut cx);
+        AppMain::handle_event(&mut app, &mut cx, &Event::Actions(Vec::new()));
+        AppMain::handle_event(&mut app, &mut cx, &Event::Actions(vec![Box::new(FileUploadModalAction::Hide)]));
+        assert!(!upload.is_open());
+        assert_eq!(reader.browser_id(), id);
+        assert_eq!(reader.session().tabs.len(), 1);
     }
 }

@@ -1,0 +1,472 @@
+#![cfg(unix)]
+use hagency_agent_local::codex::{self, BudgetMode, Error, Profile};
+use hagency_agent_local::runtime::*;
+use hagency_agent_local::{
+    Budget, Layer, Ledger, Limit, Period, Policy, RequestPolicy, Scope, ToolPolicy,
+};
+use hagency_runtime::octos;
+use serde_json::json;
+use std::os::unix::fs::PermissionsExt;
+use std::{fs, path::PathBuf};
+
+struct Fixture {
+    root: tempfile::TempDir,
+    ledger: Ledger,
+    profile: Profile,
+    reference: String,
+    scope: Scope,
+}
+impl Fixture {
+    fn new(kind: Kind, mode: &str, policy: ToolPolicy) -> Self {
+        let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let directory = root.path().canonicalize().unwrap();
+        for name in ["home", "provider", "work", "outside"] {
+            fs::create_dir(directory.join(name)).unwrap();
+        }
+        let binary = directory.join("actor");
+        let script = include_str!("fixture.py")
+            .replace("__MODE__", &serde_json::to_string(mode).unwrap())
+            .replace("__KIND__", &serde_json::to_string(kind.name()).unwrap())
+            .replace("__ROOT__", &serde_json::to_string(&directory).unwrap());
+        fs::write(&binary, script).unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let profile = Profile {
+            executable: binary,
+            home: directory.join("home"),
+            codex_home: directory.join("provider"),
+            cwd: directory.join("work"),
+            model: "test-model".into(),
+            effort: if kind == Kind::Octos {
+                "none"
+            } else {
+                "medium"
+            }
+            .into(),
+            shared_auth: true,
+            web_search: true,
+        };
+        let primary = octos::ProfileModel {
+            family: "offline".into(),
+            model: profile.model.clone(),
+        };
+        let reference = if kind == Kind::Octos {
+            fs::create_dir(profile.codex_home.join("profiles")).unwrap();
+            fs::write(profile.codex_home.join("profiles/coding.json"),json!({"id":"coding","config":{"llm":{"primary":{"family_id":"offline","model_id":"test-model"}}}}).to_string()).unwrap();
+            local_reference(kind, &profile.codex_home, Some(("coding", &primary)))
+        } else {
+            local_reference(kind, &profile.codex_home, None)
+        };
+        let scope = Scope {
+            agent: "agent".into(),
+            binding: "binding".into(),
+            room: "!room:test".into(),
+            requester: "@member:test".into(),
+            thread: "thread".into(),
+        };
+        let mut ledger = Ledger::open(directory.join("ledger"), "@owner:test").unwrap();
+        ledger.register_binding("@owner:test", &scope).unwrap();
+        ledger
+            .set_agent_policy(
+                "@owner:test",
+                "agent",
+                0,
+                &Policy {
+                    budget: Budget {
+                        limit: Limit::Unlimited,
+                        period: Period::Lifetime,
+                    },
+                    requests: RequestPolicy::Allow,
+                    high_risk: policy.clone(),
+                },
+            )
+            .unwrap();
+        for layer in [Layer::Room, Layer::Requester] {
+            ledger
+                .set_policy(
+                    "@owner:test",
+                    &scope,
+                    layer,
+                    0,
+                    &Policy {
+                        budget: Budget {
+                            limit: Limit::Unlimited,
+                            period: Period::Lifetime,
+                        },
+                        requests: RequestPolicy::Allow,
+                        high_risk: policy.clone(),
+                    },
+                )
+                .unwrap();
+        }
+        Self {
+            root,
+            ledger,
+            profile,
+            reference,
+            scope,
+        }
+    }
+    async fn process(&mut self) -> Process {
+        let guardian = std::env::var_os("HAGENCY_TEST_GUARDIAN")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_hagency-local-probe")));
+        let mut process = spawn_for_scope_with_guardian(
+            &self.profile,
+            &self.reference,
+            &mut self.ledger,
+            &self.scope,
+            Some(&guardian),
+        )
+        .await
+        .unwrap();
+        process.session.initialize().await.unwrap();
+        process.session.verify_host_environment().await.unwrap();
+        process.session.require_local_account().await.unwrap();
+        process
+    }
+    fn path(&self, name: &str) -> PathBuf {
+        self.root.path().canonicalize().unwrap().join(name)
+    }
+    fn spent(&self) -> (u64, u64) {
+        self.ledger
+            .account(&self.scope, Layer::Agent, Period::Lifetime, now())
+            .unwrap()
+    }
+}
+#[tokio::test]
+async fn both_runtimes_settle_cache_inclusive_totals_and_preserve_context_after_reopen() {
+    for kind in [Kind::Claude, Kind::Octos] {
+        let mut f = Fixture::new(kind, "normal", ToolPolicy::Deny);
+        for call in ["first", "second"] {
+            let mut process = f.process().await;
+            process
+                .session
+                .open_context(&mut f.ledger, &f.scope, &f.profile)
+                .await
+                .unwrap();
+            let (queue, _) = codex::approval_queue(1).unwrap();
+            let reply = process
+                .session
+                .run_with_started(
+                    &mut f.ledger,
+                    "@owner:test",
+                    &f.scope,
+                    call,
+                    call,
+                    "hello",
+                    BudgetMode::Estimated { reservation: 100 },
+                    &queue,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(reply.text, "offline reply");
+            assert_eq!(reply.usage.input, 17);
+            assert_eq!(reply.usage.output, 7);
+            process.stop().await.unwrap();
+            f.ledger = Ledger::open(f.path("ledger"), "@owner:test").unwrap();
+        }
+        assert_eq!(f.spent(), (48, 0));
+        let argv = fs::read_to_string(f.path("argv")).unwrap();
+        if kind == Kind::Claude {
+            assert!(argv.contains("--resume"));
+            assert!(argv.contains("--strict-mcp-config"));
+            assert!(argv.contains("disableAllHooks"));
+        }
+        let frames = fs::read_to_string(f.path("frames")).unwrap();
+        if kind == Kind::Octos {
+            assert!(frames.contains("read_only"));
+            assert!(frames.contains("on-request"));
+        }
+    }
+}
+#[tokio::test]
+async fn octos_turn_usage_followed_by_session_usage_never_charges_previous_turn_twice() {
+    for kind in [Kind::Octos] {
+        let mut f = Fixture::new(kind, "mixed_usage", ToolPolicy::Deny);
+        for call in ["first", "second"] {
+            let mut process = f.process().await;
+            process
+                .session
+                .open_context(&mut f.ledger, &f.scope, &f.profile)
+                .await
+                .unwrap();
+            let (queue, _) = codex::approval_queue(1).unwrap();
+            let reply = process
+                .session
+                .run_with_started(
+                    &mut f.ledger,
+                    "@owner:test",
+                    &f.scope,
+                    call,
+                    call,
+                    "hello",
+                    BudgetMode::Estimated { reservation: 100 },
+                    &queue,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(reply.text, "offline reply");
+            assert_eq!(reply.usage.input, 17);
+            assert_eq!(reply.usage.output, 7);
+            process.stop().await.unwrap();
+            f.ledger = Ledger::open(f.path("ledger"), "@owner:test").unwrap();
+        }
+        assert_eq!(f.spent(), (48, 0));
+        let argv = fs::read_to_string(f.path("argv")).unwrap();
+        if kind == Kind::Claude {
+            assert!(argv.contains("--resume"));
+            assert!(argv.contains("--strict-mcp-config"));
+            assert!(argv.contains("disableAllHooks"));
+        }
+        let frames = fs::read_to_string(f.path("frames")).unwrap();
+        if kind == Kind::Octos {
+            assert!(frames.contains("read_only"));
+            assert!(frames.contains("on-request"));
+        }
+    }
+}
+#[tokio::test]
+async fn tool_denial_and_exact_owner_verdict_control_real_fixture_effects() {
+    for kind in [Kind::Claude, Kind::Octos] {
+        for verdict in [false, true] {
+            let mut f = Fixture::new(kind, "approval", ToolPolicy::AskOwner);
+            let mut process = f.process().await;
+            process
+                .session
+                .open_context(&mut f.ledger, &f.scope, &f.profile)
+                .await
+                .unwrap();
+            let (queue, mut ui) = codex::approval_queue(1).unwrap();
+            let expected_scope = f.scope.clone();
+            let effect = f.path("effect");
+            let outside = f.path("outside");
+            let owner = async {
+                let pending = tokio::time::timeout(std::time::Duration::from_secs(15), ui.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(pending.proposal.scope, expected_scope);
+                assert!(!effect.exists());
+                assert_eq!(
+                    pending.proposal.canonical_directory,
+                    outside.to_string_lossy()
+                );
+                pending.decide(verdict);
+            };
+            let turn = process.session.run_with_started(
+                &mut f.ledger,
+                "@owner:test",
+                &f.scope,
+                "call",
+                "dispatch",
+                "hello",
+                BudgetMode::Estimated { reservation: 100 },
+                &queue,
+                None,
+            );
+            let (result, ()) = tokio::join!(turn, owner);
+            let result = result.unwrap();
+            assert_eq!(result.tool_requests, 1);
+            assert_eq!(result.tool_returns, 1);
+            assert_eq!(f.path("effect").exists(), verdict);
+            assert_eq!(f.spent(), (24, 0));
+            process.stop().await.unwrap();
+        }
+        let mut f = Fixture::new(kind, "approval", ToolPolicy::Deny);
+        let mut process = f.process().await;
+        process
+            .session
+            .open_context(&mut f.ledger, &f.scope, &f.profile)
+            .await
+            .unwrap();
+        let (queue, mut ui) = codex::approval_queue(1).unwrap();
+        process
+            .session
+            .run_with_started(
+                &mut f.ledger,
+                "@owner:test",
+                &f.scope,
+                "call",
+                "dispatch",
+                "hello",
+                BudgetMode::Estimated { reservation: 100 },
+                &queue,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(ui.try_recv().is_err());
+        assert!(!f.path("effect").exists());
+        process.stop().await.unwrap();
+    }
+}
+#[tokio::test]
+async fn cancelled_callbacks_do_not_send_late_verdicts_or_lose_terminal_usage() {
+    for kind in [Kind::Claude, Kind::Octos] {
+        let mut f = Fixture::new(kind, "cancel", ToolPolicy::AskOwner);
+        let mut process = f.process().await;
+        process
+            .session
+            .open_context(&mut f.ledger, &f.scope, &f.profile)
+            .await
+            .unwrap();
+        let (queue, mut ui) = codex::approval_queue(1).unwrap();
+        process
+            .session
+            .run_with_started(
+                &mut f.ledger,
+                "@owner:test",
+                &f.scope,
+                "call",
+                "dispatch",
+                "hello",
+                BudgetMode::Estimated { reservation: 100 },
+                &queue,
+                None,
+            )
+            .await
+            .unwrap();
+        if let Ok(pending) = ui.try_recv() {
+            assert!(pending.is_closed());
+            pending.decide(true);
+        }
+        assert!(!f.path("decision").exists());
+        assert!(!f.path("effect").exists());
+        assert_eq!(f.spent(), (24, 0));
+        process.stop().await.unwrap();
+    }
+}
+#[tokio::test]
+async fn missing_usage_is_zero_and_failed_known_usage_is_charged() {
+    for kind in [Kind::Claude, Kind::Octos] {
+        for mode in ["unknown", "failed"] {
+            let mut f = Fixture::new(kind, mode, ToolPolicy::Deny);
+            let mut process = f.process().await;
+            process
+                .session
+                .open_context(&mut f.ledger, &f.scope, &f.profile)
+                .await
+                .unwrap();
+            let (queue, _) = codex::approval_queue(1).unwrap();
+            let result = process
+                .session
+                .run_with_started(
+                    &mut f.ledger,
+                    "@owner:test",
+                    &f.scope,
+                    "call",
+                    "dispatch",
+                    "hello",
+                    BudgetMode::Estimated { reservation: 100 },
+                    &queue,
+                    None,
+                )
+                .await;
+            if mode == "unknown" {
+                let completed = result.unwrap();
+                assert_eq!(completed.usage.input, 0);
+                assert_eq!(completed.usage.output, 0);
+                assert_eq!(f.spent(), (0, 0));
+                assert_eq!(
+                    f.ledger
+                        .reserve(&f.scope, "new-call", "new-dispatch", 100, now())
+                        .unwrap(),
+                    hagency_agent_local::Reservation::New
+                );
+            } else {
+                assert!(matches!(result, Err(Error::Failed)));
+                assert_eq!(f.spent(), (24, 0));
+                assert!(
+                    f.ledger
+                        .outstanding_calls("@owner:test")
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+            process.stop().await.unwrap();
+        }
+    }
+}
+#[tokio::test]
+async fn cancelling_running_model_releases_usage_before_process_stop() {
+    for kind in [Kind::Claude, Kind::Octos] {
+        let mut f = Fixture::new(kind, "hold", ToolPolicy::AskOwner);
+        let mut process = f.process().await;
+        process
+            .session
+            .open_context(&mut f.ledger, &f.scope, &f.profile)
+            .await
+            .unwrap();
+        let (queue, mut ui) = codex::approval_queue(1).unwrap();
+        {
+            let turn = process.session.run_with_started(
+                &mut f.ledger,
+                "@owner:test",
+                &f.scope,
+                "call",
+                "dispatch",
+                "hello",
+                BudgetMode::Estimated { reservation: 100 },
+                &queue,
+                None,
+            );
+            tokio::pin!(turn);
+            tokio::select! {pending=ui.recv()=>assert!(pending.is_some()),result=&mut turn=>panic!("unexpected result: {result:?}")};
+        }
+        assert!(
+            f.ledger
+                .outstanding_calls("@owner:test")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(f.spent(), (0, 0));
+        process.stop().await.unwrap();
+        assert!(!f.path("effect").exists());
+    }
+}
+#[tokio::test]
+async fn different_room_or_requester_never_resumes_another_context() {
+    let mut f = Fixture::new(Kind::Claude, "normal", ToolPolicy::Deny);
+    let mut process = f.process().await;
+    process
+        .session
+        .open_context(&mut f.ledger, &f.scope, &f.profile)
+        .await
+        .unwrap();
+    let (queue, _) = codex::approval_queue(1).unwrap();
+    process
+        .session
+        .run_with_started(
+            &mut f.ledger,
+            "@owner:test",
+            &f.scope,
+            "call",
+            "dispatch",
+            "hello",
+            BudgetMode::Estimated { reservation: 100 },
+            &queue,
+            None,
+        )
+        .await
+        .unwrap();
+    process.stop().await.unwrap();
+    f.scope.requester = "@another:test".into();
+    let mut process = f.process().await;
+    process.stop().await.unwrap();
+    let invocations = fs::read_to_string(f.path("argv")).unwrap();
+    let last: Vec<String> = serde_json::from_str(invocations.lines().last().unwrap()).unwrap();
+    assert!(!last.contains(&"--resume".to_owned()));
+}
+#[test]
+fn octos_profile_model_or_provider_changes_invalidate_saved_reference() {
+    let f = Fixture::new(Kind::Octos, "normal", ToolPolicy::Deny);
+    validate(&f.profile, &f.reference).unwrap();
+    fs::write(f.profile.codex_home.join("profiles/coding.json"),json!({"id":"coding","config":{"llm":{"primary":{"family_id":"other-provider","model_id":"test-model"}}}}).to_string()).unwrap();
+    assert!(validate(&f.profile, &f.reference).is_err());
+}
+
+fn now() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}

@@ -47,6 +47,14 @@ pub struct AppPreferences {
     #[cfg(feature = "agent_chat")]
     #[serde(default, deserialize_with = "crate::utils::deserialize_or_default")]
     pub agent_chat_enabled: bool,
+    /// Keep this account's resource pool running in the background owner
+    /// service after Desktop quits (default). When off, Desktop pauses
+    /// hosting as it quits and resumes it at its next start (ADR-192).
+    #[serde(default = "default_true", deserialize_with = "deserialize_or_true")]
+    pub keep_hosting_after_quit: bool,
+    /// Desktop paused hosting at its last quit and resumes it once running.
+    #[serde(default, deserialize_with = "crate::utils::deserialize_or_default")]
+    pub hosting_paused_on_quit: bool,
 
     // Note: if you add a new preference here, be sure to add a new
     // function `on_<NEW_PREFERENCE>_changed` and update `broadcast_all()`.
@@ -66,6 +74,8 @@ impl Default for AppPreferences {
             show_read_receipts: true,
             #[cfg(feature = "agent_chat")]
             agent_chat_enabled: false,
+            keep_hosting_after_quit: true,
+            hosting_paused_on_quit: false,
         }
     }
 }
@@ -201,6 +211,13 @@ impl AppPreferences {
         cx.global::<AppPreferencesGlobal>().0.agent_chat_enabled = self.agent_chat_enabled;
     }
 
+    /// Applies the hosting choices; the Hosting page reads them from the global.
+    pub fn on_hosting_changed(&self, cx: &mut Cx) {
+        let global = &mut cx.global::<AppPreferencesGlobal>().0;
+        global.keep_hosting_after_quit = self.keep_hosting_after_quit;
+        global.hosting_paused_on_quit = self.hosting_paused_on_quit;
+    }
+
     /// Broadcasts every preference to listening widgets.
     ///
     /// Used upon app-state restore so every listener picks up the loaded
@@ -219,6 +236,7 @@ impl AppPreferences {
         self.on_show_read_receipts_changed(cx);
         #[cfg(feature = "agent_chat")]
         self.on_agent_chat_enabled_changed(cx);
+        self.on_hosting_changed(cx);
     }
 }
 

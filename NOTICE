@@ -22,3 +22,9 @@ and crates/article-makepad/MAKEPAD-LICENSE.txt for retained notices.
 Rinx modifications include the WeChat-style UI, English/Chinese localization,
 Matrix Moments, scoped mini-app and article-editor integration, native
 makepad-html/Blitz previews, and the independent Rinx application identity.
+
+The Hagency native libraries in crates/hagency-client were imported from
+hagency-org/hagency-client at commit 6cd99ceb84ae407b2315dcd0f5e900022eebac06.
+Copyright 2026 HAgency contributors and the original upstream authors.
+Their Apache-2.0 license and upstream attribution are retained in
+crates/hagency-client/LICENSE and crates/hagency-client/NOTICE.

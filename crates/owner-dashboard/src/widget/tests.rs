@@ -9,7 +9,7 @@ use makepad_widgets::desktop_style::{self, DesktopStyle, StyleSheet};
 
 fn register(cx: &mut Cx, dark: bool) {
     cx.with_vm(|vm| {
-        desktop_style::install(vm, StyleSheet::load_with_appearance(DesktopStyle::Macos, dark));
+        desktop_style::install(vm, StyleSheet::load(DesktopStyle::Macos.sheet(dark)) /* JIT PORT: sheets load by entry */);
         vm.bx.captured_errors = Some(Vec::new());
         makepad_widgets::script_mod(vm);
         crate::script_mod(vm);
@@ -96,22 +96,61 @@ fn stable_ids_exist_for_the_harness() {
     register(&mut cx, false);
     let widget = instantiate(&mut cx);
     for path in [
-        ids!(od_refresh), ids!(od_open_other), ids!(od_setup), ids!(od_reconnect), ids!(od_pause), ids!(od_resume),
+        ids!(od_refresh), ids!(od_setup), ids!(od_reconnect), ids!(od_pause), ids!(od_resume),
         ids!(od_stop), ids!(od_stop_confirm), ids!(od_stop_cancel), ids!(od_check_command), ids!(od_retry_command),
-        ids!(od_dismiss_command), ids!(od_hosting_setup), ids!(od_detail_back),
+        ids!(od_dismiss_command), ids!(od_hosting_setup), ids!(od_detail_back), ids!(od_setup_start),
+        ids!(od_setup_cancel), ids!(od_uninstall), ids!(od_uninstall_cancel), ids!(od_uninstall_confirm),
+        ids!(od_use_this_service),
     ] {
         assert!(!widget.button(&cx, path).is_empty(), "missing button {path:?}");
     }
     for path in [
         ids!(od_tab_overview), ids!(od_tab_resources), ids!(od_tab_usage), ids!(od_tab_activity), ids!(od_period_day),
         ids!(od_period_week), ids!(od_period_month), ids!(od_content), ids!(od_connection_banner), ids!(od_command_row),
-        ids!(od_stop_sheet), ids!(od_hosting_card), ids!(od_empty_page), ids!(od_detail),
+        ids!(od_stop_sheet), ids!(od_hosting_card), ids!(od_empty_page), ids!(od_detail), ids!(od_setup_page),
+        ids!(od_options_card), ids!(od_uninstall_sheet),
     ] {
         assert!(!widget.view(&cx, path).is_empty(), "missing view {path:?}");
     }
-    for path in [ids!(od_hosting_state), ids!(od_command_status), ids!(od_sync), ids!(od_banner_title)] {
+    for path in [ids!(od_hosting_state), ids!(od_command_status), ids!(od_sync), ids!(od_banner_title), ids!(od_setup_title)] {
         assert!(!widget.label(&cx, path).is_empty(), "missing label {path:?}");
     }
+    assert!(!widget.check_box(&cx, ids!(od_keep_running)).is_empty(), "missing switch");
+    assert!(widget.widget(&cx, ids!(od_open_other)).is_empty(), "no cross-app button remains");
+}
+
+#[test]
+fn setup_page_replaces_the_dashboard_and_the_switch_follows_the_host() {
+    let mut cx = Cx::new(Box::new(|_, _| {}));
+    register(&mut cx, false);
+    let widget = instantiate(&mut cx);
+    let dashboard = widget.as_owner_dashboard();
+    dashboard.set_clock(&mut cx, Some(fixtures::clock()));
+    let visible = |cx: &Cx, path: &[LiveId]| widget.widget(cx, path).visible();
+    dashboard.load_state(&mut cx, fixtures::scenario("setup").unwrap());
+    assert!(visible(&cx, ids!(od_setup_page)));
+    assert!(!visible(&cx, ids!(od_overview)) && !visible(&cx, ids!(od_tabs)) && !visible(&cx, ids!(od_connection_banner)));
+    assert!(widget.button(&cx, ids!(od_setup_start)).visible() && !widget.button(&cx, ids!(od_setup_cancel)).visible());
+    assert_eq!(widget.label(&cx, ids!(od_setup_title)).text(), "Set up background hosting");
+    dashboard.load_state(&mut cx, fixtures::scenario("setup-signing-in").unwrap());
+    assert!(visible(&cx, ids!(od_setup_progress)) && widget.button(&cx, ids!(od_setup_cancel)).visible());
+    assert!(!widget.button(&cx, ids!(od_setup_start)).visible());
+    dashboard.load_state(&mut cx, fixtures::scenario("setup-other-owner").unwrap());
+    assert!(!widget.button(&cx, ids!(od_setup_start)).visible());
+    // Hosted: the dashboard with its options card and the saved switch value.
+    dashboard.load_state(&mut cx, fixtures::scenario("hosted").unwrap());
+    assert!(!visible(&cx, ids!(od_setup_page)) && visible(&cx, ids!(od_overview)) && visible(&cx, ids!(od_options_card)));
+    assert!(widget.check_box(&cx, ids!(od_keep_running)).active(&cx));
+    assert!(widget.button(&cx, ids!(od_stop)).visible());
+    dashboard.set_options(&mut cx, Some(crate::model::HostOptions { keep_running: false, busy: false, foreign_service: false }));
+    assert!(!widget.check_box(&cx, ids!(od_keep_running)).active(&cx));
+    dashboard.load_state(&mut cx, fixtures::scenario("hosted-stopped").unwrap());
+    assert!(widget.button(&cx, ids!(od_resume)).visible() && !widget.button(&cx, ids!(od_stop)).visible());
+    dashboard.load_state(&mut cx, fixtures::scenario("uninstall-confirm").unwrap());
+    assert!(visible(&cx, ids!(od_uninstall_sheet)) && !visible(&cx, ids!(od_service_actions)));
+    assert_eq!(widget.label(&cx, ids!(od_uninstall_title)).text(), "Uninstall the hosting service?");
+    dashboard.load_state(&mut cx, fixtures::scenario("foreign-service").unwrap());
+    assert!(widget.button(&cx, ids!(od_use_this_service)).visible() && visible(&cx, ids!(od_foreign_service)));
 }
 
 #[test]

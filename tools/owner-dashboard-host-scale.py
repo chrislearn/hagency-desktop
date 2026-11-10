@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Measure actual populated-input glyph growth from the host stylesheet scale.
+"""Measure actual rendered glyph growth from the host stylesheet scale.
 
-Both runs use the same executable, dashboard scale 1, and isolated hidden native
-fixtures. Only the host typography multiplier changes; no system setting changes.
+Both runs use the same `miniapp_dock` executable, dashboard scale 1, and an
+isolated hidden native fixture with an offline profile, and measure the Usage
+total. Only the host typography multiplier changes; no system setting changes.
 """
 import argparse, hashlib, importlib.util, json, os, re, subprocess, time
 from pathlib import Path
@@ -13,17 +14,14 @@ spec = importlib.util.spec_from_file_location('owner_ax', ROOT/'tools/owner-dash
 ax = importlib.util.module_from_spec(spec); spec.loader.exec_module(ax)
 
 
-def measure(binary, out, scale, embedded=False):
+def measure(binary, out, scale):
     out.mkdir(parents=True, exist_ok=True)
     logfile = out/'fixture.log'
     env = dict(os.environ, MAKEPAD_HIDE_WINDOWS='1', HAGENCY_OWNER_REVIEW_HOST_SCALE=str(scale))
     env.pop('MAKEPAD_FOCUS', None)
     command = [str(binary), '--remote']
-    if embedded:
-        profile=out/'profile';profile.mkdir(exist_ok=True);(profile/'.article-review-profile').touch();(profile/'ui-language.json').write_text('"en"')
-        env.update(HAGENCY_DESKTOP_DATA_DIR=str(profile),HAGENCY_DOCK_OFFLINE_ACCOUNT='1',HAGENCY_OWNER_REVIEW_WIDTH='420',HAGENCY_OWNER_REVIEW_SCALE='1')
-    else:
-        command += ['--fixture=running', '--size=960x760', '--text-scale=1', '--appearance=light', '--reduced-motion']
+    profile=out/'profile';profile.mkdir(exist_ok=True);(profile/'.article-review-profile').touch();(profile/'ui-language.json').write_text('"en"')
+    env.update(HAGENCY_DESKTOP_DATA_DIR=str(profile),HAGENCY_DOCK_OFFLINE_ACCOUNT='1',HAGENCY_OWNER_REVIEW_WIDTH='420',HAGENCY_OWNER_REVIEW_SCALE='1')
     process = journey = None
     try:
         with logfile.open('w') as log:
@@ -36,32 +34,24 @@ def measure(binary, out, scale, embedded=False):
                 assert process.poll() is None, 'fixture exited'
                 time.sleep(.1)
             assert found and int(found[2]) == process.pid, 'owned fixture endpoint missing'
-            journey = ax.Journey('http://127.0.0.1:'+found[1], out, embedded)
+            journey = ax.Journey('http://127.0.0.1:'+found[1], out)
             deadline = time.monotonic()+20
             while not journey.get('/s').get('w'):
                 assert time.monotonic() < deadline, 'window missing'
                 time.sleep(.1)
-            if embedded:
-                journey.scenario('running');journey.get('/g')
-                visible=journey.get('/snap')['s']
-                if any(r.get('i')=='od_destination' and r['r'][2]>0 for r in visible):
-                    journey.press('Dashboard page','open-page')
-                journey.press('Usage','usage')
-                ident='total'
-            else:
-                journey.event('setup'); journey.get('/g')
-                field = next(n for n in journey.native_nodes(journey.native('setup')) if n.get('role') == 'AXTextField')
-                journey.native('value', 'value:'+field['id']+':Sample123')
-                journey.native('focus', 'focus:'+field['id'])
-                ident='setup_server'
+            journey.scenario('running');journey.get('/g')
+            visible=journey.get('/snap')['s']
+            if any(r.get('i')=='od_destination' and r['r'][2]>0 for r in visible):
+                journey.press('Dashboard page','open-page')
+            journey.press('Usage','usage')
+            ident='total'
             journey.grab('populated')
             bounds = next(n['r'] for n in journey.get('/snap', q=ident)['s'] if n.get('i') == ident)
             dpi = journey.get('/s')['w'][0]['dpi']
             x,y,w,h = bounds
-            # First letters only: exclude the border and the caret at the end.
+            # First characters of the Usage total only.
             image = Image.open(out/'populated.png').convert('RGB')
-            inset=0 if embedded else 4
-            sample = image.crop((int((x+8)*dpi), int((y+inset)*dpi), int((x+8+32*scale)*dpi), int((y+h-inset)*dpi)))
+            sample = image.crop((int((x+8)*dpi), int(y*dpi), int((x+8+32*scale)*dpi), int((y+h)*dpi)))
             rows = [row for row in range(sample.height) if any(max(sample.getpixel((col,row))) < 120 for col in range(sample.width))]
             assert rows, 'populated glyphs missing'
             return {'hostScale':scale, 'dashboardScale':1, 'widget':ident, 'bounds':bounds, 'dpi':dpi,
@@ -79,12 +69,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--embedded', action='store_true')
     args = parser.parse_args(); binary=args.binary.resolve(); out=args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
     report = {'binary':str(binary), 'binarySha256':hashlib.sha256(binary.read_bytes()).hexdigest(), 'passed':False}
     try:
-        normal=measure(binary, out/'normal', 1, args.embedded)
-        enlarged=measure(binary, out/'host-150', 1.5, args.embedded)
+        normal=measure(binary, out/'normal', 1)
+        enlarged=measure(binary, out/'host-150', 1.5)
         ratio=enlarged['inkHeightPhysical']/normal['inkHeightPhysical']
         report.update(normal=normal, enlarged=enlarged, glyphGrowth=ratio)
         assert 1.35 <= ratio <= 1.65, 'host150 must enlarge actual populated glyphs by approximately 1.5'

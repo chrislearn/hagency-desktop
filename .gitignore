@@ -1,5 +1,6 @@
 ## Cargo generated directory
 /target
+**/target
 **/target/
 ## cargo-packager generated directory
 /dist
@@ -23,3 +24,4 @@ packaging/aur/.SRCINFO
 # paths, hosts and conversations.
 /docs/progress.md
 /docs/agent-knowledge.md
+/.sources

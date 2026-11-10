@@ -48,8 +48,6 @@ script_mod! {
 #[derive(Script, ScriptHook)]
 struct App {
     #[live] ui: WidgetRef,
-    #[rust] owner_handover: Option<rinx::hagency::owner_dashboard::Coordinator>,
-    #[rust] handover_hold: bool,
 }
 impl App {
     fn prepare_dock(&self, cx: &mut Cx) {
@@ -74,11 +72,38 @@ impl App {
         dock.open(cx, &MiniAppsAction::OpenAgent);
         if let Some(state) = owner_dashboard::fixtures::scenario(scenario) {
             if let Some(id) = dock.selected() {
-                let surface = dock.surface(cx, id);
-                surface.owner_fixture(cx, state);
-                surface.owner_fixture_handover(cx, self.owner_handover.is_some());
+                dock.surface(cx, id).owner_fixture(cx, state);
             }
         }
+    }
+    /// A synthetic hosting state through the Hosting page's production
+    /// mapping: `setup`, `setup-replace`, `setup-other-owner`,
+    /// `setup-signing-in`, `running`, `running-keep-off` or `stopped`.
+    #[cfg(feature = "onboarding-test-support")]
+    fn hosting_fixture(&self, cx: &mut Cx, state: &str) {
+        use rinx::hagency::hosting::{Execution, JobKind, Progress, SetupReason, View};
+        let setup = |reason| Some(Ok(Execution::Setup(reason)));
+        let daemon = || Some(Ok(Execution::Daemon { home: "/fixture/owner-daemon".into() }));
+        let (execution, job, scenario, keep_running) = match state {
+            "setup" => (setup(SetupReason::NotEnrolled), None, None, true),
+            "setup-replace" => (setup(SetupReason::StaleRoot), None, None, true),
+            "setup-other-owner" => (setup(SetupReason::OtherOwner), None, None, true),
+            "setup-signing-in" => (setup(SetupReason::NotEnrolled), Some((JobKind::Setup, Progress::SigningIn)), None, true),
+            "setup-registering" => (setup(SetupReason::NotEnrolled), Some((JobKind::Setup, Progress::Registering)), None, true),
+            "running" => (daemon(), None, Some("running"), true),
+            "running-keep-off" => (daemon(), None, Some("running"), false),
+            "stopped" => (daemon(), None, Some("stopped"), true),
+            _ => return,
+        };
+        let dock = self.ui.mini_apps_side_region(cx, ids!(dock));
+        dock.open(cx, &MiniAppsAction::OpenAgent);
+        let Some(id) = dock.selected() else { return };
+        let surface = dock.surface(cx, id);
+        if let Some(state) = scenario.and_then(owner_dashboard::fixtures::scenario) {
+            surface.owner_fixture(cx, state);
+        }
+        let view = View { execution, service: Some(rinx::hagency::hosting::Service::ThisApp), job, generation: 1 };
+        surface.owner_fixture_hosting(cx, &view, keep_running);
     }
 }
 impl MatchEvent for App {
@@ -155,28 +180,14 @@ impl AppMain for App {
         if matches!(event, Event::Startup) {
             rinx::hagency::owner_dashboard::register_host_accessibility(cx);
             #[cfg(feature = "onboarding-test-support")]
-            {
-                if let Some(home) = std::env::var_os("HAGENCY_OWNER_HANDOVER_FIXTURE_HOME") {
-                    match rinx::hagency::owner_dashboard::Coordinator::fixture(home.into()) {
-                        Ok(coordinator) => { self.owner_handover = Some(coordinator); self.owner_fixture(cx, "running"); },
-                        Err(error) => log!("od-fixture embedded handover unavailable: {error}"),
-                    }
-                }
-                if let Ok(size) = std::env::var("HAGENCY_DOCK_REVIEW_SIZE") { self.resize_fixture(cx, &size); }
+            if let Ok(size) = std::env::var("HAGENCY_DOCK_REVIEW_SIZE") { self.resize_fixture(cx, &size); }
+            #[cfg(feature = "onboarding-test-support")]
+            if std::env::var("HAGENCY_PERMISSION_REVIEW").as_deref() == Ok("1") {
+                self.prepare_dock(cx);
+                self.ui.mini_apps_side_region(cx, ids!(dock)).open(cx, &MiniAppsAction::OpenAgent);
             }
-        }
-        #[cfg(feature = "onboarding-test-support")]
-        if !self.handover_hold {
-            if let Some(restore) = self.owner_handover.as_mut().and_then(|coordinator| coordinator.handle_event(cx, event)) {
-                // Same ordering as the production App: expose the actual
-                // embedded host, then let it restore and acknowledge the view.
-                let dock = self.ui.mini_apps_side_region(cx, ids!(dock));
-                dock.open(cx, &MiniAppsAction::OpenAgent);
-                if let Some(id) = dock.selected() {
-                    if dock.surface(cx, id).owner_fixture_view(cx).is_none() { self.owner_fixture(cx, "running"); }
-                }
-                cx.action(restore);
-            }
+            #[cfg(feature = "onboarding-test-support")]
+            if let Ok(state) = std::env::var("HAGENCY_HOSTING_REVIEW") { self.hosting_fixture(cx, &state); }
         }
         if owner_dashboard::keyboard::embedded(&self.ui, cx, event) { return; }
         if let Event::Custom(command) = event {
@@ -209,11 +220,6 @@ impl AppMain for App {
             #[cfg(feature = "onboarding-test-support")]
             if let Some(size) = command.strip_prefix("dock:window-size:") { self.resize_fixture(cx, size); }
             #[cfg(feature = "onboarding-test-support")]
-            if let Some(hold) = command.strip_prefix("dock:handover-hold:") {
-                self.handover_hold = hold == "true";
-                SignalToUI::set_ui_signal();
-            }
-            #[cfg(feature = "onboarding-test-support")]
             if command == "dock:owner-dump" {
                 let dock = self.ui.mini_apps_side_region(cx, ids!(dock));
                 let view = dock.selected().and_then(|id| dock.surface(cx,id).owner_fixture_view(cx));
@@ -243,6 +249,10 @@ impl AppMain for App {
             #[cfg(feature = "onboarding-test-support")]
             if let Some(scenario) = command.strip_prefix("dock:owner:") {
                 self.owner_fixture(cx, scenario);
+            }
+            #[cfg(feature = "onboarding-test-support")]
+            if let Some(state) = command.strip_prefix("dock:hosting:") {
+                self.hosting_fixture(cx, state);
             }
             #[cfg(feature = "onboarding-test-support")]
             if let Some(step) = command.strip_prefix("dock:owner-refresh:").and_then(|n| n.parse::<u64>().ok()) {

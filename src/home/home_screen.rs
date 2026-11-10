@@ -474,6 +474,9 @@ impl ScriptHook for HomeScreen {
 
 impl Widget for HomeScreen {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        if let Event::MouseDown(mouse) = event && mouse.button == MouseButton::PRIMARY {
+            self.clear_stale_splitter_hover(cx, mouse, scope);
+        }
         if let Event::Scroll(scroll) = event
             && cx.is_scrolling_allowed_within(&self.view.area())
         {
@@ -790,6 +793,44 @@ impl HomeScreen {
 }
 
 impl HomeScreen {
+    /// A native webview or overlay can consume the move between two splitters.
+    /// Deliver the missing hover-out before the next splitter press, otherwise
+    /// the old grip can remain highlighted after hover ownership changes.
+    fn clear_stale_splitter_hover(&self, cx: &mut Cx, mouse: &MouseDownEvent, scope: &mut Scope) {
+        let handle = self.view.widget(cx, ids!(mini_apps_side.handle));
+        let handle_rect = handle.area().rect(cx);
+        if !handle.visible() || handle_rect.size.x <= 0.0 || handle_rect.size.y <= 0.0 {
+            return;
+        }
+        let margin = crate::shared::pane_splitter::HIT_MARGIN;
+        let on_side = mouse.abs.y >= handle_rect.pos.y
+            && mouse.abs.y <= handle_rect.pos.y + handle_rect.size.y
+            && mouse.abs.x >= handle_rect.pos.x - margin
+            && mouse.abs.x <= handle_rect.pos.x + handle_rect.size.x + margin;
+        let dock = self.view.dock(cx, ids!(dock));
+        let dock_rect = self.view.widget(cx, ids!(dock)).area().rect(cx);
+        let on_rooms = dock.splitter_position(id!(root)).is_some_and(|position| {
+            let x = dock_rect.pos.x + position;
+            mouse.abs.y >= dock_rect.pos.y && mouse.abs.y <= dock_rect.pos.y + dock_rect.size.y
+                && mouse.abs.x >= x - margin
+                && mouse.abs.x <= x + crate::shared::pane_splitter::WIDTH + margin
+        });
+        if !on_side && !on_rooms {
+            return;
+        }
+        let leave = Event::MouseLeave(makepad_widgets::makepad_platform::event::MouseLeaveEvent {
+            abs: mouse.abs,
+            window_id: mouse.window_id,
+            modifiers: mouse.modifiers,
+            time: mouse.time,
+            handled: std::cell::Cell::new(Area::Empty),
+        });
+        if let Some(mut inner) = dock.borrow_mut() {
+            inner.handle_event_with_bodies(cx, &leave, scope, makepad_widgets::dock::BodyDispatch::Skip);
+        }
+        handle.handle_event(cx, &leave, scope);
+    }
+
     fn dismiss_mobile_profile(&mut self, cx: &mut Cx) -> bool {
         if effective_is_desktop(cx) || self.mobile_chat_info.is_some() { return false; }
         let stack = self.view.stack_navigation(cx, ids!(view_stack));
@@ -1300,25 +1341,30 @@ mod mini_apps_side_tests {
         deliver(cx, home, state, clicked);
     }
 
+    /// The Agent tab's Hosting page, through the production dock: setup
+    /// replaces the dashboard until the daemon hosts the owner (ADR-192).
     #[cfg(feature = "onboarding-test-support")]
     #[test]
-    fn closed_agent_tab_restores_before_the_next_draw() {
-        use crate::hagency::owner_dashboard::EmbeddedAction;
+    fn agent_tab_hosting_page_shows_setup_until_the_daemon_hosts() {
+        use crate::hagency::hosting::{Execution, SetupReason, View};
         let (mut cx, mut home, mut state) = home(1440.0);
         frame(&mut cx, &mut home, &mut state, 1440.0);
         let region = side(&mut cx, &home);
-        region.close_all(&mut cx);
-        frame(&mut cx, &mut home, &mut state, 1440.0);
-        // Match production ordering: OpenAgent, then the queued Restore,
-        // with no layout/prepare/draw in between.
         region.open(&mut cx, &MiniAppsAction::OpenAgent);
         let surface = region.surface(&mut cx, region.selected().unwrap());
-        surface.owner_fixture(&mut cx, owner_dashboard::fixtures::scenario("running").unwrap());
-        let view = owner_dashboard::ViewState { version: 1, owner_id: Some(owner_dashboard::fixtures::OWNER.into()), tab: owner_dashboard::Tab::Usage, ..Default::default() };
-        let actions = cx.capture_actions(|cx| cx.action(EmbeddedAction::Restore { id: 17, view }));
-        let emitted = cx.capture_actions(|cx| home.handle_event(cx, &Event::Actions(actions), &mut Scope::with_data(&mut state)));
-        assert!(emitted.iter().any(|action| matches!(action.downcast_ref::<EmbeddedAction>(), Some(EmbeddedAction::Restored { id: 17, accepted: true, .. }))));
-        assert_eq!(surface.owner_fixture_view(&mut cx).unwrap().tab, owner_dashboard::Tab::Usage);
+        let setup = View { execution: Some(Ok(Execution::Setup(SetupReason::NotEnrolled))), service: None, job: None, generation: 1 };
+        surface.owner_fixture_hosting(&mut cx, &setup, true);
+        frame(&mut cx, &mut home, &mut state, 1440.0);
+        assert_eq!(surface.hosting_state(&mut cx), Some(true), "the Hosting tab is in front");
+        let visible = |cx: &Cx, path: &[LiveId]| surface.widget(cx, path).visible();
+        assert!(visible(&cx, ids!(owner_host.dashboard.od_setup_page)));
+        assert!(!visible(&cx, ids!(owner_host.dashboard.od_overview)));
+        let hosted = View { execution: Some(Ok(Execution::Daemon { home: "/h".into() })), service: None, job: None, generation: 2 };
+        surface.owner_fixture_hosting(&mut cx, &hosted, true);
+        surface.update_owner_fixture(&mut cx, owner_dashboard::fixtures::ordinary(owner_dashboard::dto::HostingState::Running));
+        frame(&mut cx, &mut home, &mut state, 1440.0);
+        assert!(!visible(&cx, ids!(owner_host.dashboard.od_setup_page)));
+        assert!(visible(&cx, ids!(owner_host.dashboard.od_options_card)));
         region.close_all(&mut cx);
     }
 
