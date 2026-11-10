@@ -89,6 +89,7 @@ impl App {
             "setup-replace" => (setup(SetupReason::StaleRoot), None, None, true),
             "setup-other-owner" => (setup(SetupReason::OtherOwner), None, None, true),
             "setup-signing-in" => (setup(SetupReason::NotEnrolled), Some((JobKind::Setup, Progress::SigningIn)), None, true),
+            "setup-registering" => (setup(SetupReason::NotEnrolled), Some((JobKind::Setup, Progress::Registering)), None, true),
             "running" => (daemon(), None, Some("running"), true),
             "running-keep-off" => (daemon(), None, Some("running"), false),
             "stopped" => (daemon(), None, Some("stopped"), true),
@@ -180,6 +181,8 @@ impl AppMain for App {
             rinx::hagency::owner_dashboard::register_host_accessibility(cx);
             #[cfg(feature = "onboarding-test-support")]
             if let Ok(size) = std::env::var("HAGENCY_DOCK_REVIEW_SIZE") { self.resize_fixture(cx, &size); }
+            #[cfg(feature = "onboarding-test-support")]
+            if let Ok(state) = std::env::var("HAGENCY_HOSTING_REVIEW") { self.hosting_fixture(cx, &state); }
         }
         if owner_dashboard::keyboard::embedded(&self.ui, cx, event) { return; }
         if let Event::Custom(command) = event {
