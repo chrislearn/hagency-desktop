@@ -108,6 +108,7 @@ impl Server {
         space: bool,
     ) -> Room {
         let builder = Client::builder()
+            .with_event_cache(true)
             .http_client(
                 matrix_sdk::reqwest::Client::builder()
                     .no_proxy()

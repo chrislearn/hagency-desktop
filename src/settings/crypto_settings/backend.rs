@@ -159,7 +159,7 @@ pub(super) fn file_picker_supported() -> bool {
 }
 #[cfg(target_os = "macos")]
 async fn pick_path(save: bool) -> Result<Option<std::path::PathBuf>> {
-    use makepad_widgets::makepad_platform::{makepad_objc_sys::objc_block, os::apple::apple_sys::*};
+    use makepad_apple_sys::*;
     static DIALOG: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
     let permit = DIALOG
         .try_acquire()

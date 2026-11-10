@@ -8468,6 +8468,7 @@ pub(crate) mod crypto_recovery_resume_tests {
                     tombstone_info: None,
                     pending_downloads: SmallVec::new(),
                     expanded_reply_previews: HashSet::new(),
+                    expanded_system_updates: HashSet::new(),
                     #[cfg(feature = "agent_chat")]
                     agent_chat_approvals: ApprovalUiState::default(),
                     #[cfg(feature = "agent_chat")]
