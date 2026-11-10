@@ -115,11 +115,12 @@ impl Service {
                 return Ok(());
             }
         };
-        if !selection.matches_host(&self.0.state, &self.0.origin, &self.0.owner) {
+        if !selection.matches_host(self.root()?, &self.0.origin, &self.0.owner) {
             return Err("adopted_management_scope_changed".into());
         }
         let _native = self.0.native.lock().await;
         self.check()?;
+        self.local_management_only()?;
         *self
             .0
             .adopted_initialization
@@ -168,6 +169,7 @@ impl Service {
     pub(super) async fn load_adopted_initialization(
         &self,
     ) -> Result<Option<AdoptedManagementSelection>, String> {
+        self.local_management_only()?;
         let existing = self
             .0
             .adopted_initialization
@@ -178,10 +180,11 @@ impl Service {
             return Ok(existing);
         }
         let selected =
-            AdoptedManagementSelection::load_for_host(&self.0.state, &self.0.origin, &self.0.owner)
+            AdoptedManagementSelection::load_for_host(self.root()?, &self.0.origin, &self.0.owner)
                 .await
                 .map_err(|e| e.code)?;
         self.check()?;
+        self.local_management_only()?;
         *self
             .0
             .adopted_initialization

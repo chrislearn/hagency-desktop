@@ -63,7 +63,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, default=Path("target/fast/examples/chat_web_browser"))
     parser.add_argument("--desktop", action="store_true")
+    parser.add_argument("--upload-only", action="store_true")
     args = parser.parse_args()
+    if args.desktop and args.upload_only:
+        parser.error("--upload-only exercises a dialog in the same window as the browser")
     root = (Path("target/chat-web-browser-regressions") / uuid.uuid4().hex).resolve()
     root.mkdir(parents=True)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Pages)
@@ -171,6 +174,47 @@ def main():
         window_height = next(w["sz"][1] for w in app.request("/s")["w"] if w["i"] == app.window)
         assert first["viewportHeight"] > window_height - 150, first
         report["checks"].append("chat_link_opens_embedded_webkit_with_redirect_css_javascript_and_image")
+        if not args.desktop:
+            def native_upload_state():
+                output = root / "upload-native.json"
+                output.unlink(missing_ok=True)
+                app.request("/event", data="upload:inspect", wait=1)
+                for _ in range(100):
+                    if output.exists():
+                        return json.loads(output.read_text())
+                    time.sleep(.05)
+                raise RuntimeError("Native view hierarchy inspection did not finish")
+
+            assert native_upload_state() == {"visible_webviews": 1, "browsers": 1}
+            saved_page = inspect("First page", scroll=True)
+            for close in ["cancel_button", "close_button", "outside", "escape"]:
+                app.request("/event", data="upload:show", wait=1)
+                app.wait_text("Upload File")
+                state = native_upload_state()
+                assert state == {"visible_webviews": 0, "browsers": 1}, state
+                upload = next(w for w in app.snap() if w.get("i") == "upload_button")
+                assert upload["r"][2] > 0 and upload["r"][3] > 0
+                if close == "cancel_button":
+                    app.capture("upload-over-webview")
+                if close == "outside":
+                    app.click(12, 80)
+                elif close == "escape":
+                    app.request("/k", c="Escape", wait=1)
+                else:
+                    app.click_id(close)
+                for _ in range(40):
+                    if native_upload_state()["visible_webviews"] == 1:
+                        break
+                    time.sleep(.05)
+                else:
+                    raise AssertionError(f"WebView did not return after {close}")
+                restored_page = inspect("First page")
+                assert restored_page["text"] == saved_page["text"], "Closing upload reloaded the page"
+                assert abs(restored_page["scrollY"] - saved_page["scrollY"]) < 2
+                report["checks"].append(f"upload_hides_native_webview_and_restores_page_after_{close}")
+            if args.upload_only:
+                report["passed"] = True
+                return
         # Font atlas uploads may need another frame after the first native draw.
         time.sleep(.5)
         app.capture("browser-toolbar")

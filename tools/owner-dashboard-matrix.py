@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Hidden-window, isolated dashboard visual/retention matrix for either host.
+"""Hidden-window, isolated dashboard visual/retention matrix for the embedded host.
+
+Drives the `miniapp_dock` example (Desktop's dock) through its `dock:` events.
 
 Evidence is bound to the supplied executable; this is automated evidence, not
 a visual quality score or a manual VoiceOver acceptance record.
@@ -21,7 +23,6 @@ ROOT = Path(__file__).resolve().parents[1]
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--binary', type=Path, required=True)
 p.add_argument('--output', type=Path, required=True)
-p.add_argument('--embedded', action='store_true')
 p.add_argument('--scale', type=float, default=1, choices=[1, 1.25, 1.5, 2])
 p.add_argument('--host-scale', type=float, default=1)
 p.add_argument('--zoom', type=float, default=1)
@@ -45,11 +46,8 @@ env = dict(os.environ, MAKEPAD_REMOTE=str(port), MAKEPAD_HIDE_WINDOWS='1',
            HAGENCY_OWNER_REVIEW_HOST_SCALE=str(args.host_scale))
 env.pop('MAKEPAD_FOCUS', None)
 command = [str(args.binary.resolve())]
-if not args.embedded:
-    command += ['--fixture=running', '--appearance=light', '--locale=en',
-                f'--size={args.width}x{args.height}', '--text-scale='+str(args.scale)]
 report = dict(binary=command[0], binarySha256=hashlib.sha256(args.binary.read_bytes()).hexdigest(),
-              host='embedded' if args.embedded else 'standalone', scale=args.scale,
+              host='embedded', scale=args.scale,
               hostScale=args.host_scale, uiZoom=args.zoom,
               requestedSize=[args.width, args.height],
               os=platform.platform(), machine=platform.machine(), logicalCpus=os.cpu_count(), loadAtStart=os.getloadavg(),
@@ -67,7 +65,7 @@ def event(command):
 
 
 def scenario(name):
-    event(('dock:owner:' if args.embedded else 'scenario:')+name)
+    event('dock:owner:'+name)
 
 
 def rows():
@@ -158,20 +156,20 @@ with (out/'app.log').open('w') as logfile:
             time.sleep(.1)
         scenario('running')
         if args.zoom != 1:
-            event(('dock:owner-zoom:' if args.embedded else 'zoom:')+str(args.zoom))
+            event('dock:owner-zoom:'+str(args.zoom))
         report['measuredDashboardBounds'] = next((r['r'] for r in rows()
             if r.get('ty') == 'OwnerDashboard'), None)
         report['measuredWindows'] = req('/s').get('w')
         for locale in ['en', 'zh']:
-            event(('dock:owner-locale:' if args.embedded else 'locale:')+locale)
+            event('dock:owner-locale:'+locale)
             for appearance in ['light', 'dark']:
-                event(('dock:' if args.embedded else 'appearance:')+appearance)
+                event('dock:'+appearance)
                 for index, name in enumerate(['overview', 'resources', 'usage', 'activity']):
                     tab(index)
                     shot(f'{locale}-{appearance}-{name}')
                 check(f'{locale}/{appearance}: all four destinations reachable', find('od_activity_page') is not None)
-        event(('dock:owner-locale:' if args.embedded else 'locale:')+'en')
-        event(('dock:' if args.embedded else 'appearance:')+'light')
+        event('dock:owner-locale:en')
+        event('dock:light')
         scenario('running')
         tab(2)
         open_filters()
@@ -183,7 +181,7 @@ with (out/'app.log').open('w') as logfile:
         before = {r['i']: r['r'] for r in rows() if r.get('i') in
                   ['od_content', 'od_date_start', 'od_date_end', 'od_destination', 'od_tab_usage']}
         for step in range(10):
-            event(('dock:owner-refresh:' if args.embedded else 'refresh-step:')+str(step+1))
+            event('dock:owner-refresh:'+str(step+1))
         after = {r['i']: r['r'] for r in rows() if r.get('i') in before}
         check('ten refreshes retain scrolled filter geometry', bool(before) and all(
             key in after and max(abs(a-b) for a,b in zip(bounds, after[key])) <= 1
@@ -277,7 +275,7 @@ with (out/'app.log').open('w') as logfile:
         click('od_filter_resource')
         reveal('picker_search')
         query_before = find('picker_search')
-        event(('dock:owner-refresh:' if args.embedded else 'refresh-step:')+'1')
+        event('dock:owner-refresh:1')
         query_after = find('picker_search')
         check('same-owner refresh retains picker search draft',
               query_before is not None and query_after is not None
@@ -285,7 +283,7 @@ with (out/'app.log').open('w') as logfile:
         req('/k', c='Escape', wait=1)
         shot('resource-picker-unavailable-selection')
         scenario('hosting-history')
-        event(('dock:owner-locale:' if args.embedded else 'locale:')+'zh')
+        event('dock:owner-locale:zh')
         tab(3)
         shot('zh-hosting-history')
         report['passed'] = True

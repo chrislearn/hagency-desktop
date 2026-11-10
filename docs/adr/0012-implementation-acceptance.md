@@ -4,6 +4,13 @@ Date: 2026-11-01. Status: implementation, automated runtime validation, numerica
 UX review and final builds completed. Manual VoiceOver acceptance remains open.
 This is not a release approval.
 
+Amended 2026-11-05: Client ADR-192, "One owner identity per computer"
+(hagency-client `knowledge/decisions/adr-192-one-owner-identity-per-computer.md`),
+folds Hagency Hosting into Desktop and removes the standalone app, dashboard
+handover and setup launch, with their bundle, guide and smoke tests. Evidence
+below for those parts is historical. The source-pin and regression gates now
+cover two workspaces: Desktop and the owner-dashboard crate.
+
 The implementation spans the Hagency Client and Desktop work branches. The
 Server protocol was exercised against a disposable local deployment. No live
 owner was migrated, no LaunchAgent was installed on the user's account, and no
@@ -18,7 +25,7 @@ production deployment or commit/push was performed for this validation.
 - Usage ledger with personal/rental attribution, token/cache categories,
   filtering and unknown/partial/stale states. Codex provider reports refresh
   without an inference request. Provider coverage and limits are documented in
-  the [operating guide](../../packaging/owner-controller/README.md).
+  [ADR 0012](0012-owner-daemon-shared-dashboard.md#provider-coverage).
 - Explicit same-owner view handover and acknowledgment before the source closes.
   Approval navigation opens the corresponding tool/resource-request review page.
 - Stable per-room personal Agent directories, preserving file permissions and
@@ -123,8 +130,8 @@ machine and fixture load. Actual host typography grows populated glyphs by
 These measurements distinguish host typography from whole-window zoom.
 
 The full local independent review and deductions are recorded in
-`.run/owner-daemon/review/final-ux-review.md`. Reproduction scripts are listed in
-the [native accessibility guide](../../packaging/owner-controller/NATIVE_ACCESSIBILITY.md).
+`.run/owner-daemon/review/final-ux-review.md`. Embedded-host reproduction
+scripts are listed in the [native accessibility guide](../../packaging/owner-accessibility/README.md).
 
 Headless tests cover actual control actions, geometry, selection, draft/focus
 retention and input acknowledgment. Native tests exercise AppKit accessibility
@@ -163,7 +170,7 @@ The dashboard IPC uses same-OS-user credentials and a single enrolled owner,
 not per-controller revocable leases. The amended ADR distinguishes it from the
 native management bridge's controller leases. Native accessibility remains an
 explicit special build using the tracked exact-pin Makepad patch described in
-`packaging/owner-controller/NATIVE_ACCESSIBILITY.md`; a normal build does not
+`packaging/owner-accessibility/README.md`; a normal build does not
 claim native accessibility acceptance. Neither a standard-build test pass nor
 a rendered screenshot closes the manual VoiceOver acceptance item.
 

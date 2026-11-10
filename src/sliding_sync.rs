@@ -3809,6 +3809,9 @@ async fn start_matrix_client_login_and_sync(rt: Handle) {
 
         // Listen for changes to our verification status and incoming verification requests.
         subscriber_task_handles.push(add_verification_event_handlers_and_sync_client(client.clone()));
+        // Questions Agents ask in rooms arrive as room messages of their own type.
+        #[cfg(feature = "agent_chat")]
+        crate::hagency::pending_questions::attach(&client);
 
         // Listen for updates to the blocked user list.
         subscriber_task_handles.push(handle_blocked_user_list_subscriber(client.clone()));

@@ -14,10 +14,6 @@ on:
         type: choice
         options: [all, macos-arm64-windows]
         default: macos-arm64-windows
-      hosting:
-        description: 'Include Hagency Hosting with the owner daemon on macOS'
-        type: boolean
-        default: true
       verify_only:
         description: 'Validate an existing source commit without rebuilding other platforms'
         type: boolean
@@ -69,19 +65,20 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       scope: ${{ steps.plan.outputs.scope }}
-      hosting: ${{ steps.plan.outputs.hosting }}
-      client: ${{ steps.plan.outputs.clientCommit }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
       - id: plan
         env:
           SCOPE: ${{ inputs.platforms || 'macos-arm64-windows' }}
-          HOSTING: ${{ github.event_name != 'workflow_dispatch' || inputs.hosting }}
         run: |
           python3 tools/test-release-assets.py
-          python3 tools/release-assets.py plan --scope "$SCOPE" --hosting "$HOSTING"
+          python3 tools/release-assets.py plan --scope "$SCOPE"
   regression:
     needs: plan
     name: Budget and chat regression gate
@@ -91,15 +88,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.0
-      - uses: actions/checkout@v7
-        with:
-          repository: hagency-org/hagency-client
-          ref: ${{ needs.plan.outputs.client }}
-          path: .release/client
-          persist-credentials: false
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -107,10 +102,9 @@ jobs:
             . -> target
             tools/hagency-script-review -> target
             crates/owner-dashboard -> target
-            apps/owner-controller -> target
-            .release/client -> target
+            crates/hagency-client -> target
       - run: brew install cmake
-      - run: python3 tools/check-hagency-regressions.py --output .run/release-regressions --client .release/client
+      - run: python3 tools/check-hagency-regressions.py --output .run/release-regressions
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -132,6 +126,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.0
@@ -233,7 +231,7 @@ jobs:
         run: cargo packager --manifest-path Cargo.toml --verbose --release --out-dir "$PWD/dist" --formats "$FORMATS"
       - name: Preserve Windows candidate before installer checks
         if: runner.os == 'Windows'
-        run: python3 tools/release-assets.py collect --platform windows --arch amd64 --hosting false
+        run: python3 tools/release-assets.py collect --platform windows --arch amd64
       - uses: actions/upload-artifact@v7
         if: runner.os == 'Windows'
         with:
@@ -251,24 +249,11 @@ jobs:
         run: |
           package=$(find dist -maxdepth 1 -name '*.exe' -print -quit)
           python3 tools/release-desktop-smoke.py --package "$package" --output .run/release-desktop-smoke
-      - uses: actions/checkout@v7
-        if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
-        with:
-          repository: hagency-org/hagency-client
-          ref: ${{ needs.plan.outputs.client }}
-          path: .release/client
-          persist-credentials: false
-      - name: Package Hosting and its owner daemon
-        if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target
-        run: python3 packaging/owner-controller/build.py --release --client .release/client --output dist/hosting --dmg
-      - name: Preserve macOS candidates before Hosting checks
+      - name: Preserve macOS candidate
         if: runner.os == 'macOS'
         env:
           ARCH: ${{ matrix.arch }}
-          HOSTING: ${{ needs.plan.outputs.hosting }}
-        run: python3 tools/release-assets.py collect --platform macos --arch "$ARCH" --hosting "$HOSTING"
+        run: python3 tools/release-assets.py collect --platform macos --arch "$ARCH"
       - uses: actions/upload-artifact@v7
         if: runner.os == 'macOS'
         with:
@@ -276,27 +261,16 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
           retention-days: 14
-      - name: Verify packaged controller and daemon lifecycle
-        if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
-        run: python3 tools/owner-controller-bundle-smoke.py --bundle 'dist/hosting/Hagency Hosting.app' --output .run/release-hosting-smoke
-      - name: Verify Hosting language switching and persistence
-        if: runner.os == 'macOS' && needs.plan.outputs.hosting == 'true'
-        run: python3 tools/owner-hosting-language-smoke.py --binary 'dist/hosting/Hagency Hosting.app' --output .run/release-hosting-language
       - name: Collect installers and checksums
         env:
           PLATFORM: ${{ matrix.platform }}
           ARCH: ${{ matrix.arch }}
-          HOSTING: ${{ needs.plan.outputs.hosting }}
-        run: python3 tools/release-assets.py collect --platform "$PLATFORM" --arch "$ARCH" --hosting "$HOSTING"
+        run: python3 tools/release-assets.py collect --platform "$PLATFORM" --arch "$ARCH"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: installer-checks-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            .run/release-desktop-smoke
-            .run/release-hosting-smoke
-            .run/release-hosting-language
-            dist/hosting/build-report.json
+          path: .run/release-desktop-smoke
           if-no-files-found: ignore
           retention-days: 14
       - uses: actions/upload-artifact@v7
@@ -318,6 +292,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
       - name: Resolve release tag from the built source
         id: tag
         run: |
@@ -334,10 +312,9 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
           REPOSITORY: ${{ github.repository }}
           SCOPE: ${{ needs.plan.outputs.scope }}
-          HOSTING: ${{ needs.plan.outputs.hosting }}
         run: |
           set -euo pipefail
-          python3 tools/release-assets.py verify --scope "$SCOPE" --hosting "$HOSTING"
+          python3 tools/release-assets.py verify --scope "$SCOPE"
           cd release-assets
           sha256sum --check SHA256SUMS.txt
           # shellcheck disable=SC2016
@@ -348,9 +325,7 @@ jobs:
           else
             printf 'Desktop: Linux amd64/arm64 DEB and AppImage, macOS Intel/Apple Silicon DMG, and Windows x64 NSIS installer.\n\n' >> ../release-notes.md
           fi
-          if [[ "$HOSTING" == true ]]; then
-            printf 'Hagency Hosting is a separate macOS installer containing the resource daemon and its English/Simplified Chinese control panel. Windows background hosting is not included. Hosting uses an ad-hoc signature and is not notarized.\n\n' >> ../release-notes.md
-          fi
+          printf 'Resource hosting is built into Hagency Desktop on macOS (Agent → Hosting). Windows background hosting is not included.\n\n' >> ../release-notes.md
           printf 'Verify downloads against `SHA256SUMS.txt`. Each build report records the exact Desktop, Client and Makepad commits.\n\n' >> ../release-notes.md
           if [[ "$MACOS_SIGNED" == true ]]; then
             printf 'macOS packages are Developer ID signed and notarized.\n' >> ../release-notes.md

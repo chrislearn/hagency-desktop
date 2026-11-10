@@ -1,7 +1,6 @@
 //! Dashboard design tokens derived from the host's shared Makepad theme
-//! (ADR 0009 roles in `mod.theme`). The dashboard owns no palette: embedded,
-//! it follows Hagency's installed stylesheet; standalone, it follows the
-//! controller's own system/shared-theme selection through the same roles.
+//! (ADR 0009 roles in `mod.theme`). The dashboard owns no palette: it
+//! follows Hagency's installed stylesheet through the same roles.
 //!
 //! Registered as `mod.widgets.OD_*` before the widget DSL. Re-running
 //! [`crate::script_mod`] on a theme reload recomputes them; widgets then

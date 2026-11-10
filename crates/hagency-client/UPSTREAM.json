@@ -1,0 +1,5 @@
+{
+  "repository": "https://github.com/hagency-org/hagency-client.git",
+  "revision": "6cd99ceb84ae407b2315dcd0f5e900022eebac06",
+  "purpose": "Import provenance only; maintained in the Desktop repository from this point onward."
+}

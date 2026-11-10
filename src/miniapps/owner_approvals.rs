@@ -1,11 +1,10 @@
 //! Account-bound, one-shot navigation into the shipped owner review flow.
-//! A handover is acknowledged by the installed script after opening the page,
-//! not merely because the hosting dashboard or application window appeared.
+//! The installed script acknowledges it after opening the page, not merely
+//! because the Hosting page or the application window appeared.
 use super::*;
 
 pub(super) struct Pending {
     owner: String,
-    handover_id: Option<u64>,
     nonce: String,
     sent: bool,
     started: Instant,
@@ -18,18 +17,12 @@ impl Pending {
 }
 
 impl MiniAppsPanel {
-    pub(super) fn open_owner_approvals(&mut self, cx: &mut Cx, owner: &str, handover_id: Option<u64>) {
+    pub(super) fn open_owner_approvals(&mut self, cx: &mut Cx, owner: &str) {
         if crate::sliding_sync::current_user_id().as_deref().map(|id| id.as_str()) != Some(owner) {
-            if let Some(id) = handover_id {
-                cx.action(crate::hagency::owner_dashboard::EmbeddedAction::Restored { id, owner: owner.into(), accepted: false });
-            }
             return;
         }
-        // A repeated local click joins the same landing; it must not reject
-        // an outstanding cross-host handover for this owner.
-        if self.owner_approvals.as_ref().is_some_and(|pending|
-            pending.matches(owner, &pending.nonce)
-                && (handover_id.is_none() || handover_id == pending.handover_id)) {
+        // A repeated click joins the same landing.
+        if self.owner_approvals.as_ref().is_some_and(|pending| pending.matches(owner, &pending.nonce)) {
             self.pump_owner_approvals(cx);
             return;
         }
@@ -46,16 +39,13 @@ impl MiniAppsPanel {
                 .and_then(|index| self.open_builtin(cx, index));
             if let Err(error) = result {
                 self.notice(cx, &error);
-                if let Some(id) = handover_id {
-                    cx.action(crate::hagency::owner_dashboard::EmbeddedAction::Restored { id, owner: owner.into(), accepted: false });
-                }
                 return;
             }
         }
         // May wait for the person's first Run consent. It expires and can
         // never migrate to a newly signed-in account or a different package.
         self.owner_approvals = Some(Pending {
-            owner: owner.into(), handover_id, nonce: uuid::Uuid::new_v4().to_string(), sent: false, started: Instant::now(),
+            owner: owner.into(), nonce: uuid::Uuid::new_v4().to_string(), sent: false, started: Instant::now(),
         });
         self.pump_owner_approvals(cx);
     }
@@ -99,9 +89,6 @@ impl MiniAppsPanel {
             if !accepted && pending.sent {
                 self.view.splash(cx, ids!(card)).call_script_fn_with_strings(cx, id!(on_owner_approvals_cancelled), &[&pending.nonce]);
             }
-            if let Some(id) = pending.handover_id {
-                cx.action(crate::hagency::owner_dashboard::EmbeddedAction::Restored { id, owner: pending.owner, accepted });
-            }
             if !accepted {
                 self.notice(cx, match crate::i18n::language() {
                     crate::i18n::Language::Chinese => "未能打开审批。请完成当前操作，或按提示点击运行，然后重试。",
@@ -117,7 +104,7 @@ mod tests {
     use super::*;
     #[test]
     fn acknowledgment_is_owner_nonce_and_time_bound() {
-        let mut pending = Pending { owner: "@owner:example.org".into(), nonce: "fresh-request".into(), handover_id: Some(7), sent: true, started: Instant::now() };
+        let mut pending = Pending { owner: "@owner:example.org".into(), nonce: "fresh-request".into(), sent: true, started: Instant::now() };
         assert!(pending.matches("@owner:example.org", "fresh-request"));
         assert!(!pending.matches("@other:example.org", "fresh-request"));
         assert!(!pending.matches("@owner:example.org", "old-request"));

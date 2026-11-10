@@ -53,8 +53,6 @@ messages! {
     StatusDisconnected => "Disconnected", "连接已断开";
     StatusOtherOwner => "Another owner", "其他所有者";
     Refreshing => "Refreshing…", "正在刷新…";
-    OpenInHagency => "Dock back", "停靠回 Hagency";
-    OpenStandalone => "Open separately", "独立打开";
     TabOverview => "Overview", "概览";
     TabResources => "Resources", "资源";
     TabUsage => "Usage", "用量";
@@ -84,16 +82,17 @@ messages! {
     ConnectingBody => "Your Agents keep running in the background while this window opens.", "窗口打开期间，你的 Agent 会继续在后台运行。";
     DaemonAbsentTitle => "Hosting service isn't running", "托管服务未运行";
     UnsupportedPlatformTitle => "Background hosting is available on macOS", "后台托管目前支持 macOS";
-    UnsupportedPlatformBody => "This release does not include a Windows resource daemon. You can still chat with Agents hosted on another execution device.", "此版本尚未包含 Windows 资源 daemon。你仍可与其他执行设备托管的 Agent 聊天。";
-    DaemonAbsentBody => "Hagency hosts your rented Agents with a background service that keeps working when Hagency is closed. Set it up or start it to continue.", "Hagency 通过后台服务托管你出租的 Agent，即使关闭 Hagency 也会继续工作。请设置或启动该服务。";
+    UnsupportedPlatformBody => "On this platform Hagency hosts your resource pool while it is running. You can still chat with Agents hosted on another device.", "在此平台上，Hagency 运行期间会托管你的资源池。你仍可与其他设备托管的 Agent 聊天。";
+    DaemonAbsentBody => "The background service that hosts your resource pool isn't running on this Mac. Start it to keep your rented Agents working.", "这台 Mac 上托管资源池的后台服务未运行。启动后，出租的 Agent 才能继续工作。";
     IncompatibleTitle => "Update required", "需要更新";
     AuthExpiredTitle => "Sign-in needed", "需要重新登录";
     AuthExpiredBody => "The hosting service's owner sign-in has expired. Sign in again to keep accepting work.", "托管服务的所有者登录已过期。请重新登录以继续接收任务。";
     OwnerMismatchTitle => "Hosting belongs to another account", "托管服务属于其他账号";
-    OwnerMismatchBody => "The hosting service on this Mac serves a different owner. Its data isn't shown here. Switch to that account, or set up hosting for this one.", "此 Mac 上的托管服务属于另一位所有者，因此不在此显示其数据。请切换到该账号，或为当前账号设置托管。";
+    OwnerMismatchBody => "The hosting service on this Mac serves another account, so its data isn't shown here. One Mac user can host one account's resource pool at a time.", "这台 Mac 上的托管服务属于另一个账号，因此不在此显示其数据。一个 Mac 用户同一时间只能托管一个账号的资源池。";
     FailedTitle => "Can't reach the hosting service", "无法连接托管服务";
     ShowingLastKnown => "Showing the last known status.", "当前显示的是最后一次获取的状态。";
     SetUpHosting => "Set up hosting", "设置托管";
+    StartService => "Start hosting service", "启动托管服务";
     SignInAgain => "Sign in again", "重新登录";
     TryAgain => "Try again", "重试";
 
@@ -112,7 +111,7 @@ messages! {
     StateOfflineTitle => "Hosting is offline", "托管离线";
     StateOfflineBody => "The Hagency server can't be reached. Work resumes when the connection returns.", "无法连接 Hagency 服务器。连接恢复后会继续工作。";
     StateFailedTitle => "Hosting stopped with an error", "托管因错误停止";
-    StateFailedBody => "Review the details, then check setup.", "请查看详细信息，然后检查设置。";
+    StateFailedBody => "Review the details, then resume hosting.", "请查看详细信息，然后恢复托管。";
 
     ActiveRuns => "Running", "运行中";
     PendingApprovals => "Awaiting approval", "待审批";
@@ -121,7 +120,6 @@ messages! {
     StopHosting => "Stop hosting", "停止托管";
     Stop => "Stop", "停止";
     ReviewApprovals => "Review approvals", "查看审批";
-    ReviewInHagency => "Review in Hagency", "在 Hagency 中查看";
     StopConfirmTitle => "Stop hosting?", "停止托管？";
     StopConfirmBody => "New work stops. Running tasks may be interrupted.", "停止接收新任务，运行中的任务可能被中断。";
     Cancel => "Cancel", "取消";
@@ -206,8 +204,6 @@ messages! {
     AttentionPartialUsage => "Some usage measurements are incomplete.", "部分用量测量不完整。";
     AttentionUnassigned => "Some resources aren't linked to a verified account.", "部分资源未关联到已验证的账号。";
 
-    OpeningHagency => "Opening Hagency…", "正在打开 Hagency…";
-    WindowTitle => "Hagency Hosting", "Hagency 托管";
     JustNow => "just now", "刚刚";
     Today => "Today", "今天";
     Tomorrow => "Tomorrow", "明天";
@@ -223,7 +219,47 @@ messages! {
     ReasonVersion => "The hosting service uses a different version. Update Hagency.", "托管服务版本不一致，请更新 Hagency。";
     ReasonUnknown => "The hosting service rejected the request.", "托管服务拒绝了该请求。";
     ReasonNotConnected => "Not connected to the hosting service.", "未连接到托管服务。";
+
+    SetupTitle => "Set up background hosting", "设置后台托管";
+    SetupBody => "Hagency hosts your resource pool with a background service on this Mac, so your rented Agents keep working while Hagency is closed. Setup opens your browser once to sign this Mac in.", "Hagency 通过这台 Mac 上的后台服务托管你的资源池，关闭 Hagency 后出租的 Agent 仍能继续工作。设置时会打开一次浏览器，为这台 Mac 登录。";
+    SetupReplaceTitle => "Set up hosting again", "重新设置托管";
+    SetupReplaceBody => "An earlier hosting sign-in on this Mac uses a different resource folder. Setting up again signs it out and hosts this account's resources.", "这台 Mac 上较早的托管登录使用了另一个资源目录。重新设置会退出该登录，并托管此账号的资源。";
+    SetupOtherOwnerTitle => "Hosting serves another account", "托管服务属于其他账号";
+    SetupOtherOwnerBody => "The hosting service on this Mac hosts another account's resource pool. One Mac user can host one account's resource pool at a time. To host this account here, sign the other account out of Hagency on this Mac first.", "这台 Mac 上的托管服务正在托管另一个账号的资源池。一个 Mac 用户同一时间只能托管一个账号的资源池。如需在这里托管当前账号，请先在这台 Mac 的 Hagency 中退出另一个账号。";
+    SetupPreparing => "Preparing hosting setup…", "正在准备托管设置…";
+    SetupSigningIn => "Complete sign-in in your browser…", "请在浏览器中完成登录…";
+    SetupRegistering => "Signed in. Registering this Mac’s executor…", "已登录，正在登记这台 Mac 的执行端…";
+    SetupCancelling => "Cancelling sign-in safely…", "正在安全取消登录…";
+    SetupEnabling => "Starting the background service…", "正在启动后台服务…";
+    SetupConfirming => "Waiting for hosting to start…", "正在等待托管启动…";
+    KeepRunningTitle => "Keep the resource pool running after Desktop quits", "关闭桌面端后继续运行资源池";
+    KeepRunningOn => "Rented Agents keep working while Hagency is closed.", "关闭 Hagency 后，出租的 Agent 仍会继续工作。";
+    KeepRunningOff => "Hagency pauses hosting when it quits and resumes it the next time it starts.", "Hagency 退出时会暂停托管，下次启动时恢复。";
+    UninstallService => "Uninstall hosting service", "卸载托管服务";
+    UninstallConfirmTitle => "Uninstall the hosting service?", "卸载托管服务？";
+    UninstallConfirmBody => "Hosting stops until you start the service again. Your setup, sign-in and resources are kept.", "在重新启动服务前，托管会停止。你的设置、登录和资源都会保留。";
+    Uninstall => "Uninstall", "卸载";
+    ForeignService => "The hosting service runs from another app, such as an earlier Hagency Hosting. Use this app's service so hosting updates with Hagency.", "托管服务由另一个应用（例如早期的 Hagency Hosting）运行。请改用本应用的服务，使托管随 Hagency 一起更新。";
+    UseThisService => "Use this app's service", "使用本应用的服务";
+    HostingConfirmed => "Background hosting is on for this Mac.", "这台 Mac 已开启后台托管。";
+    ServiceStarting => "Starting the hosting service…", "正在启动托管服务…";
+    ServiceRemoving => "Removing the hosting service…", "正在移除托管服务…";
+    ServiceRemoved => "The hosting service was removed. Your setup is kept; start the service again here.", "托管服务已移除。设置已保留，可在此重新启动服务。";
+    HostingBusy => "Another hosting step is still running. Wait for it to finish, then retry.", "另一个托管步骤仍在进行。请等待完成后重试。";
 }
+
+/// Static codes a hosting helper may report, matched as whole words in its
+/// error output. Everything else is `setup_failed`.
+pub const SETUP_FAILURE_CODES: &[&str] = &[
+    "daemon_other_owner_enrolled", "matrix_account_mismatch", "daemon_logout_pending",
+    "daemon_sign_in_cancelled", "daemon_enrollment_cancelled", "daemon_enrollment_detached",
+    "daemon_already_running", "unsupported_hagency_server", "matrix_authorization_unavailable",
+    "matrix_authorization_required", "owner_root_busy_or_invalid", "owner_root_not_registered",
+    "owner_root_invalid", "owner_root_record_invalid", "owner_root_registry_unavailable",
+    "owner_identity_invalid", "daemon_owner_root_invalid", "daemon_enrollment_storage_unavailable",
+    "daemon_session_storage_unavailable", "daemon_socket_unsafe", "native_resume_unavailable",
+    "daemon_install_location_unsupported", "daemon_service_stop_pending",
+];
 
 pub fn tr(locale: Locale, msg: Msg) -> &'static str {
     text(locale, msg)
@@ -390,6 +426,53 @@ pub mod phrase {
             Locale::ZhHans => format!("主人设置的上限：{budget} Token"),
         }
     }
+    /// A hosting setup failure, from a static code only. Raw helper output
+    /// can contain account data and is never shown.
+    pub fn setup_failure(locale: Locale, code: &str) -> &'static str {
+        let zh = locale == Locale::ZhHans;
+        match (code, zh) {
+            ("daemon_other_owner_enrolled" | "matrix_account_mismatch", false) => "This Mac's hosting service belongs to another account. Sign in with the account shown here, or sign the other account out of Hagency on this Mac first.",
+            ("daemon_other_owner_enrolled" | "matrix_account_mismatch", true) => "这台 Mac 的托管服务属于另一个账号。请使用这里显示的账号登录，或先在这台 Mac 的 Hagency 中退出另一个账号。",
+            ("daemon_logout_pending", false) => "The previous sign-out is still finishing. Keep Hagency connected until it completes, then retry.",
+            ("daemon_logout_pending", true) => "上次退出尚未完成。请保持 Hagency 连接直到完成，然后重试。",
+            ("setup_timed_out", false) => "Setup timed out. Check the server connection, then retry.",
+            ("setup_timed_out", true) => "设置超时。请检查服务器连接后重试。",
+            ("daemon_sign_in_cancelled" | "daemon_enrollment_cancelled" | "daemon_enrollment_detached", false) => "Sign-in was cancelled or expired. Retry when you are ready to finish it in your browser.",
+            ("daemon_sign_in_cancelled" | "daemon_enrollment_cancelled" | "daemon_enrollment_detached", true) => "登录已取消或过期。准备好后请重试，并在浏览器中完成登录。",
+            ("daemon_already_running", false) => "Another hosting setup or service is using this Mac's hosting folder. Wait for it to finish, then retry.",
+            ("daemon_already_running", true) => "另一个托管设置或服务正在使用这台 Mac 的托管目录。请等待其完成后重试。",
+            ("unsupported_hagency_server", false) => "This server does not support hosting setup. Check the server and its Hagency version.",
+            ("unsupported_hagency_server", true) => "此服务器不支持托管设置。请检查服务器及其 Hagency 版本。",
+            ("matrix_authorization_unavailable" | "matrix_authorization_required", false) => "Browser authorization is unavailable. Check your connection, finish the browser sign-in, then retry.",
+            ("matrix_authorization_unavailable" | "matrix_authorization_required", true) => "浏览器授权暂不可用。请检查连接并完成浏览器登录，然后重试。",
+            ("owner_root_busy" | "owner_root_busy_or_invalid", false) => "Signed in, but this account's resources are still in use by another Hagency on this Mac. Quit it, then start the hosting service.",
+            ("owner_root_busy" | "owner_root_busy_or_invalid", true) => "已登录，但这台 Mac 上另一个 Hagency 仍在使用此账号的资源。请退出它，然后启动托管服务。",
+            ("registration_pending", false) => "Signed in, but this Mac's executor registration did not finish. Start the hosting service to retry it.",
+            ("registration_pending", true) => "已登录，但这台 Mac 的执行端注册尚未完成。请启动托管服务以重试。",
+            ("owner_root_not_registered" | "owner_root_invalid" | "owner_root_record_invalid" | "owner_root_registry_unavailable"
+                | "owner_identity_invalid" | "daemon_owner_root_invalid" | "daemon_enrollment_storage_unavailable"
+                | "daemon_session_storage_unavailable" | "daemon_socket_unsafe" | "native_resume_unavailable", false) => "This Mac's hosting data could not be opened safely. Check the Hagency data folders and their permissions, then retry.",
+            ("owner_root_not_registered" | "owner_root_invalid" | "owner_root_record_invalid" | "owner_root_registry_unavailable"
+                | "owner_identity_invalid" | "daemon_owner_root_invalid" | "daemon_enrollment_storage_unavailable"
+                | "daemon_session_storage_unavailable" | "daemon_socket_unsafe" | "native_resume_unavailable", true) => "无法安全打开这台 Mac 的托管数据。请检查 Hagency 数据目录及其权限后重试。",
+            ("daemon_install_location_unsupported", false) => "Move Hagency Desktop to the Applications folder, then start the hosting service again.",
+            ("daemon_install_location_unsupported", true) => "请将 Hagency Desktop 移到“应用程序”文件夹，然后重新启动托管服务。",
+            ("daemon_service_stop_pending", false) => "The previous hosting service is still stopping. Wait for it to finish, then retry.",
+            ("daemon_service_stop_pending", true) => "之前的托管服务仍在停止。请等待完成后重试。",
+            ("service_start_failed", false) => "The hosting service did not start. Check Login Items in System Settings, then retry.",
+            ("service_start_failed", true) => "托管服务未能启动。请检查“系统设置”中的登录项，然后重试。",
+            ("hosting_not_confirmed", false) => "The service is installed, but hosting has not reported running yet. Refresh to check its status, or retry.",
+            ("hosting_not_confirmed", true) => "服务已安装，但托管尚未报告运行。请刷新查看状态，或重试。",
+            ("service_remove_failed", false) => "The hosting service could not be removed. Retry, or check Login Items in System Settings.",
+            ("service_remove_failed", true) => "无法移除托管服务。请重试，或检查“系统设置”中的登录项。",
+            ("helper_unavailable", false) => "Hagency could not start its hosting helper. Reinstall Hagency Desktop, then retry.",
+            ("helper_unavailable", true) => "Hagency 无法启动托管助手。请重新安装 Hagency Desktop 后重试。",
+            ("sign_in_required", false) => "Sign in to Hagency to set up hosting for this account.",
+            ("sign_in_required", true) => "请先登录 Hagency，再为此账号设置托管。",
+            (_, false) => "Hosting setup failed. Check the server, your account and the app installation, then retry.",
+            (_, true) => "托管设置失败。请检查服务器、账号和应用安装后重试。",
+        }
+    }
     pub fn approx_usd(_locale: Locale, value: &str) -> String {
         format!("≈ {value}")
     }
@@ -427,6 +510,19 @@ mod tests {
         assert_eq!(Locale::from_tag("ZH-hant"), Locale::ZhHans);
         assert_eq!(Locale::from_tag("en_US.UTF-8"), Locale::En);
         assert_eq!(Locale::from_tag(""), Locale::En);
+    }
+
+    #[test]
+    fn every_helper_code_has_its_own_setup_message_and_unknown_text_is_never_shown() {
+        for locale in [Locale::En, Locale::ZhHans] {
+            let generic = phrase::setup_failure(locale, "setup_failed");
+            for code in SETUP_FAILURE_CODES {
+                assert_ne!(phrase::setup_failure(locale, code), generic, "{code} in {locale:?}");
+            }
+            let raw = "token=private /private/account/path";
+            assert_eq!(phrase::setup_failure(locale, raw), generic);
+            assert!(!generic.contains("private"));
+        }
     }
 
     #[test]

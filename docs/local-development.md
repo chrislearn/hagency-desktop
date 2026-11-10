@@ -4,9 +4,10 @@
 
 ## Checkout and build
 
-Cargo fetches the owner engine directly from the `work/hagency-client-local-20261028` branch of
-`https://github.com/hagency-org/hagency-client.git`. Cargo.lock pins its exact
-revision, so a sibling client checkout is not required. Build from Desktop:
+The owner engine lives in `crates/hagency-client` as an independent Rust library
+workspace. Desktop and owner-dashboard resolve it by local path; build and release
+checks use this same tree. No sibling checkout, remote Client pin or browser UI
+build is needed. See [the library guide](../crates/hagency-client/README.md).
 
 The Desktop pins Rust 1.98.0; the server selects its own toolchain. On macOS,
 install Xcode command-line tools and CMake (`brew install cmake`). Linux requires

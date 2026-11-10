@@ -1,7 +1,7 @@
-//! Durable, owner-scoped command identity, shared by both controller hosts.
+//! Durable, owner-scoped command identity for the hosting dashboard.
 //! The exclusive lock spans submission; quitting releases the lock, never the
 //! saved ticket. A reconnect offers that exact ticket for an explicit check.
-use crate::{handover::{HandoverStore, lock_private, read_private, write_new}, model::PendingCommand};
+use crate::{model::PendingCommand, private_files::{self, lock_private, read_private, write_new}};
 use serde::{Deserialize, Serialize};
 use std::{fs::{self, File}, io, path::{Path, PathBuf}};
 
@@ -11,7 +11,7 @@ pub(crate) struct CommandStore { root: PathBuf, path: PathBuf, owner: String, _l
 impl CommandStore {
     pub fn open(home: &Path, owner: &str) -> io::Result<Self> {
         let root = home.join("controller-commands");
-        HandoverStore::open(&root)?;
+        private_files::directory(&root)?;
         // A short stable filename avoids filesystem name limits. The complete
         // owner is validated in the document; even a collision fails closed.
         let hash = owner.bytes().fold(0xcbf29ce484222325u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3));

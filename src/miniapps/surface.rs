@@ -14,7 +14,7 @@
 use makepad_widgets::*;
 use super::ui::{MiniAppsAction, MiniAppsPanelRef, MiniAppsPanelWidgetExt};
 use crate::hagency::ui::{HagencyAction, HagencyPanelWidgetExt};
-use crate::hagency::owner_dashboard::{EmbeddedAction, OwnerDashboardHostWidgetExt};
+use crate::hagency::owner_dashboard::OwnerDashboardHostWidgetExt;
 use crate::shared::web_browser::{WebBrowserAction, WebBrowserRef, WebBrowserWidgetRefExt};
 use crate::article_app::{ArticleAction, ArticlePanelWidgetRefExt};
 use crate::shared::navigation_bar_button::NavigationBarButtonWidgetExt;
@@ -134,11 +134,6 @@ impl ScriptHook for MiniAppsSurface {
 impl Widget for MiniAppsSurface {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         if let Event::Actions(actions) = event {
-            if self.host_visible && self.is_agent(cx) && actions.iter().any(|action| matches!(action.downcast_ref::<EmbeddedAction>(), Some(EmbeddedAction::Restore { .. }))) {
-                self.owner_page = true;
-                self.management_page = None;
-                self.update_page(cx);
-            }
             if self.view.navigation_bar_button(cx, ids!(owner_navigation.hosting)).clicked(actions) {
                 self.owner_page = true;
                 self.update_page(cx);
@@ -371,9 +366,16 @@ impl MiniAppsSurfaceRef {
     pub fn owner_fixture_locale(&self, cx: &mut Cx, locale: owner_dashboard::Locale) {
         if let Some(inner) = self.borrow() { inner.view.owner_dashboard_host(cx, ids!(owner_host)).fixture_locale(cx, locale); }
     }
+    /// Present a synthetic hosting state on this surface's Hosting page.
     #[cfg(feature = "onboarding-test-support")]
-    pub fn owner_fixture_handover(&self, cx: &mut Cx, enabled: bool) {
-        if let Some(inner) = self.borrow() { inner.view.owner_dashboard_host(cx, ids!(owner_host)).fixture_handover(enabled); }
+    pub fn owner_fixture_hosting(&self, cx: &mut Cx, view: &crate::hagency::hosting::View, keep_running: bool) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.view.owner_dashboard_host(cx, ids!(owner_host)).fixture_hosting(cx, view, keep_running);
+            inner.owner_page = true;
+            inner.agent_surface = true;
+            inner.management_page = None;
+            inner.update_page(cx);
+        }
     }
     #[cfg(feature = "onboarding-test-support")]
     pub fn owner_fixture_view(&self, cx: &mut Cx) -> Option<owner_dashboard::ViewState> {

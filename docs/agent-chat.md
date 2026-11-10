@@ -69,6 +69,48 @@ the decision was submitted; check the Room reply and runtime status for the actu
 execution outcome. It does not provide durable approval history or a tool execution
 receipt. Native shell/MCP and the hidden host-files controls remain unreleased.
 
+## Files in pooled Codex chats
+
+Encrypted pooled chats expose file tools when the owner's execution policy
+enables `standard` or `yolo` tools. Users attach a file in the chat and ask the
+Agent to process it; the Agent can return the result as a normal Matrix file
+message. Text-only execution retains bounded PDF/text extraction through
+`read_room_history`.
+
+The runtime supplies four host-bound tools:
+
+| Tool | Behavior |
+|---|---|
+| `list_received_files` | Lists attachment metadata already observed by `read_room_history`, in pages of up to 16. The history reader retains at most 64 attachment references per run. |
+| `receive_file` | Fetches a known event from the current room with the Agent's Matrix device, verifies/decrypts the original bytes, and writes a generated relative filename in that room's workspace. The model receives a path, size and hash. |
+| `send_file` | Captures a workspace file, encrypts and uploads it, then publishes an `m.file` event in the current room with the original reply/thread relation. Fresh server authorization is required before upload and before publication. |
+| `get_file_delivery` | Reads a durable receipt without uploading or sending anything. `delivered` confirms a Matrix event, not that a person read it. |
+
+Each file is limited to 8 MiB and each run admits at most 16 transfers. File
+contents remain outside the chat context until the Agent reads them with local
+tools. Tool arguments cannot select a room, HTTP endpoint, Matrix credentials
+or encryption keys. Outgoing paths must stay inside the bound workspace;
+traversal, symbolic links and hard links are refused. Incoming files never
+overwrite existing workspace paths.
+
+Each receive or send has a 60-second deadline around the complete operation,
+including authorization, device requests and SDK retries. A timed-out send
+retains its durable unknown outcome for inspection and exact replay.
+
+The Agent must reuse the same `call_id` and arguments when retrying a send.
+Private receipts preserve the captured file's hash, prepared encrypted message
+and original transaction. An uncertain upload is not repeated. An uncertain
+event publication may retry that prepared message on the same Matrix device;
+changing the source file never changes a replay. `outcome_unknown` is not success
+and must not be worked around with a new call ID.
+
+The regression gate covers binary round trips, cancellation, lost acknowledgements,
+restart/replay, filesystem boundaries and protocol callbacks during approval.
+The supervised offline probe exercises both execution modes and both successor
+drivers, using real media encryption with substituted Matrix network I/O. Live
+River delivery and real Codex model selection of these tools still need release
+acceptance testing.
+
 ## Security model
 
 Robrix is a presentation surface only. It never decides authorization:

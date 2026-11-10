@@ -1,7 +1,8 @@
-//! `OwnerDashboard`: the shared dashboard widget (ADR 0012).
+//! `OwnerDashboard`: the hosting dashboard widget (ADR 0012, ADR-192).
 //!
 //! The widget renders [`DashboardState`] and emits [`DashboardAction`]s. It
-//! never performs IO. Updates are applied in place: labels, visibility and
+//! never performs IO. While the host reports that hosting must be set up, a
+//! setup page replaces the dashboard. Updates are applied in place: labels, visibility and
 //! keyed rows change, but no page or row is remounted, so refreshes keep
 //! scroll, focus and unaffected bounds.
 //!
@@ -16,7 +17,7 @@ use crate::picker::{OdFilterPickerWidgetExt, OdFilterPickerWidgetRefExt};
 use crate::i18n::{Locale, Msg, tr};
 use crate::model::{
     BannerAction, CommandKind, CommandPhase, CommandResult, ConnectionStatus, DashboardAction, DashboardState, Glyph,
-    HostMode, Presentation, ResourceRow, SnapshotOutcome, Status, Tab, Tone, UsageCard, ViewState,
+    HostOptions, Presentation, ResourceRow, SetupView, SnapshotOutcome, Status, Tab, Tone, UsageCard, ViewState,
 };
 use hagency_metering::dashboard::{DashboardSnapshot, period::UsagePeriod};
 use makepad_widgets::*;
@@ -126,6 +127,27 @@ script_mod! {
     }
     mod.widgets.OdDestructiveButton = mod.widgets.OdButton {
         draw_text +: {color: OD_CRI_FG color_hover: OD_CRI_FG color_down: OD_CRI_FG color_focus: OD_CRI_FG}
+    }
+    // An iOS-style switch on the platform CheckBox, so its state, keyboard
+    // activation and native accessibility role are the toggle's own.
+    mod.widgets.OdSwitch = ToggleFlat {
+        width: 56 height: OD_CONTROL text: "" padding: 0 margin: 0
+        label_walk: Walk{width: 0 height: 0 margin: Inset{}}
+        draw_bg +: {
+            color: OD_TRACK color_active: OD_POS_FG
+            knob_color: uniform(#fff)
+            ring_color: uniform(OD_ACCENT)
+            pixel: fn() {
+                let sdf = Sdf2d.viewport(self.pos * self.rect_size)
+                let p = (self.rect_size - vec2(46.0, 28.0)) * 0.5
+                sdf.box(p.x, p.y, 46.0, 28.0, 14.0)
+                sdf.fill_keep(self.color.mix(self.color_active, self.active))
+                sdf.stroke(self.ring_color, 2.0 * self.focus)
+                sdf.circle(p.x + 14.0 + 18.0 * self.active, p.y + 14.0, 11.5)
+                sdf.fill(self.knob_color)
+                return sdf.result * (1.0 - 0.5 * self.disabled)
+            }
+        }
     }
     mod.widgets.OdDestructivePrimaryButton = mod.widgets.OdButton {
         draw_bg +: {
@@ -256,7 +278,6 @@ script_mod! {
                 }
                 View {
                     width: Fill height: Fit flow: Flow.Right{wrap: true} spacing: 8 align: Align{y: 0.5}
-                    od_open_other := mod.widgets.OdButton {text: "Open in Hagency"}
                     od_refresh := mod.widgets.OdButton {text: "Refresh"}
                 }
             }
@@ -297,6 +318,29 @@ script_mod! {
             padding: Inset{left: 16 right: 16 top: 4 bottom: 28}
 
             od_scroll_origin := View {width: Fill height: 0 margin: Inset{bottom: -16}}
+            od_setup_page := mod.widgets.OdCard {
+                visible: false align: Align{x: 0.0}
+                View {
+                    width: Fill height: Fit flow: Right spacing: 12 align: Align{y: 0.0}
+                    od_setup_glyph := OdGlyph {width: 34 height: 34}
+                    View {
+                        width: Fill height: Fit flow: Down spacing: 4
+                        od_setup_title := mod.widgets.OdTitle {}
+                        od_setup_body := mod.widgets.OdCaption {}
+                    }
+                }
+                od_setup_progress := View {
+                    visible: false width: Fill height: Fit flow: Right spacing: 10 align: Align{y: 0.5}
+                    od_setup_spinner := LoadingSpinner {width: 18 height: 18 draw_bg +: {color: OD_ACCENT stroke_width: 2.0}}
+                    od_setup_progress_glyph := OdGlyph {visible: false width: 18 height: 18}
+                    od_setup_progress_text := mod.widgets.OdText {}
+                }
+                View {
+                    width: Fill height: Fit flow: Flow.Right{wrap: true} spacing: 8
+                    od_setup_start := mod.widgets.OdPrimaryButton {text: "Set up hosting"}
+                    od_setup_cancel := mod.widgets.OdButton {text: "Cancel"}
+                }
+            }
             od_empty_page := mod.widgets.OdCard {
                 visible: false align: Align{x: 0.0}
                 View {
@@ -374,6 +418,36 @@ script_mod! {
                                 od_resume := mod.widgets.OdPrimaryButton {text: "Resume hosting"}
                                 od_stop := mod.widgets.OdDestructiveButton {text: "Stop hosting"}
                                 od_hosting_setup := mod.widgets.OdPrimaryButton {text: "Set up hosting"}
+                            }
+                        }
+                        od_options_card := mod.widgets.OdCard {
+                            visible: false
+                            od_keep_running_row := View {
+                                width: Fill height: Fit flow: Right spacing: 12 align: Align{y: 0.5}
+                                View {
+                                    width: Fill height: Fit flow: Down spacing: 3
+                                    od_keep_running_title := mod.widgets.OdText {}
+                                    od_keep_running_body := mod.widgets.OdCaption {}
+                                }
+                                od_keep_running := mod.widgets.OdSwitch {}
+                            }
+                            mod.widgets.OdSeparator {}
+                            od_foreign_service := mod.widgets.OdCaption {visible: false}
+                            od_uninstall_sheet := RoundedView {
+                                visible: false width: Fill height: Fit flow: Down spacing: 8 padding: 14
+                                draw_bg +: {color: OD_CRI_BG border_radius: OD_RADIUS_SMALL}
+                                od_uninstall_title := mod.widgets.OdHeadline {}
+                                od_uninstall_body := mod.widgets.OdText {}
+                                View {
+                                    width: Fill height: Fit flow: Right spacing: 8
+                                    od_uninstall_cancel := mod.widgets.OdButton {width: Fill text: "Cancel" padding: Inset{left: 8 right: 8}}
+                                    od_uninstall_confirm := mod.widgets.OdDestructivePrimaryButton {width: Fill text: "Uninstall" padding: Inset{left: 8 right: 8}}
+                                }
+                            }
+                            od_service_actions := View {
+                                width: Fill height: Fit flow: Flow.Right{wrap: true} spacing: 8
+                                od_use_this_service := mod.widgets.OdButton {visible: false text: "Use this app's service"}
+                                od_uninstall := mod.widgets.OdDestructiveButton {text: "Uninstall hosting service"}
                             }
                         }
                         od_attention_card := mod.widgets.OdCard {
@@ -657,8 +731,7 @@ impl Widget for OwnerDashboard {
             self.sync(cx);
         }
         if let Event::KeyDown(ke) = event {
-            if self.view.visible && self.view.area().is_valid(cx)
-                && (self.state.host == HostMode::Standalone || crate::keyboard::contains_focus(&self.view, cx)) {
+            if self.view.visible && self.view.area().is_valid(cx) && crate::keyboard::contains_focus(&self.view, cx) {
                 self.handle_key(cx, ke);
             }
         }
@@ -779,36 +852,21 @@ impl OwnerDashboard {
     }
 
     fn handle_key(&mut self, cx: &mut Cx, ke: &KeyEvent) {
-        // Embedded hosts own their shortcuts; Escape is always local.
-        if ke.key_code == KeyCode::Escape {
-            if self.state.confirm_stop {
-                self.state.cancel_stop();
-                self.pending_focus = Some(id!(od_stop));
-                self.changed(cx);
-            } else if self.state.view.selected_resource.is_some() {
-                self.state.select_resource(None);
-                self.changed(cx);
-            }
+        // The host app owns shortcuts; Escape is always local.
+        if ke.key_code != KeyCode::Escape {
             return;
         }
-        if self.state.host != HostMode::Standalone || !ke.modifiers.is_primary() {
-            return;
-        }
-        let tab = match ke.key_code {
-            KeyCode::Key1 => Some(Tab::Overview),
-            KeyCode::Key2 => Some(Tab::Resources),
-            KeyCode::Key3 => Some(Tab::Usage),
-            KeyCode::Key4 => Some(Tab::Activity),
-            KeyCode::KeyR => {
-                let action = self.state.begin_refresh();
-                self.emit(cx, action);
-                self.changed(cx);
-                None
-            }
-            _ => None,
-        };
-        if let Some(tab) = tab {
-            self.select_tab(cx, tab);
+        if self.state.confirm_stop {
+            self.state.cancel_stop();
+            self.pending_focus = Some(id!(od_stop));
+            self.changed(cx);
+        } else if self.state.confirm_uninstall {
+            self.state.cancel_uninstall();
+            self.pending_focus = Some(id!(od_uninstall));
+            self.changed(cx);
+        } else if self.state.view.selected_resource.is_some() {
+            self.state.select_resource(None);
+            self.changed(cx);
         }
     }
 
@@ -983,12 +1041,41 @@ impl OwnerDashboard {
             self.emit(cx, action);
             self.changed(cx);
         }
-        if self.clicked(cx, ids!(od_open_other), actions) {
-            self.state.view.scroll_y = self.scroll_y(cx);
-            self.emit(cx, self.state.open_other_host());
+        if self.clicked(cx, ids!(od_setup), actions) {
+            let banner = self.state.present(self.clock()).banner;
+            if let Some(action) = banner.and_then(|b| [b.primary, b.secondary].into_iter().find_map(BannerAction::action)) {
+                self.emit(cx, action);
+            }
         }
-        if self.clicked(cx, ids!(od_setup), actions) || self.clicked(cx, ids!(od_hosting_setup), actions) {
-            self.emit(cx, DashboardAction::OpenSetup);
+        if self.clicked(cx, ids!(od_hosting_setup), actions) || self.clicked(cx, ids!(od_setup_start), actions) {
+            if !self.state.setup.as_ref().is_some_and(SetupView::running) {
+                self.emit(cx, DashboardAction::OpenSetup);
+            }
+        }
+        if self.clicked(cx, ids!(od_setup_cancel), actions) {
+            self.emit(cx, DashboardAction::CancelSetup);
+        }
+        if let Some(keep) = self.view.check_box(cx, ids!(od_keep_running)).changed(actions) {
+            self.emit(cx, DashboardAction::KeepRunning(keep));
+        }
+        if self.clicked(cx, ids!(od_use_this_service), actions) {
+            self.emit(cx, DashboardAction::StartService);
+        }
+        if self.clicked(cx, ids!(od_uninstall), actions) && self.state.request_uninstall() {
+            self.pending_focus = Some(id!(od_uninstall_cancel));
+            self.pending_reveal = Some(id!(od_uninstall_sheet));
+            self.changed(cx);
+        }
+        if self.clicked(cx, ids!(od_uninstall_cancel), actions) {
+            self.state.cancel_uninstall();
+            self.pending_focus = Some(id!(od_uninstall));
+            self.changed(cx);
+        }
+        if self.clicked(cx, ids!(od_uninstall_confirm), actions) {
+            if let Some(action) = self.state.confirm_uninstall() {
+                self.emit(cx, action);
+            }
+            self.changed(cx);
         }
         for (path, kind) in [
             (ids!(od_pause), CommandKind::Pause),
@@ -1211,14 +1298,15 @@ impl OwnerDashboard {
         let locale = self.state.locale;
         let t = |m| tr(locale, m);
         let p = self.state.present(self.clock());
-        let has_data = self.state.snapshot.is_some();
+        let setup = p.setup_page.is_some();
+        let has_data = self.state.snapshot.is_some() && !setup;
 
         // Header.
         self.label(cx, ids!(od_title), t(Msg::Title));
         let enlarged = self.compact_navigation || crate::theme::effective_text_scale(cx) > 1.3;
         self.show(cx, ids!(od_title), !enlarged);
         self.show(cx, ids!(od_identity_actions), !enlarged || self.header_expanded);
-        self.show(cx, ids!(od_freshness), true);
+        self.show(cx, ids!(od_freshness), !setup);
         let owner = self.state.snapshot.as_ref().and_then(|snapshot| snapshot.owner.as_ref())
             .map(|owner| if owner.display_name.is_empty() { owner.user_id.as_str() } else { owner.display_name.as_str() })
             .or(self.state.owner_scope.as_deref()).unwrap_or(t(Msg::Title));
@@ -1231,8 +1319,7 @@ impl OwnerDashboard {
         destination.set_selected_item(cx, Tab::ALL.iter().position(|tab| *tab == self.state.view.tab).unwrap_or(0));
         self.label(cx, ids!(od_owner), &p.owner_line);
         self.show(cx, ids!(od_owner), !p.owner_line.is_empty());
-        self.button(cx, ids!(od_open_other), p.open_other_label, true, true);
-        self.button(cx, ids!(od_refresh), t(Msg::Refresh), true, !self.state.refreshing);
+        self.button(cx, ids!(od_refresh), t(Msg::Refresh), !setup, !self.state.refreshing);
         let header = self.header_status(&p);
         self.label(cx, ids!(od_sync), &header.status.text);
         let spinning = (self.state.refreshing || header.status.tone == Tone::Progress) && !self.reduced_motion;
@@ -1243,7 +1330,7 @@ impl OwnerDashboard {
             && (header.target != HeaderTarget::Connection || p.banner.is_some());
         self.button(cx, ids!(od_status_details), t(if details { Msg::Details } else { Msg::Refresh }), details || header.target == HeaderTarget::Refresh, !self.state.refreshing || details);
 
-        // Host notice (e.g. a failed hand-off to another app).
+        // Host notice (e.g. the outcome of starting or removing the service).
         let notice = self.view.view(cx, ids!(od_notice));
         notice.set_visible(cx, self.notice.is_some());
         if let Some(n) = &self.notice {
@@ -1260,12 +1347,14 @@ impl OwnerDashboard {
             let label = |a: BannerAction| match a {
                 BannerAction::Retry => t(Msg::TryAgain),
                 BannerAction::Setup => t(Msg::SetUpHosting),
+                BannerAction::StartService => t(Msg::StartService),
                 BannerAction::SignIn => t(Msg::SignInAgain),
                 BannerAction::None => "",
             };
-            let setup = [banner.primary, banner.secondary].into_iter().find(|a| matches!(a, BannerAction::Setup | BannerAction::SignIn));
+            let host_action = [banner.primary, banner.secondary].into_iter().find(|a| a.action().is_some());
             let retry = [banner.primary, banner.secondary].contains(&BannerAction::Retry);
-            self.button(cx, ids!(od_setup), setup.map(label).unwrap_or(""), setup.is_some(), true);
+            let busy = self.state.options.as_ref().is_some_and(|o| o.busy);
+            self.button(cx, ids!(od_setup), host_action.map(label).unwrap_or(""), host_action.is_some(), !busy);
             self.button(cx, ids!(od_reconnect), t(Msg::TryAgain), retry, !self.state.refreshing);
         }
 
@@ -1277,6 +1366,24 @@ impl OwnerDashboard {
         }
         self.show(cx, ids!(od_tabs), has_data && !enlarged);
         self.show(cx, ids!(od_destination_row), has_data && enlarged);
+
+        // Setup replaces the dashboard until hosting serves this owner.
+        self.show(cx, ids!(od_setup_page), setup);
+        if let Some(page) = &p.setup_page {
+            self.view.od_glyph(cx, ids!(od_setup_glyph)).set(cx, page.status.tone, page.status.glyph);
+            self.label(cx, ids!(od_setup_title), &page.title);
+            self.label(cx, ids!(od_setup_body), &page.body);
+            self.show(cx, ids!(od_setup_progress), page.progress.is_some());
+            if let Some(progress) = &page.progress {
+                let spin = page.busy && !self.reduced_motion;
+                self.show(cx, ids!(od_setup_spinner), spin);
+                self.show(cx, ids!(od_setup_progress_glyph), !spin);
+                self.view.od_glyph(cx, ids!(od_setup_progress_glyph)).set(cx, progress.tone, progress.glyph);
+                self.label(cx, ids!(od_setup_progress_text), &progress.text);
+            }
+            self.button(cx, ids!(od_setup_start), page.start.unwrap_or(""), page.start.is_some(), true);
+            self.button(cx, ids!(od_setup_cancel), t(Msg::Cancel), page.can_cancel, true);
+        }
 
         // Full-page state while there is no snapshot.
         self.show(cx, ids!(od_empty_page), p.empty_page.is_some());
@@ -1337,6 +1444,26 @@ impl OwnerDashboard {
             self.button(cx, ids!(od_stop_confirm), t(Msg::Stop), confirming, h.can_stop);
             self.button(cx, ids!(od_stop_cancel), t(Msg::Cancel), confirming, true);
         }
+        self.show(cx, ids!(od_options_card), p.options.is_some());
+        if let Some(options) = &p.options {
+            self.label(cx, ids!(od_keep_running_title), options.keep_running_title);
+            self.label(cx, ids!(od_keep_running_body), options.keep_running_body);
+            let switch = self.view.check_box(cx, ids!(od_keep_running));
+            if switch.active(cx) != options.keep_running {
+                switch.set_active(cx, options.keep_running, Animate::No);
+            }
+            self.show(cx, ids!(od_foreign_service), options.foreign_service.is_some());
+            self.label(cx, ids!(od_foreign_service), options.foreign_service.unwrap_or(""));
+            let confirming = options.uninstall_confirm;
+            self.show(cx, ids!(od_uninstall_sheet), confirming);
+            self.label(cx, ids!(od_uninstall_title), t(Msg::UninstallConfirmTitle));
+            self.label(cx, ids!(od_uninstall_body), t(Msg::UninstallConfirmBody));
+            self.button(cx, ids!(od_uninstall_cancel), t(Msg::Cancel), confirming, true);
+            self.button(cx, ids!(od_uninstall_confirm), t(Msg::Uninstall), confirming, !options.busy);
+            self.show(cx, ids!(od_service_actions), !confirming);
+            self.button(cx, ids!(od_use_this_service), t(Msg::UseThisService), options.foreign_service.is_some(), !options.busy);
+            self.button(cx, ids!(od_uninstall), t(Msg::UninstallService), true, !options.busy);
+        }
         self.show(cx, ids!(od_command_row), p.command.is_some());
         if let Some(line) = &p.command {
             self.view.od_glyph(cx, ids!(od_command_glyph)).set(cx, line.status.tone, line.status.glyph);
@@ -1354,7 +1481,7 @@ impl OwnerDashboard {
             row.od_glyph(cx, ids!(glyph)).set(cx, item.tone, item.glyph);
             row.label(cx, ids!(text)).set_text(cx, &item.text);
             let label = match item.target {
-                crate::model::AttentionTarget::Approvals => t(if self.state.host == HostMode::Standalone { Msg::ReviewInHagency } else { Msg::ReviewApprovals }),
+                crate::model::AttentionTarget::Approvals => t(Msg::ReviewApprovals),
                 crate::model::AttentionTarget::Activity => t(Msg::TabActivity),
                 crate::model::AttentionTarget::Usage => t(Msg::TabUsage),
                 crate::model::AttentionTarget::Resources => t(Msg::TabResources),
@@ -1642,10 +1769,21 @@ impl OwnerDashboardRef {
         });
     }
 
-    pub fn set_host(&self, cx: &mut Cx, host: HostMode) {
+    /// Show the setup page (`Some`) or the dashboard (`None`).
+    pub fn set_setup(&self, cx: &mut Cx, setup: Option<SetupView>) {
         self.with(|d| {
-            d.state.host = host;
-            d.changed(cx);
+            if d.state.set_setup(setup) {
+                d.changed(cx);
+            }
+        });
+    }
+
+    /// Host controls for a hosted owner, or `None` to hide them.
+    pub fn set_options(&self, cx: &mut Cx, options: Option<HostOptions>) {
+        self.with(|d| {
+            if d.state.set_options(options) {
+                d.changed(cx);
+            }
         });
     }
 
@@ -1681,7 +1819,7 @@ impl OwnerDashboardRef {
     }
 
     /// Show (or clear) a host notice under the header: the outcome of a host
-    /// action such as opening another app. Text must name action and reason.
+    /// action such as starting the service. Text must name action and reason.
     pub fn set_notice(&self, cx: &mut Cx, notice: Option<Status>) {
         self.with(|d| {
             d.notice = notice;
@@ -1697,14 +1835,14 @@ impl OwnerDashboardRef {
         self.with(|d| { d.state.recover_command(command); d.changed(cx); });
     }
 
-    /// Scoped UI state for persistence or host handover. No credentials.
+    /// Scoped UI state (navigation, filters, paging). No credentials.
     pub fn view_state(&self, cx: &Cx) -> ViewState {
         self.borrow()
             .map(|d| ViewState { scroll_y: d.scroll_y(cx), ..d.state.view.clone() })
             .unwrap_or_default()
     }
 
-    /// Restore handover state for the same owner. Returns false if refused.
+    /// Restore view state for the same owner. Returns false if refused.
     pub fn restore_view_state(&self, cx: &mut Cx, view: ViewState) -> bool {
         self.with(|d| {
             let scroll = view.scroll_y;
@@ -1747,10 +1885,9 @@ impl OwnerDashboardRef {
     #[cfg(any(test, feature = "fixtures"))]
     pub fn load_state(&self, cx: &mut Cx, state: DashboardState) {
         self.with(|d| {
-            let host = d.state.host;
             let locale = d.state.locale;
             if d.state.owner_scope != state.owner_scope { d.reset_owner_ui(cx); }
-            d.state = DashboardState { host, locale, ..state };
+            d.state = DashboardState { locale, ..state };
             d.view.view(cx, ids!(od_content)).set_scroll_pos(cx, dvec2(0.0, 0.0));
             d.changed(cx);
         });

@@ -17,7 +17,7 @@ import sys
 PIN = "a0ad1839c61cecbd7e83251cfb7d50d7a725ee48"
 SOURCE = "https://www.github.com/OctoSense-org/makepad.git"
 ROOT = Path(__file__).resolve().parents[1]
-PATCH = ROOT / "packaging/owner-controller/makepad-accessibility.patch"
+PATCH = ROOT / "packaging/owner-accessibility/makepad-accessibility.patch"
 
 
 def run(args: list[str], cwd: Path | None = None) -> str:

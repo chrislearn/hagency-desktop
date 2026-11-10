@@ -3,6 +3,10 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[cfg(all(unix, feature = "resource-adoption"))]
+#[path = "daemon_handoff_tests.rs"]
+mod daemon_handoff_tests;
+
 // The real desktop registration/retirement code and real native owner are used,
 // without touching the process-wide SDK account, CURRENT or any saved profile.
 struct Directory(PathBuf);
@@ -58,7 +62,9 @@ impl Fixture {
             epoch: 1,
             client_revision: 0,
             explicit_reenrollment: std::sync::atomic::AtomicBool::new(false),
-            state: directory.0.join("owner"),
+            // A private registry and daemon home: never the user's own.
+            locations: crate::hagency::hosting::Locations::at(&directory.0),
+            state: Ok(directory.0.join("owner")),
             native: tokio::sync::Mutex::new(None),
             remote: Mutex::new(None),
             native_retirement: Mutex::new(None),
@@ -188,7 +194,7 @@ impl Fixture {
     async fn open(&self, source: Arc<dyn MatrixTokenSource>) -> Result<NativeOwner, NativeError> {
         let service = &self.service;
         NativeOwner::open_with_matrix_guarded(
-            &service.0.state,
+            service.root().unwrap(),
             &service.0.origin,
             &service.0.owner,
             source,
@@ -514,7 +520,7 @@ async fn desktop_concurrent_shutdown_keeps_cleanup_custody_after_first_is_cancel
         "canceled revocation must be retried from retained native custody"
     );
     let pending: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(f.service.0.state.join("server-login-revocations.json")).unwrap(),
+        &std::fs::read(f.service.root().unwrap().join("server-login-revocations.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(pending, json!([]));
@@ -557,7 +563,7 @@ impl NativeFixture {
     }
     pub(crate) async fn open_detached(&self) -> Result<NativeOwner, NativeError> {
         NativeOwner::open_with_matrix(
-            &self.0.service.0.state,
+            self.0.service.root().unwrap(),
             &self.0.service.0.origin,
             &self.0.service.0.owner,
             Source::normal(&self.0.service),
@@ -570,7 +576,7 @@ impl NativeFixture {
             available: std::sync::atomic::AtomicBool::new(true),
         });
         let owner = NativeOwner::open_with_matrix(
-            &self.0.service.0.state,
+            self.0.service.root().unwrap(),
             &self.0.service.0.origin,
             &self.0.service.0.owner,
             source.clone(),
@@ -719,7 +725,7 @@ async fn desktop_activation_waiter_cancellation_and_logout_keep_original_drain()
     assert!(f.service.0.native_retirement.lock().unwrap().is_none());
     drop(task);
     let pending: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(f.service.0.state.join("server-login-revocations.json")).unwrap(),
+        &std::fs::read(f.service.root().unwrap().join("server-login-revocations.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(pending, json!([]));

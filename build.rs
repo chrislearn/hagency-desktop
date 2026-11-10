@@ -4,7 +4,7 @@ fn main() {
     let catalog = rinx_system_apps::pack(&root).expect("validate Rinx system apps");
     // The catalog has already validated these paths. Watch whole bundle
     // directories so added/deleted assets retrigger packaging, without watching
-    // unrelated controller sources or apps/owner-controller/target outputs.
+    // unrelated sources or build outputs elsewhere under the apps directory.
     let config: serde_json::Value = serde_json::from_slice(
         &std::fs::read(root.join("system-apps.json")).expect("read system app inputs")
     ).expect("parse validated system app inputs");

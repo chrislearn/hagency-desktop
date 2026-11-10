@@ -7,17 +7,106 @@ fn running() -> DashboardState {
 }
 
 #[test]
-fn approval_navigation_intent_is_consumed_and_owner_scoped() {
+fn restored_views_are_owner_scoped_and_approvals_stay_reachable() {
     let mut state = running();
     let mut view = state.view.clone();
-    view.intent = Some(NavigationIntent::ReviewApprovals);
     view.owner_id = Some("@someone:example.test".into());
     assert!(!state.restore_view(view.clone()));
     view.owner_id = state.owner_scope.clone();
     assert!(state.restore_view(view));
-    assert_eq!(state.view.intent, None);
     state.snapshot.as_mut().unwrap().hosting.pending_approvals = Some(2);
     assert!(state.present(clock()).attention.iter().any(|item| item.target == AttentionTarget::Approvals));
+}
+
+#[test]
+fn setup_replaces_the_dashboard_and_only_offers_what_applies() {
+    let mut state = running();
+    state.set_connection(ConnectionStatus::DaemonUnavailable);
+    for (need, start, glyph) in [
+        (SetupNeed::NotSetUp, Some("Set up hosting"), Glyph::Setup),
+        (SetupNeed::Replace, Some("Set up hosting"), Glyph::Setup),
+        (SetupNeed::OtherOwner, None, Glyph::Warning),
+    ] {
+        assert!(state.set_setup(Some(SetupView { need, progress: SetupProgress::Idle })));
+        let p = state.present(clock());
+        let page = p.setup_page.expect("setup page");
+        assert_eq!(page.start, start, "{need:?}");
+        assert_eq!(page.status.glyph, glyph);
+        assert!(!page.busy && !page.can_cancel && page.progress.is_none());
+        // The page explains itself: no banner, connecting page or options.
+        assert!(p.banner.is_none() && p.empty_page.is_none() && p.options.is_none());
+    }
+    let other = state.present(clock()).setup_page.unwrap();
+    assert!(other.body.contains("one account's resource pool"), "{}", other.body);
+    state.set_setup(Some(SetupView { need: SetupNeed::NotSetUp, progress: SetupProgress::SigningIn }));
+    let page = state.present(clock()).setup_page.unwrap();
+    assert!(page.busy && page.can_cancel && page.start.is_none());
+    assert_eq!(page.progress.unwrap().text, "Complete sign-in in your browser…");
+    state.set_setup(Some(SetupView { need: SetupNeed::NotSetUp, progress: SetupProgress::Registering }));
+    let page = state.present(clock()).setup_page.unwrap();
+    assert!(page.busy && !page.can_cancel && page.start.is_none());
+    assert_eq!(page.progress.unwrap().text, "Signed in. Registering this Mac’s executor…");
+    for progress in [SetupProgress::Preparing, SetupProgress::Registering, SetupProgress::Cancelling, SetupProgress::Enabling, SetupProgress::Confirming] {
+        state.set_setup(Some(SetupView { need: SetupNeed::NotSetUp, progress }));
+        let page = state.present(clock()).setup_page.unwrap();
+        assert!(page.busy && !page.can_cancel && page.start.is_none());
+    }
+    state.set_setup(Some(SetupView { need: SetupNeed::NotSetUp, progress: SetupProgress::Failed { code: "token=secret".into() } }));
+    let page = state.present(clock()).setup_page.unwrap();
+    assert_eq!(page.start, Some("Try again"));
+    let failure = page.progress.unwrap();
+    assert_eq!(failure.tone, Tone::Critical);
+    assert!(!failure.text.contains("secret"));
+    assert!(state.set_setup(None));
+    assert!(state.present(clock()).setup_page.is_none());
+    assert!(state.present(clock()).banner.is_some(), "the service banner returns with the dashboard");
+}
+
+#[test]
+fn a_hosted_owner_gets_the_switch_and_a_confirmed_uninstall() {
+    let mut state = running();
+    assert!(state.present(clock()).options.is_none(), "hosts without options show none");
+    assert!(!state.request_uninstall());
+    state.set_options(Some(HostOptions { keep_running: true, busy: false, foreign_service: false }));
+    let options = state.present(clock()).options.unwrap();
+    assert!(options.keep_running && !options.uninstall_confirm && options.foreign_service.is_none());
+    assert_eq!(options.keep_running_title, "Keep the resource pool running after Desktop quits");
+    state.locale = Locale::ZhHans;
+    assert_eq!(state.present(clock()).options.unwrap().keep_running_title, "关闭桌面端后继续运行资源池");
+    state.locale = Locale::En;
+    // Uninstall asks first; the confirmation is the only path to the action.
+    assert!(state.request_uninstall());
+    assert!(state.present(clock()).options.unwrap().uninstall_confirm);
+    state.cancel_uninstall();
+    assert_eq!(state.confirm_uninstall(), None);
+    assert!(state.request_uninstall());
+    assert_eq!(state.confirm_uninstall(), Some(DashboardAction::UninstallService));
+    assert!(!state.confirm_uninstall);
+    // Busy service work closes the confirmation and refuses another.
+    assert!(state.request_uninstall());
+    state.set_options(Some(HostOptions { keep_running: false, busy: true, foreign_service: true }));
+    assert!(!state.confirm_uninstall && !state.request_uninstall());
+    let options = state.present(clock()).options.unwrap();
+    assert!(!options.keep_running && options.busy && options.foreign_service.is_some());
+    // Setup or a missing snapshot hides the options.
+    state.set_setup(Some(SetupView { need: SetupNeed::NotSetUp, progress: SetupProgress::Idle }));
+    assert!(state.present(clock()).options.is_none());
+    state.set_setup(None);
+    state.set_owner_scope(Some("@next:example.test"));
+    assert!(state.options.is_none() && state.setup.is_none());
+}
+
+#[test]
+fn banner_actions_ask_the_host_for_the_matching_step() {
+    let mut state = running();
+    state.set_connection(ConnectionStatus::DaemonUnavailable);
+    let banner = state.present(clock()).banner.unwrap();
+    assert_eq!(banner.primary.action(), Some(DashboardAction::StartService));
+    state.set_connection(ConnectionStatus::AuthExpired);
+    assert_eq!(state.present(clock()).banner.unwrap().primary.action(), Some(DashboardAction::OpenSetup));
+    state.set_connection(ConnectionStatus::OwnerMismatch);
+    let banner = state.present(clock()).banner.unwrap();
+    assert_eq!((banner.primary, banner.secondary), (BannerAction::Retry, BannerAction::None));
 }
 
 #[test]
@@ -29,7 +118,7 @@ fn every_fixture_scenario_presents_in_both_locales() {
             let p = state.present(clock());
             // Something always explains the state: a page, a banner or hosting.
             assert!(
-                p.empty_page.is_some() || p.banner.is_some() || p.hosting.is_some(),
+                p.empty_page.is_some() || p.setup_page.is_some() || p.banner.is_some() || p.hosting.is_some(),
                 "{name}/{locale:?} shows nothing"
             );
         }
@@ -39,7 +128,7 @@ fn every_fixture_scenario_presents_in_both_locales() {
 
 #[test]
 fn initial_state_is_connecting_not_ready() {
-    let state = DashboardState::new(HostMode::Standalone, Locale::En);
+    let state = DashboardState::new(Locale::En);
     let p = state.present(clock());
     assert!(p.hosting.is_none());
     assert!(p.banner.is_none());
@@ -51,7 +140,7 @@ fn initial_state_is_connecting_not_ready() {
 
 #[test]
 fn default_snapshot_is_unconfigured_with_unknown_usage() {
-    let mut state = DashboardState::new(HostMode::Standalone, Locale::En);
+    let mut state = DashboardState::new(Locale::En);
     assert_eq!(state.apply_snapshot(DashboardSnapshot::unconfigured(FIXTURE_NOW_MS), None), SnapshotOutcome::Applied);
     let p = state.present(clock());
     let hosting = p.hosting.unwrap();
@@ -277,11 +366,11 @@ fn disconnect_keeps_last_known_data_and_disables_commands() {
 }
 
 #[test]
-fn daemon_absent_offers_setup_and_retry() {
+fn daemon_absent_offers_to_start_the_service_and_retry() {
     let p = fixtures::scenario("daemon-absent").unwrap().present(clock());
     assert!(p.empty_page.is_none());
     let banner = p.banner.unwrap();
-    assert_eq!((banner.primary, banner.secondary), (BannerAction::Setup, BannerAction::Retry));
+    assert_eq!((banner.primary, banner.secondary), (BannerAction::StartService, BannerAction::Retry));
     assert_eq!(banner.status.glyph, Glyph::Offline);
     let auth = fixtures::scenario("auth-expired").unwrap().present(clock()).banner.unwrap();
     assert_eq!(auth.primary, BannerAction::SignIn);
@@ -446,19 +535,6 @@ fn view_state_round_trips_and_is_owner_scoped() {
 }
 
 #[test]
-fn open_other_host_carries_view_state_only() {
-    let mut state = running();
-    state.select_tab(Tab::Resources);
-    match state.open_other_host() {
-        DashboardAction::OpenInHagency(view) => assert_eq!(view.tab, Tab::Resources),
-        other => panic!("{other:?}"),
-    }
-    state.host = HostMode::Embedded;
-    assert!(matches!(state.open_other_host(), DashboardAction::OpenStandalone(_)));
-    assert_eq!(state.present(clock()).open_other_label, "Open separately");
-}
-
-#[test]
 fn select_tab_resets_scroll_only_on_change() {
     let mut state = running();
     state.view.scroll_y = 50.0;
@@ -472,7 +548,7 @@ fn select_tab_resets_scroll_only_on_change() {
 fn every_hosting_state_has_text_glyph_and_actions() {
     use HostingState::*;
     for st in [Unconfigured, Starting, Running, Paused, Draining, Stopped, Offline, Failed] {
-        let mut state = DashboardState::new(HostMode::Standalone, Locale::ZhHans);
+        let mut state = DashboardState::new(Locale::ZhHans);
         state.set_owner_scope(Some(OWNER));
         state.apply_snapshot(ordinary(st), None);
         let h = state.present(clock()).hosting.unwrap();
