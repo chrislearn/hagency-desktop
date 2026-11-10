@@ -119,7 +119,16 @@ struct StartRuntime {
     #[serde(default)]
     host_files: bool,
     #[serde(default)]
+    shared_workspace: bool,
+    #[serde(default)]
+    expected_workspace: Option<String>,
+    #[serde(default)]
     effort: Option<String>,
+}
+impl StartRuntime {
+    fn accepts_shared_workspace(&self, workspace: &str) -> bool {
+        !self.shared_workspace || self.recovery_consent_id.is_some() || self.expected_workspace.as_deref() == Some(workspace)
+    }
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1059,6 +1068,9 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                     .agent_model_profile(&reply.owner, &agent)
                     .map_err(local_error)?
                     .ok_or_else(|| error(409, "runtime_profile_unavailable"))?;
+                if !input.accepts_shared_workspace(&profile.workspace_root) {
+                    return Err(error(409, "shared_workspace_changed"));
+                }
                 let provider = super::owner_provider::external::paths_for_reference(
                     &root,
                     &reply.origin,
@@ -1101,6 +1113,8 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                     agent_id: agent,
                     binding_id: "*".into(),
                     host_files: false,
+                    shared_workspace: input.shared_workspace,
+                    shared_workspace_pin: None,
                     owner_direct: false,
                     recovery_device_id: input.recovery_device_id,
                     recovery_consent_id: input.recovery_consent_id,
@@ -1237,10 +1251,13 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                 if profile.credential_ref != provider.credential_ref {
                     return Err(error(409, "provider_profile_mismatch"));
                 }
+                if input.shared_workspace { return Err(error(409, "shared_workspace_requires_agent_service")); }
                 let config = super::owned_runtime::StartConfig {
                     agent_id: agent,
                     binding_id: input.binding_id,
                     host_files: input.host_files,
+                    shared_workspace: false,
+                    shared_workspace_pin: None,
                     owner_direct: false,
                     recovery_device_id: input.recovery_device_id,
                     recovery_consent_id: input.recovery_consent_id,
@@ -1525,6 +1542,16 @@ async fn dispatch(req: &mut Request, depot: &Depot, res: &mut Response) {
 #[cfg(test)]
 mod profile_tests {
     use super::*;
+    #[test]
+    fn shared_start_requires_the_workspace_shown_to_the_owner() {
+        let missing: StartRuntime = serde_json::from_value(json!({"sharedWorkspace":true})).unwrap();
+        assert!(!missing.accepts_shared_workspace("/project"));
+        let selected: StartRuntime = serde_json::from_value(json!({"sharedWorkspace":true,"expectedWorkspace":"/project"})).unwrap();
+        assert!(selected.accepts_shared_workspace("/project"));
+        assert!(!selected.accepts_shared_workspace("/other"));
+        let legacy: StartRuntime = serde_json::from_value(json!({})).unwrap();
+        assert!(legacy.accepts_shared_workspace("/project"));
+    }
     #[test]
     fn runtime_start_defaults_to_estimated_and_accepts_legacy_checkbox() {
         for legacy in [None, Some(false), Some(true)] {
