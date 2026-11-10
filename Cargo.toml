@@ -14,7 +14,9 @@ version = "0.5.0-rc.5"
 metadata.makepad-auto-version = "zqpv-Yj-K7WNVK2I8h5Okhho46Q="
 
 [dependencies]
-hagency = { path = "crates/hagency-client/native/hagency" }
+# Native grant-review bridge types are used by the host in every build mode.
+# Original-source adoption entry points retain the Desktop feature gate below.
+hagency = { path = "crates/hagency-client/native/hagency", features = ["resource-adoption"] }
 hagency-core = { path = "crates/hagency-client/native/hagency-core" }
 hagency-owner-dashboard = { path = "crates/owner-dashboard" }
 octosense-theme-contract = { path = "crates/theme-contract", version = "0.1.0" }

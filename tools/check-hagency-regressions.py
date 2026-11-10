@@ -78,6 +78,7 @@ def main():
             raise SystemExit(f"Inspect {log}; no release until this check passes")
         return text
 
+    run("native-minimal-agent-chat", ["cargo", "check", "--locked", "--no-default-features", "--features", "agent_chat"])
     run("owner-source-pins", ["python3", "tools/check-owner-source-pins.py"])
     run("owner-source-boundary", ["python3", "tools/test-owner-source-pins.py"])
     run("package", ["bash", "tools/package-system-apps/check.sh"])

@@ -25,7 +25,9 @@ jobs:
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: 4
-      RUST_TEST_THREADS: 4
+      # Debug schema/fixture construction must not consume another test's
+      # bounded inspection deadline. Concurrency scenarios remain inside tests.
+      RUST_TEST_THREADS: 1
       RUST_MIN_STACK: 16777216
     defaults:
       run:
