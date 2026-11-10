@@ -1,3 +1,6 @@
+// JIT PORT: relax spends more solver depth per nested future than rustc;
+// the deep matrix-sdk Send checks overflow at the default 128.
+#![recursion_limit = "1024"]
 use hagency_core::custody::{Delivery, MAX_DELIVERY_BYTES};
 use hagency_store::{DomainStore, Error, Store};
 /// Explicit process-fixed resource authority for isolated native-host fixtures.
@@ -5,6 +8,7 @@ use hagency_store::{DomainStore, Error, Store};
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod test_support {
+    pub use hagency_store::owner_resources::OwnerResourceRegistry;
     pub fn initialize_resource_authority_at(
         root: &std::path::Path,
     ) -> Result<(), hagency_platform::legacy_writer::Error> {
