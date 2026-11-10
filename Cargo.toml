@@ -628,5 +628,9 @@ name = "system_events_review"
 required-features = ["onboarding-test-support"]
 
 [[example]]
+name = "typing_notice_review"
+required-features = ["onboarding-test-support"]
+
+[[example]]
 name = "message_metadata_review"
 required-features = ["onboarding-test-support"]

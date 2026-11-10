@@ -438,6 +438,7 @@ pub struct RoomInputBar {
     #[rust] is_encrypted: bool,
     /// Whether the send button is currently enabled (the message input is non-empty).
     #[rust] is_send_enabled: bool,
+    #[rust] typing_broadcast: TypingBroadcast,
     /// The room or thread that this RoomInputBar is currently within.
     #[rust] timeline_kind: Option<TimelineKind>,
     /// The widget UID of the RoomScreen containing this RoomInputBar.
@@ -630,7 +631,25 @@ impl Widget for RoomInputBar {
     }
 }
 
+#[derive(Default)]
+struct TypingBroadcast { active: bool }
+impl TypingBroadcast {
+    fn observe(&mut self, changed: bool, empty: bool) -> Option<bool> {
+        if empty && self.active { self.active=false; Some(false) }
+        else if !empty && changed { self.active=true; Some(true) }
+        else { None }
+    }
+}
+
 impl RoomInputBar {
+    fn stop_typing(&mut self) {
+        if let Some(typing) = self.typing_broadcast.observe(false,true) {
+            if let Some(kind) = &self.timeline_kind {
+                submit_async_request(MatrixRequest::SendTypingNotice {room_id:kind.room_id().clone(),typing});
+            }
+        }
+    }
+
     fn child_refs(&mut self, cx: &mut Cx) -> &InputBarChildRefs {
         self.child_refs.get_or_insert_with(|| InputBarChildRefs {
             reply_preview_content: self.view.widget(cx, ids!(replying_preview.reply_preview_content)),
@@ -755,6 +774,7 @@ impl RoomInputBar {
         let switched_tab = if let Event::Actions(actions) = event {
             actions.iter().any(|action| matches!(action.as_widget_action().cast(), DockAction::TabWasPressed(_)))
         } else { false };
+        if switched_tab || matches!(event, Event::Background | Event::Shutdown) { self.stop_typing(); }
         if self.speech.is_some() {
             if switched_tab || matches!(event, Event::Background | Event::Shutdown) {
                 self.cancel_dictation(cx);
@@ -1042,18 +1062,12 @@ impl RoomInputBar {
 
         // If the user starts/stops typing in the message input box,
         // send a typing notice to the room and update the send_message_button state.
-        let is_text_input_empty = if let Some(new_text) = text_input.changed(actions) {
-            let is_empty = new_text.is_empty();
-            if can_post {
-                submit_async_request(MatrixRequest::SendTypingNotice {
-                    room_id: timeline_kind.room_id().clone(),
-                    typing: !is_empty,
-                });
-            }
-            is_empty
-        } else {
-            text_input.text().is_empty()
-        };
+        // Read the final composer after sending/slash commands have cleared it.
+        // Programmatic clears do not emit TextInput::Changed.
+        let is_text_input_empty = text_input.text().is_empty();
+        if let Some(typing) = self.typing_broadcast.observe(can_post && text_input.changed(actions).is_some(), is_text_input_empty || !can_post) {
+            submit_async_request(MatrixRequest::SendTypingNotice {room_id: timeline_kind.room_id().clone(), typing});
+        }
         // Only restyle the button when its enabled state actually changes,
         // not on every actions pass.
         let should_enable = !is_text_input_empty;
@@ -1619,6 +1633,7 @@ impl RoomInputBarRef {
         let Some(mut inner) = self.borrow_mut() else { return };
         let room_id = timeline_kind.room_id().to_owned();
         if inner.timeline_kind.as_ref() != Some(&timeline_kind) {
+            inner.stop_typing();
             inner.cancel_dictation(cx);
         }
         inner.room_screen_widget_uid = Some(room_screen_widget_uid);
@@ -1633,7 +1648,8 @@ impl RoomInputBarRef {
     ///
     /// If speech recognition is running, this will stop it and release the microphone.
     pub fn save_state(&self) -> RoomInputBarState {
-        let Some(inner) = self.borrow() else { return Default::default() };
+        let Some(mut inner) = self.borrow_mut() else { return Default::default() };
+        inner.stop_typing();
         let saved = RoomInputBarState {
             was_replying_preview_visible: inner.was_replying_preview_visible,
             replying_to: inner.replying_to.clone(),
@@ -1830,4 +1846,19 @@ enum ShowEditingPaneBehavior {
     RestoreExisting {
         editing_pane_state: EditingPaneState,
     },
+}
+
+#[cfg(test)]
+mod typing_broadcast_tests {
+    use super::TypingBroadcast;
+    #[test]
+    fn programmatic_send_clear_stops_typing_without_a_changed_action() {
+        let mut state=TypingBroadcast::default();
+        assert_eq!(state.observe(true,false),Some(true));
+        assert_eq!(state.observe(false,false),None);
+        assert_eq!(state.observe(false,true),Some(false));
+        assert_eq!(state.observe(false,true),None);
+        assert_eq!(state.observe(true,false),Some(true));
+        assert_eq!(state.observe(true,true),Some(false));
+    }
 }

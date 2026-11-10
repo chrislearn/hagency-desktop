@@ -115,6 +115,8 @@ def main():
         ("compact-mentions", "shared::mention"),
         ("chat-information-layout", "desktop_information_columns_tests"),
         ("system-update-disclosures", "home::room_screen::system_updates::"),
+        ("typing-expiry", "room::typing_notice::"),
+        ("typing-broadcast", "room::room_input_bar::typing_broadcast_tests"),
         ("chat-layout", "home::main_desktop_ui::chat_layout_tests"),
         ("miniapp-dock", "mini_apps_side_tests"),
         ("owner-approval-navigation", "owner_approvals::tests"),
