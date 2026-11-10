@@ -719,11 +719,13 @@ script_mod! {
     mod.widgets.SmallStateEvent = View {
         width: Fill,
         height: Fit,
-        flow: Right,
+        flow: Down,
         margin: Inset{ top: 4.0, bottom: 4.0}
         padding: Inset{ top: 1.0, bottom: 1.0, right: 10.0 }
         spacing: 0.0
         cursor: MouseCursor.Default
+
+        system_updates := RinxButton {visible: false width: Fill height: 36 margin: Inset{left: 12 right: 12}}
 
         body := View {
             width: Fill,
@@ -1232,7 +1234,7 @@ pub(crate) fn index_of_event(
 /// The main widget that displays a single Matrix room.
 #[derive(Script, Widget)]
 pub struct RoomScreen {
-    #[deref] view: View,
+    #[find] #[deref] view: View,
     #[find] #[live] agent_status: WidgetRef,
     #[rust] agent_status_drawn: bool,
 
@@ -1802,6 +1804,24 @@ impl Widget for RoomScreen {
                 self.view.view(cx, ids!(room_screen_wrapper)).handle_event(cx, event, &mut Scope::empty());
             }
         });
+        // Handle disclosures in the room-local capture. Native pointer actions
+        // are consumed here before the app routes higher-level room actions.
+        let disclosure_rows = portal_list.items_with_actions(&actions_generated_within_this_room_screen);
+        let mut handled_disclosures = HashSet::new();
+        for (index, wr) in disclosure_rows {
+            if !handled_disclosures.insert(index) { continue; }
+            if wr.button(cx, ids!(system_updates)).clicked(&actions_generated_within_this_room_screen) {
+                if let Some(tl) = self.tl_state.as_mut() {
+                    if let Some(event) = tl.items.get(index).and_then(|item| item.as_event()) {
+                        let id = event.identifier();
+                        if !tl.expanded_system_updates.remove(&id) { tl.expanded_system_updates.insert(id); }
+                    }
+                }
+                self.relayout_redraws_left = 12;
+                self.relayout_last_first_id = usize::MAX;
+                cx.redraw_all();
+            }
+        }
         // Here, we handle and remove any general actions that are relevant to only this RoomScreen.
         // Removing the handled actions ensures they are not mistakenly handled by other RoomScreen widget instances.
         actions_generated_within_this_room_screen.retain(|action| {
@@ -1934,9 +1954,19 @@ impl Widget for RoomScreen {
             let tl_items = &tl_state.items;
             let last_item_id = tl_items.len();
             let cleared_through = super::chat_actions::cleared_through(tl_state.kind.room_id());
+            let system_groups = system_update_ranges(tl_items.iter().map(|item| {
+                item.as_event().is_some_and(|event| {
+                    cleared_through.is_none_or(|cutoff| u64::from(event.timestamp().0) > cutoff)
+                        && is_groupable_system_update(event.content())
+                })
+            }));
 
             let list = list_ref.deref_mut();
             list.set_item_range(cx, 0, last_item_id + usize::from(has_agent_status));
+            let skipped_system_updates = system_groups.iter().filter(|range| tl_items[range.start].as_event()
+                .is_some_and(|event| !tl_state.expanded_system_updates.contains(&event.identifier())))
+                .map(|range| range.start + 1..range.end).collect::<Vec<_>>();
+            list.set_skipped_ranges(&skipped_system_updates);
             self.agent_status_drawn = false;
 
             while let Some(item_id) = list.next_visible_item(cx) {
@@ -1961,6 +1991,16 @@ impl Widget for RoomScreen {
                         list.item(cx, item_id, id!(Empty)).draw_all(cx, scope);
                         continue;
                     }
+
+                    let system_group = system_groups.iter().find(|range| range.contains(&tl_idx));
+                    let group_open = system_group.is_some_and(|range| tl_items[range.start].as_event()
+                        .is_some_and(|event| tl_state.expanded_system_updates.contains(&event.identifier())));
+                    if system_group.is_some_and(|range| range.start != tl_idx) && !group_open {
+                        list.item(cx, item_id, id!(Empty)).draw_all(cx, scope);
+                        continue;
+                    }
+                    let group_header = system_group.filter(|range| range.start == tl_idx)
+                        .map(|range| (range.len(), group_open));
 
                     // Determine whether this item's content and profile have been drawn since the last update.
                     // Pass this state to each of the `populate_*` functions so they can attempt to re-use
@@ -2019,6 +2059,7 @@ impl Widget for RoomScreen {
                                             event_tl_item,
                                             poll_state,
                                             item_drawn_status,
+                                            group_header,
                                         ),
                                         MsgLikeKind::UnableToDecrypt(utd) => populate_small_state_event(
                                             cx,
@@ -2028,6 +2069,7 @@ impl Widget for RoomScreen {
                                             event_tl_item,
                                             utd,
                                             item_drawn_status,
+                                            group_header,
                                         ),
                                         MsgLikeKind::LiveLocation(live_loc) => populate_small_state_event(
                                             cx,
@@ -2037,6 +2079,7 @@ impl Widget for RoomScreen {
                                             event_tl_item,
                                             live_loc,
                                             item_drawn_status,
+                                            group_header,
                                         ),
                                         MsgLikeKind::Other(other) => populate_small_state_event(
                                             cx,
@@ -2046,6 +2089,7 @@ impl Widget for RoomScreen {
                                             event_tl_item,
                                             other,
                                             item_drawn_status,
+                                            group_header,
                                         ),
                                     }
                                 }
@@ -2071,6 +2115,7 @@ impl Widget for RoomScreen {
                                         event_tl_item,
                                         membership_change,
                                         item_drawn_status,
+                                        group_header,
                                     )
                                 }
                             }
@@ -2082,6 +2127,7 @@ impl Widget for RoomScreen {
                                 event_tl_item,
                                 profile_change,
                                 item_drawn_status,
+                                group_header,
                             ),
                             TimelineItemContent::OtherState(other) => {
                                 // Don't shown noisy updates like policy rules, server ACLs, space links, custom state events, etc.
@@ -2107,6 +2153,7 @@ impl Widget for RoomScreen {
                                         event_tl_item,
                                         other,
                                         item_drawn_status,
+                                        group_header,
                                     )
                                 }
                             }
@@ -3555,6 +3602,12 @@ impl RoomScreen {
         let related_msg_tl_index = index_of_event(&tl.items, target_event_id, max_tl_idx, MAX_ITEMS_TO_SEARCH_THROUGH);
 
         if let Some(index) = related_msg_tl_index {
+            // A search, receipt or reply jump must reveal a target inside a folded run.
+            if let Some(range) = system_update_ranges(tl.items.iter().map(|item| item.as_event()
+                .is_some_and(|event| is_groupable_system_update(event.content())))).into_iter().find(|r| r.contains(&index)) {
+                if let Some(event) = tl.items[range.start].as_event() { tl.expanded_system_updates.insert(event.identifier()); }
+                cx.redraw_all();
+            }
             // log!("The related message {replied_to_event} was immediately found in room {}, scrolling to from index {reply_message_item_id} --> {index} (first ID {}).", tl.kind.room_id(), portal_list.first_id());
             let speed = 50.0;
             portal_list.smooth_scroll_to(cx, index, speed, None, 10.0);
@@ -3693,6 +3746,7 @@ impl RoomScreen {
                     tombstone_info,
                     pending_downloads: SmallVec::new(),
                     expanded_reply_previews: HashSet::new(),
+                    expanded_system_updates: HashSet::new(),
                     #[cfg(feature = "agent_chat")]
                     agent_chat_approvals: ApprovalUiState::default(),
                     #[cfg(feature = "agent_chat")]
@@ -4274,7 +4328,12 @@ impl RoomScreen {
     /// Returns the widget refs used on every event, caching them if None.
     fn cached_widget_refs(&mut self, cx: &mut Cx) -> RoomScreenWidgetRefs {
         if let Some(refs) = &self.cached_refs {
-            return refs.clone();
+            // The adaptive room view may not have materialized on the first
+            // event. Never retain an empty reference for all later interactions.
+            if !refs.portal_list.is_empty() && !refs.user_profile_sliding_pane.is_empty()
+                && !refs.loading_pane.is_empty() && !refs.room_input_popup_menu.is_empty() {
+                return refs.clone();
+            }
         }
         let refs = RoomScreenWidgetRefs {
             portal_list: self.portal_list(cx, ids!(timeline.list)),
@@ -4972,6 +5031,8 @@ struct TimelineUiState {
     /// Reply previews the user has eaxpanded that should be shown in full.
     /// Collapsed reply previews (their default state) are absent from this set.
     expanded_reply_previews: HashSet<TimelineEventItemId>,
+    /// Track disclosures by event ID rather than transient timeline indices.
+    expanded_system_updates: HashSet<TimelineEventItemId>,
 
     /// Local decision/expiry state of the agent-chat approval cards in this timeline.
     #[cfg(feature = "agent_chat")]
@@ -7172,10 +7233,12 @@ fn populate_small_state_event(
     event_tl_item: &EventTimelineItem,
     event_content: &impl SmallStateEventContent,
     item_drawn_status: ItemDrawnStatus,
+    group_header: Option<(usize, bool)>,
 ) -> (WidgetRef, ItemDrawnStatus) {
     let mut new_drawn_status = item_drawn_status;
     let template = if super::home_screen::effective_is_desktop(cx) { id!(SmallStateEvent) } else { id!(MobileStateEvent) };
     let (item, existed) = list.item_with_existed(cx, item_id, template);
+    present_system_update_group(cx, &item, group_header);
     // The content of a small state event view may depend on the profile info,
     // so we can only mark the content as drawn after the profile has been fully drawn and cached.
     let skip_redrawing_profile = existed && item_drawn_status.profile_drawn;
@@ -8353,4 +8416,14 @@ mod desktop_information_columns_tests {
         }
     }
 
+}
+
+#[path = "room_screen/system_updates.rs"]
+mod system_updates;
+use system_updates::{system_update_ranges, is_groupable_system_update, present_system_update_group};
+
+/// Offline layout fixture using the production disclosure presentation.
+#[cfg(feature = "onboarding-test-support")]
+pub fn review_system_update_group(cx: &mut Cx, item: &WidgetRef, group: Option<(usize, bool)>) {
+    present_system_update_group(cx, item, group);
 }
