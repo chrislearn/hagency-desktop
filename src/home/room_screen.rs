@@ -8052,6 +8052,84 @@ mod desktop_information_columns_tests {
     use super::*;
     use makepad_widgets::makepad_draw::cx_draw::CxDraw;
 
+    #[cfg(feature = "onboarding-test-support")]
+    #[test]
+    fn agent_picker_receives_input_outside_its_sidebar() {
+        use std::cell::Cell;
+        let mut cx = Cx::new(Box::new(|_, _| {}));
+        let root = cx.with_vm(|vm| {
+            makepad_widgets::script_mod(vm);
+            crate::app::register_widgets(vm);
+            let value = script_eval!(vm, {mod.widgets.RoomScreen {desktop_chat_header.visible: true}});
+            let root = WidgetRef::script_from_value(vm, value);
+            root.register_as_ui_root(vm);
+            root
+        });
+        let mut screen = root.borrow_mut::<RoomScreen>().unwrap();
+        screen.room_name_id = Some(RoomNameId::empty("!review:example.invalid".try_into().unwrap()));
+        screen.chat_info_requested = true;
+        draw(&mut cx, &mut screen, 1280.0);
+        screen.view.mobile_chat_info(&mut cx, ids!(desktop_chat_info)).review_agent_picker(&mut cx, "ready");
+        let dropdown = screen.view.view(&mut cx, ids!(desktop_chat_info_panel)).drop_down(&mut cx, ids!(my_agents));
+        dropdown.set_selected_item(&mut cx, 0);
+        let pass = DrawPass::new(&mut cx);pass.set_size(&mut cx, dvec2(1280.0, 900.0));
+        let mut list = DrawList2d::new(&mut cx);
+        let overlay = Overlay {draw_list: DrawList::new(&mut cx)};
+        let mut render = |cx: &mut Cx, screen: &mut RoomScreen| {
+            cx.redraw_all();
+            let event = DrawEvent::default();let mut draw = CxDraw::new(cx, &event);let mut cx = Cx2d::new(&mut draw);
+            cx.begin_pass(&pass, None);list.begin_always(&mut cx);overlay.begin(&mut cx);
+            cx.begin_root_turtle(dvec2(1280.0,900.0), Layout::flow_overlay());
+            screen.view.draw_walk_all(&mut cx, &mut Scope::empty(), Walk {
+                width: Size::Fixed(1280.0), height: Size::Fixed(760.0), ..Walk::default()
+            });
+            overlay.end(&mut cx);cx.end_pass_sized_turtle();list.end(&mut cx);cx.end_pass(&pass);
+        };
+        let click = |cx: &mut Cx, screen: &mut RoomScreen, point: Vec2d| {
+            for event in [
+                Event::MouseDown(MouseDownEvent {abs: point, button: MouseButton::PRIMARY,
+                    window_id: WindowId(0,0), modifiers: KeyModifiers::default(),
+                    handled: Cell::new(Area::Empty), time: 1.0}),
+                Event::MouseUp(MouseUpEvent {abs: point, button: MouseButton::PRIMARY,
+                    window_id: WindowId(0,0), modifiers: KeyModifiers::default(), time: 1.1}),
+            ] {
+                let actions = cx.capture_actions(|cx| screen.handle_event(cx, &event, &mut Scope::empty()));
+                screen.handle_event(cx, &Event::Actions(actions), &mut Scope::empty());
+            }
+        };
+        render(&mut cx, &mut screen);
+        let rect = dropdown.area().rect(&cx);
+        assert!(rect.size.x > 100.0, "the real picker must be open");
+        let point = rect.pos + rect.size * 0.5;
+        assert!(!screen.is_over_desktop_chat_info(&mut cx, &Event::MouseDown(MouseDownEvent {
+            abs: point, button: MouseButton::PRIMARY, window_id: WindowId(0,0),
+            modifiers: KeyModifiers::default(), handled: Cell::new(Area::Empty), time: 1.0,
+        })), "the full-window modal must extend outside the sidebar");
+        click(&mut cx, &mut screen, point);
+        render(&mut cx, &mut screen);
+        let mut agent_item = WidgetRef::empty();
+        dropdown.borrow().unwrap().children(&mut |id, item| {if id == LiveId(1) {agent_item = item;}});
+        let rect = agent_item.area().rect(&cx);
+        assert!(rect.size.x > 100.0, "the eligible Agent must appear in the popup");
+        click(&mut cx, &mut screen, rect.pos + rect.size * 0.5);
+        assert_eq!(dropdown.selected_item(), 1, "the timeline must not consume the Agent selection");
+        // Escape dismisses the modal even when its dropdown is still open.
+        // The dropdown must retire its popup and sweep lock along with it.
+        dropdown.borrow_mut().unwrap().set_active(&mut cx);
+        render(&mut cx, &mut screen);
+        let panel = screen.view.view(&mut cx, ids!(desktop_chat_info_panel));
+        let modal = panel.modal(&mut cx, ids!(agent_picker_modal));
+        // Modal closes itself before emitting its tagged dismissal action.
+        // Deliver that framework boundary without depending on an OS key loop.
+        modal.close(&mut cx);
+        let actions = cx.capture_actions(|cx| cx.widget_action(modal.widget_uid(), ModalAction::Dismissed));
+        screen.handle_event(&mut cx, &Event::Actions(actions), &mut Scope::empty());
+        assert!(!modal.is_open());
+        let mut hidden_menu_items = 0;
+        dropdown.borrow().unwrap().children(&mut |_, _| hidden_menu_items += 1);
+        assert_eq!(hidden_menu_items, 0, "dismissing the picker must also retire its dropdown's input capture");
+    }
+
     #[cfg(feature = "agent_chat")]
     #[test]
     fn agent_replies_reflow_across_the_available_chat_width_when_resized() {
