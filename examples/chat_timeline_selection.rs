@@ -20,6 +20,13 @@ script_mod! {
                         width: Fill height: Fit flow: Right
                         inspect := Button {text: "Inspect" grab_key_focus: false}
                         reset := Button {text: "Reset position" grab_key_focus: false}
+                        spinner_container := View {
+                            width: 24 height: 24 flow: Right align: Align{x: 0.5 y: 0.5}
+                            activity_spinner := PacedLoadingSpinner {
+                                width: 20 height: 20 visible: false
+                                draw_bg +: {color: mod.widgets.RINX_ACCENT stroke_width: 2.0}
+                            }
+                        }
                     }
                     result := Label {width: Fill height: 65 text: "Ready"}
                     timeline := Timeline {
@@ -143,6 +150,17 @@ impl AppMain for App {
                     self.block_timers = false;
                     self.ui.view(cx, ids!(typing_container)).set_visible(cx, true);
                 }
+                "perf:spinner-show" => self.ui.widget(cx, ids!(activity_spinner)).set_visible(cx, true),
+                "perf:spinner-hide" => self.ui.widget(cx, ids!(activity_spinner)).set_visible(cx, false),
+                "perf:spinner-obscure" | "perf:spinner-obscure-blocked" => {
+                    self.ui.view(cx, ids!(spinner_container)).set_visible(cx, false);
+                    self.block_timers = command == "perf:spinner-obscure-blocked";
+                }
+                "perf:spinner-reveal" => {
+                    self.block_timers = false;
+                    self.ui.view(cx, ids!(spinner_container)).set_visible(cx, true);
+                }
+                "perf:spinner-reapply" => cx.request_style_reload(),
                 "perf:start" => {
                     self.measured_draws = 0;
                     self.measured_timers = 0;

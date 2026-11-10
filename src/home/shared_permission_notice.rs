@@ -45,7 +45,7 @@ script_mod! {
         width: Fill height: Fit flow: Down spacing: 8 padding: 12
         visible: false show_bg: true draw_bg.color: mod.widgets.RINX_HOVER
         status := View {width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
-            activity_spinner := LoadingSpinner {width: 20 height: 20 visible: false draw_bg +: {color: mod.widgets.RINX_ACCENT stroke_width: 2.0}}
+            activity_spinner := PacedLoadingSpinner {width: 20 height: 20 visible: false draw_bg +: {color: mod.widgets.RINX_ACCENT stroke_width: 2.0}}
             title := Label {width: Fill height: Fit flow: Flow.Right{wrap: true} draw_text.color: mod.widgets.RINX_INK}
         }
         context := Label {width: Fill height: Fit draw_text.color: mod.widgets.RINX_MUTED}
@@ -78,10 +78,8 @@ pub struct SharedPermissionNotice {
     #[rust] execution_busy:bool,
 }
 impl SharedPermissionNotice {
-    /// Shows the spinner while the Agent works. It needs no clock of ours: its
-    /// shader reads `draw_pass.time`, so the platform repaints it every frame on
-    /// the GPU. Redrawing it from a timer re-ran the draw of the whole timeline it
-    /// sits in, many times a second for as long as the Agent worked.
+    /// Shows the spinner while the Agent works. The spinner updates its retained
+    /// draw call without re-running the draw of the timeline that contains it.
     fn sync_animation(&mut self,cx:&mut Cx) {
         let animate=self.active && self.execution_busy && self.rows.is_empty() && self.error.is_empty();
         self.view.widget(cx,ids!(activity_spinner)).set_visible(cx,animate);
@@ -246,11 +244,8 @@ mod tests {
             let started=timers_started(&mut cx,|cx|inner.render(cx));
             assert_eq!(inner.view.visible(),card,"{step}: card");
             assert_eq!(inner.view.widget(&mut cx,ids!(activity_spinner)).visible(),spinner,"{step}: spinner");
-            // The notice is drawn as the timeline's last row. A clock that redraws
-            // the spinner re-runs the draw of every visible message on each tick,
-            // re-reading the PNG header of every color emoji glyph in them (the
-            // 20 Hz loop seen while an Agent worked). The spinner's shader animates
-            // from `draw_pass.time` without any redraw.
+            // The notice is the timeline's last row. Rendering the status must
+            // not start a clock that redraws every visible message on each tick.
             assert_eq!(started,0,"{step}: the notice must not start its own redraw clock");
         }
     }
