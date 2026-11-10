@@ -24,6 +24,12 @@ A checkout that already exists is left alone, so `.sources/makepad` may be a sym
 tree of your own; `.jit/sources.sh --check` says whether it is at the pin. Without the checkout
 no cargo command works here, because the manifest names it.
 
+The standalone workspaces that are built and tested on their own use the same checkout through
+`../../.sources/makepad`: `crates/article-makepad`, `crates/owner-dashboard` and
+`tools/hagency-script-review` (so mini-app scripts are reviewed on the script VM the app runs).
+`tools/windows-render-probe` still pins the fork makepad; it is a Windows release tool and was
+not ported.
+
 The runner is built from that same makepad tree. It builds makepad's own proc macros into
 itself and refuses a program whose makepad tree differs, so rebuild it whenever the pin moves:
 
@@ -66,6 +72,9 @@ Results on 10 Nov 2026 (Apple silicon Mac):
 - cargo: `cargo test --locked --features agent_chat,octosense-module --lib` 802 passed,
   0 failed, 2 ignored; `cargo build --locked --features agent_chat` links, and that binary
   runs signed in like the JIT run.
+- `python3 tools/check-hagency-regressions.py` (the release gate): 117 checks passed, exit 0.
+- With `-D warnings` off, the five desktop CI builds (Ubuntu x86_64 and arm64, macOS arm64 and
+  x86_64, Windows) compile and link this line.
 - `cargo check --locked --no-default-features --features agent_chat` fails here exactly as it
   does on the fork line (`OwnerGrant*` imports); it is not a port problem.
 
@@ -116,7 +125,9 @@ Marked `JIT PORT` in the source.
 
 ## Not verified
 
-- Linux, Windows, iOS and Android on this line: nothing has been built or run there.
+- Linux and Windows: the app compiles and links in CI, but it has not been run there.
+- iOS and Android: not built (see the mobile packaging gap above).
+- Release packaging (`release.yml`, `release-verify.yml`) on this line.
 - Hagency services behind sign-in (owner daemon, Pasion, Agents): the test front serves only
   discovery and OAuth, so the app shows "Could not confirm permission status; retrying."
 - TLS under the JIT was exercised only by one HTTPS request through the Matrix SDK's client
