@@ -20,6 +20,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "permission_review.rs"]
+mod permission_review;
+
 #[path = "execution_ui.rs"]
 mod execution_ui;
 #[path = "sheet_ui.rs"]
@@ -366,6 +369,14 @@ script_mod! {
             primary := RinxPrimaryButton {width: Fill height: 50 margin: 0 grab_key_focus: false text: #(crate::i18n::tr("Publish")) i18n_text: "Publish" draw_bg +: {border_radius: 12.0}}
         }
     }
+    let PermissionReviewGroup = View {
+        width: Fill height: Fit flow: Down spacing: 4
+        header := RinxKeyButton {width: Fill height: 30 margin: 0}
+        summary := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
+        details_view := View {visible: false width: Fill height: Fit flow: Down padding: Inset{left: 8 top: 4}
+            details := RinxLabel {width: Fill flow: Flow.Right{wrap: true}}
+        }
+    }
     mod.widgets.MiniAppsPanel = #(MiniAppsPanel::register_widget(vm)) {
         width: Fill height: Fill flow: Down padding: 20 spacing: 16
         show_bg: true
@@ -423,14 +434,22 @@ script_mod! {
                 run := RinxButton {text: #(crate::i18n::tr("Run")) i18n_text: "Run"}
             }
         }
-        hagency_review := View {visible: false width: Fill height: Fill flow: Down spacing: 16
-            permissions_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
+        hagency_review := View {visible: false width: Fill height: Fill flow: Down spacing: 12
+            permissions_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 12
                 RinxPageTitle {width: Fill text: #(crate::i18n::tr("Hagency permissions")) i18n_text: "Hagency permissions"}
                 account := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
                 RinxLabel {width: Fill flow: Flow.Right{wrap: true}
                     text: #(crate::i18n::tr("Hagency uses your current Matrix account.")) i18n_text: "Hagency uses your current Matrix account."
                 }
-                permissions := RinxLabel {width: Fill flow: Flow.Right{wrap: true}}
+                RinxHint {width: Fill flow: Flow.Right{wrap: true}
+                    text: #(crate::i18n::tr("Expand a group to review its complete permissions.")) i18n_text: "Expand a group to review its complete permissions."
+                }
+                permission_accounts := PermissionReviewGroup {}
+                permission_resources := PermissionReviewGroup {}
+                permission_agents := PermissionReviewGroup {}
+                permission_approvals := PermissionReviewGroup {}
+                permission_files := PermissionReviewGroup {}
+                permission_other := PermissionReviewGroup {}
                 RinxHint {width: Fill flow: Flow.Right{wrap: true}
                     text: #(crate::i18n::tr("Approval remains limited to your assigned server role. Provider credentials stay in the native host."))
                     i18n_text: "Approval remains limited to your assigned server role. Provider credentials stay in the native host."
@@ -624,6 +643,8 @@ pub struct MiniAppsPanel {
     #[rust]
     review_notice: String,
     #[rust]
+    permission_groups_open: [bool; permission_review::COUNT],
+    #[rust]
     package: Option<Package>,
     #[rust]
     lease: Option<Lease>,
@@ -753,6 +774,12 @@ impl Drop for MiniAppsPanel {
         }
     }
 }
+fn permission_group_paths() -> [&'static [LiveId]; permission_review::COUNT] {
+    [ids!(hagency_review.permission_accounts), ids!(hagency_review.permission_resources),
+     ids!(hagency_review.permission_agents), ids!(hagency_review.permission_approvals),
+     ids!(hagency_review.permission_files), ids!(hagency_review.permission_other)]
+}
+
 impl MiniAppsPanel {
     fn show_catalog(&mut self, cx: &mut Cx) {
         self.direct_agent = false;
@@ -1178,10 +1205,20 @@ impl MiniAppsPanel {
             self.view.view(cx, ids!(app_content)).set_visible(cx, false);
             let account = crate::sliding_sync::current_user_id().map(|id| id.to_string()).unwrap_or_default();
             self.view.label(cx, ids!(hagency_review.account)).set_text(cx, &account);
-            let permissions = self.package.as_ref().map(|package| package.manifest.capabilities.iter()
-                .filter_map(|cap| octosense_app_contract::hagency::words(cap))
-                .map(crate::i18n::tr).collect::<Vec<_>>().join("\n")).unwrap_or_default();
-            self.view.label(cx, ids!(hagency_review.permissions)).set_text(cx, &permissions);
+            if let Some(package) = &self.package {
+                let groups = permission_review::groups(&package.manifest.capabilities);
+                for (index, path) in permission_group_paths().into_iter().enumerate() {
+                    let group = &groups[index];
+                    let view = self.view.view(cx, path);
+                    view.set_visible(cx, !group.capabilities.is_empty());
+                    let open = self.permission_groups_open[index];
+                    view.button(cx, ids!(header)).set_text(cx, &format!("{} {} · {}",
+                        if open {"−"} else {"+"}, crate::i18n::tr(group.title), group.capabilities.len()));
+                    view.label(cx, ids!(summary)).set_text(cx, crate::i18n::tr(group.summary));
+                    view.view(cx, ids!(details_view)).set_visible(cx, open);
+                    view.label(cx, ids!(details_view.details)).set_text(cx, &permission_review::details(group));
+                }
+            }
             self.view.widget(cx, ids!(notice)).set_visible(cx, !self.notice_text.is_empty() && self.notice_text != self.review_notice);
         }
         // TextInput has no visibility property. Hide its containing View so
@@ -1255,6 +1292,7 @@ impl MiniAppsPanel {
         self.review_package(cx, package)
     }
     fn review_package(&mut self, cx: &mut Cx, package: Package) -> Result<(), String> {
+        self.permission_groups_open = [false; permission_review::COUNT];
         let room = self.view.text_input(cx, ids!(import_form.room)).text();
         if !room.trim().is_empty() {
             ruma::RoomId::parse(room.trim()).map_err(|_| "Invalid Matrix room ID")?;
@@ -1265,7 +1303,10 @@ impl MiniAppsPanel {
         self.view.view(cx, ids!(bundle_path)).set_visible(cx, imported);
         self.review_notice = format!("{} {} · {}\nServices: {}\nAllowed room: {}\nRun grants these services for this session. Octos turns may use the connected core's tools.",package.manifest.name,package.manifest.version,origin,services,if room.trim().is_empty(){"None"}else{room.trim()});
         if package.builtin_id() == Some(super::palpo::APP_ID) {
-            let permissions = package.manifest.capabilities.iter().filter_map(|cap| octosense_app_contract::hagency::words(cap)).map(crate::i18n::tr).collect::<Vec<_>>().join("\n");
+            let permissions = permission_review::groups(&package.manifest.capabilities).iter()
+                .filter(|group| !group.capabilities.is_empty())
+                .map(|group| format!("{}\n{}", crate::i18n::tr(group.title), permission_review::details(group)))
+                .collect::<Vec<_>>().join("\n\n");
             self.review_notice = format!("{}\n{permissions}\n{}\n{}", crate::i18n::tr("Hagency uses your current Matrix account."), crate::i18n::tr("Approval remains limited to your assigned server role. Provider credentials stay in the native host."), crate::i18n::tr("Run remembers consent for this account and this exact bundled version."));
         }
         let notice = self.review_notice.clone();
@@ -2037,6 +2078,13 @@ impl Widget for MiniAppsPanel {
                         Err(e) => self.notice(cx, &e),
                     }
                     self.show_approval(cx);
+                }
+            }
+            for (index, path) in permission_group_paths().into_iter().enumerate() {
+                if super::design::key_button_clicked(&self.view.view(cx, path).widget(cx, ids!(header)), actions) {
+                    self.permission_groups_open[index] = !self.permission_groups_open[index];
+                    self.present_review_controls(cx);
+                    cx.redraw_all();
                 }
             }
             let result = if self
