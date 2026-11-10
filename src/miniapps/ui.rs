@@ -161,7 +161,7 @@ script_mod! {
         tag := RinxHint {width: Fit}
     }
     let NativeSheet = View {visible: false width: Fill height: Fill flow: Down spacing: 12 align: Align{x: 0.5}
-        scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 18 align: Align{x: 0.5} padding: Inset{left: 4 right: 14 top: 6 bottom: 10}
+        sheet_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 18 align: Align{x: 0.5} padding: Inset{left: 4 right: 14 top: 6 bottom: 10}
             heading := View {width: Fill{max: 640} height: Fit flow: Down spacing: 8 align: Align{x: 0.5}
                 icons := View {width: Fill height: Fit align: Align{x: 0.5}
                     glyph_publish := SheetBadge {SheetGlyph {draw_icon +: {svg: mod.widgets.ICON_SHARE}}}
@@ -454,7 +454,7 @@ script_mod! {
             }
         }
         account_confirmation := View {visible: false width: Fill height: Fill flow: Down spacing: 16
-            scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
+            sheet_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
                 RinxPageTitle {width: Fill text: #(crate::i18n::tr("Sign in again")) i18n_text: "Sign in again"}
                 RinxLabel {width: Fill flow: Flow.Right{wrap: true} text: #(crate::i18n::tr("Continue with this Matrix account")) i18n_text: "Continue with this Matrix account"}
                 account := RinxLabel {width: Fill flow: Flow.Right{wrap: true}}
@@ -469,7 +469,7 @@ script_mod! {
             }
         }
         account_login_panel := View {visible: false width: Fill height: Fill flow: Down spacing: 16
-            scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 12
+            sheet_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 12
                 RinxPageTitle {text: #(crate::i18n::tr("Sign in to Codex")) i18n_text: "Sign in to Codex"}
                 account := RinxLabel {width: Fill text: ""}
                 status := RinxLabel {width: Fill text: "" draw_text.text_style: theme.font_bold{font_size: (13 * mod.widgets.RINX_TEXT_SCALE)}}
@@ -482,7 +482,7 @@ script_mod! {
             }
         }
         provider_confirmation := View {visible: false width: Fill height: Fill flow: Down spacing: 16
-            scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 20
+            sheet_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 20
                 heading := View {width: Fill height: Fit flow: Right spacing: 12 align: Align{y: 0.5}
                     Icon {width: 24 height: 24 draw_icon +: {svg: ICON_SHIELD color: RINX_ACCENT}}
                     title := RinxPageTitle {width: Fill flow: Flow.Right{wrap: true}}
@@ -514,7 +514,7 @@ script_mod! {
             }
         }
         adoption_confirmation := View {visible: false width: Fill height: Fill flow: Down spacing: 16
-            scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
+            sheet_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
                 heading := View {width: Fill height: Fit flow: Right spacing: 12 align: Align{y: 0.5}
                     Icon {width: 24 height: 24 draw_icon +: {svg: ICON_SHIELD color: RINX_ACCENT}}
                     title := RinxPageTitle {width: Fill text: #(crate::i18n::tr("Review resource migration")) i18n_text: "Review resource migration"}
@@ -538,7 +538,7 @@ script_mod! {
             }
         }
         execution_confirmation := View {visible: false width: Fill height: Fill flow: Down spacing: 16
-            scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
+            sheet_scroll := ScrollYView {width: Fill height: Fill flow: Down spacing: 16
                 RinxPageTitle {width: Fill text: #(crate::i18n::tr("Start approved agent")) i18n_text: "Start approved agent"}
                 owner := RinxLabel {width: Fill flow: Flow.Right{wrap: true}}
                 status := RinxHint {width: Fill flow: Flow.Right{wrap: true}}
@@ -952,10 +952,10 @@ impl MiniAppsPanel {
     /// Write one native consent's words into its window. Empty purpose or
     /// consequence lines are hidden rather than left as blank gaps.
     fn apply_provider_view(&mut self, cx: &mut Cx, (title, body, warning, action): (&str, &str, &str, &str), details: &str, account: &str, ready: bool) {
-        self.view.label(cx, ids!(provider_confirmation.scroll.identity.runtime)).set_text(cx, details);
-        self.view.label(cx, ids!(provider_confirmation.scroll.identity.account)).set_text(cx, account);
-        self.view.label(cx,ids!(provider_confirmation.scroll.heading.title)).set_text(cx,crate::i18n::tr(title));
-        for (path, english) in [(ids!(provider_confirmation.scroll.explanation), body), (ids!(provider_confirmation.scroll.warning), warning)] {
+        self.view.label(cx, ids!(provider_confirmation.sheet_scroll.identity.runtime)).set_text(cx, details);
+        self.view.label(cx, ids!(provider_confirmation.sheet_scroll.identity.account)).set_text(cx, account);
+        self.view.label(cx,ids!(provider_confirmation.sheet_scroll.heading.title)).set_text(cx,crate::i18n::tr(title));
+        for (path, english) in [(ids!(provider_confirmation.sheet_scroll.explanation), body), (ids!(provider_confirmation.sheet_scroll.warning), warning)] {
             self.view.label(cx, path).set_text(cx, crate::i18n::tr(english));
             self.view.widget(cx, path).set_visible(cx, !english.is_empty());
         }
@@ -1071,7 +1071,7 @@ impl MiniAppsPanel {
     /// The monthly-maximum slider: its bounds and the value the sheet stands for.
     fn apply_ceiling_inputs(&mut self, cx: &mut Cx, inputs: Option<(u64, u64, u64)>) {
         let Some((minimum, maximum, value)) = inputs else { return; };
-        let widget = self.view.widget(cx, ids!(ceiling_confirmation.scroll.quota.tokens));
+        let widget = self.view.widget(cx, ids!(ceiling_confirmation.sheet_scroll.quota.tokens));
         if let Some(mut editor) = widget.borrow_mut::<crate::miniapps::design::MiniAppNumberInput>() {
             editor.set_minimum(cx, minimum);
             editor.set_maximum(cx, maximum);
@@ -1084,7 +1084,7 @@ impl MiniAppsPanel {
     fn capture_ceiling_choice(&mut self, cx: &mut Cx) {
         let choosing = self.provider_confirmation.as_ref().and_then(|pending| pending.consent.ceiling()).is_some_and(|prompt| prompt.sheet().choosing);
         if !choosing { return; }
-        let text = self.view.widget(cx, ids!(ceiling_confirmation.scroll.quota.tokens)).text();
+        let text = self.view.widget(cx, ids!(ceiling_confirmation.sheet_scroll.quota.tokens)).text();
         let tokens = text.trim().parse::<u64>().ok();
         let Some(prompt) = self.provider_confirmation.as_mut().and_then(|pending| pending.consent.ceiling_mut()) else { return; };
         if !prompt.choose(tokens) { return; }
@@ -1101,15 +1101,15 @@ impl MiniAppsPanel {
             self.finish_provider_confirmation(cx, false);
             return true;
         }
-        let more = self.view.button(cx, ids!(ceiling_confirmation.scroll.more.more_row.more_toggle)).area();
+        let more = self.view.button(cx, ids!(ceiling_confirmation.sheet_scroll.more.more_row.more_toggle)).area();
         let cancel = self.view.button(cx, ids!(ceiling_confirmation.buttons.cancel)).area();
         let primary = self.view.button(cx, ids!(ceiling_confirmation.buttons.primary)).area();
         let mut targets = Vec::new();
         if sheet.choosing && sheet.quota_visible {
-            if let Some(slider) = self.view.widget(cx, ids!(ceiling_confirmation.scroll.quota.tokens.slider_wrap.amount_slider)).borrow::<crate::miniapps::design::MiniAppAmountSlider>() {
+            if let Some(slider) = self.view.widget(cx, ids!(ceiling_confirmation.sheet_scroll.quota.tokens.slider_wrap.amount_slider)).borrow::<crate::miniapps::design::MiniAppAmountSlider>() {
                 targets.push(slider.focus_area());
             }
-            targets.push(self.view.text_input(cx, ids!(ceiling_confirmation.scroll.quota.tokens.input)).area());
+            targets.push(self.view.text_input(cx, ids!(ceiling_confirmation.sheet_scroll.quota.tokens.input)).area());
         }
         if sheet.more_visible() {targets.push(more);}
         if !sheet.cancel.is_empty() {targets.push(cancel);}
@@ -1888,7 +1888,7 @@ impl Widget for MiniAppsPanel {
                 if self.view.button(cx,ids!(execution_confirmation.buttons.cancel)).clicked(actions){self.close_execution_confirmation(cx);}
                 else if self.view.button(cx,ids!(execution_confirmation.buttons.primary)).clicked(actions){self.execution_primary(cx);}
                 else if self.view.button(cx,ids!(execution_confirmation.buttons.recover)).clicked(actions){self.execution_recover(cx);}
-                else if self.view.button(cx,ids!(execution_confirmation.scroll.toggle_details)).clicked(actions){self.execution_details(cx);}
+                else if self.view.button(cx,ids!(execution_confirmation.sheet_scroll.toggle_details)).clicked(actions){self.execution_details(cx);}
                 return;
             }
             if self.adoption_confirmation.is_some() {
@@ -1905,26 +1905,26 @@ impl Widget for MiniAppsPanel {
             }
             if self.grant_confirmation.is_some() {
                 self.capture_grant_choices(cx);
-                let add_field = self.view.text_input(cx, ids!(grant_confirmation.scroll.people.list.add.add_name));
-                let selected_person = self.view.drop_down(cx, ids!(grant_confirmation.scroll.people.list.add.directory.candidates)).selected(actions);
+                let add_field = self.view.text_input(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.add_name));
+                let selected_person = self.view.drop_down(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.directory.candidates)).selected(actions);
                 if self.view.button(cx,ids!(grant_confirmation.buttons.cancel)).clicked(actions) {self.close_grant_confirmation(cx);}
                 else if self.view.button(cx,ids!(grant_confirmation.buttons.primary)).clicked(actions) {self.grant_primary(cx);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.actions.recover)).clicked(actions) {self.grant_recover(cx);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.actions.cancel_intent)).clicked(actions) {self.grant_cancel_intent(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.actions.recover)).clicked(actions) {self.grant_recover(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.actions.cancel_intent)).clicked(actions) {self.grant_cancel_intent(cx);}
                 else if self.grant_calendar_actions(cx, actions) {}
                 else if self.grant_renewal_actions(cx, actions) {}
                 else if let Some(days) = self.grant_preset_clicked(cx,actions) {self.grant_expiry_preset(cx,days);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.sharing.sharing_row.sharing_toggle)).clicked(actions) {self.grant_sharing_toggle(cx);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.people.list.open_add.open_add_button)).clicked(actions) {self.grant_add_people(cx);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.more.more_row.more_toggle)).clicked(actions) {self.grant_disclose(cx);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.people.list.people_toggle_row.people_toggle)).clicked(actions) {self.grant_people_toggle(cx);}
-                else if self.view.button(cx,ids!(grant_confirmation.scroll.people.list.add.add_button)).clicked(actions) || add_field.returned(actions).is_some() {self.grant_add_person(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.sharing.sharing_row.sharing_toggle)).clicked(actions) {self.grant_sharing_toggle(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.people.list.open_add.open_add_button)).clicked(actions) {self.grant_add_people(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.more.more_row.more_toggle)).clicked(actions) {self.grant_disclose(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.people.list.people_toggle_row.people_toggle)).clicked(actions) {self.grant_people_toggle(cx);}
+                else if self.view.button(cx,ids!(grant_confirmation.sheet_scroll.people.list.add.add_button)).clicked(actions) || add_field.returned(actions).is_some() {self.grant_add_person(cx);}
                 else if let Some(index) = selected_person {self.grant_select_person(cx, index);}
-                else if self.view.button(cx, ids!(grant_confirmation.scroll.people.list.add.directory.add_selected)).clicked(actions) {self.grant_add_selected_person(cx);}
+                else if self.view.button(cx, ids!(grant_confirmation.sheet_scroll.people.list.add.directory.add_selected)).clicked(actions) {self.grant_add_selected_person(cx);}
                 else if add_field.changed(actions).is_some() {self.grant_add_typing(cx);}
                 else {
                     for (index, row) in sheet_ui::PEOPLE.iter().enumerate() {
-                        let path = sheet_ui::sheet_path(id!(grant_confirmation), &[id!(scroll), id!(people), id!(list), *row, id!(body), id!(remove)]);
+                        let path = sheet_ui::sheet_path(id!(grant_confirmation), &[id!(sheet_scroll), id!(people), id!(list), *row, id!(body), id!(remove)]);
                         if self.view.button(cx, &path).clicked(actions) {self.grant_remove_person(cx, index); break;}
                     }
                 }
@@ -1938,7 +1938,7 @@ impl Widget for MiniAppsPanel {
                     self.finish_provider_confirmation(cx, true);
                 } else if self.view.button(cx, ids!(ceiling_confirmation.buttons.cancel)).clicked(actions) {
                     self.finish_provider_confirmation(cx, false);
-                } else if self.view.button(cx, ids!(ceiling_confirmation.scroll.more.more_row.more_toggle)).clicked(actions) {
+                } else if self.view.button(cx, ids!(ceiling_confirmation.sheet_scroll.more.more_row.more_toggle)).clicked(actions) {
                     if let Some(prompt) = self.provider_confirmation.as_mut().and_then(|pending| pending.consent.ceiling_mut()) {prompt.toggle_more();}
                     self.present_provider_confirmation(cx);
                     self.request_confirmation_redraw(cx);

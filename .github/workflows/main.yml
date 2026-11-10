@@ -32,6 +32,10 @@ jobs:
         working-directory: crates/hagency-client
     steps:
       - uses: actions/checkout@v7
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.0
@@ -61,6 +65,10 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.0
@@ -90,6 +98,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: JIT-line makepad checkout
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: if [ -f .jit/sources.sh ]; then bash .jit/sources.sh; fi
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.0

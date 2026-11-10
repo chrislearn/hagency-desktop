@@ -38,6 +38,8 @@ pub fn view_from_live_ptr(
 
 /// The top-level main application module.
 pub mod app;
+pub mod dock_serde;
+pub mod jit_compat;
 pub mod accounts;
 mod account_session;
 mod session_auth;
