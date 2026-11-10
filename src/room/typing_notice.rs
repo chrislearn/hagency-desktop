@@ -138,6 +138,12 @@ impl TypingNoticeRef {
     pub fn clear(&self, cx: &mut Cx) {
         if let Some(mut inner) = self.borrow_mut() { inner.clear(cx); }
     }
+
+    /// Reset the notice when its room is no longer shown.
+    pub fn reset(&self, cx: &mut Cx) {
+        self.clear(cx);
+    }
+
     /// Shows or hides the typing notice based on whether there are any typing users.
     pub fn show_or_hide(&self, cx: &mut Cx, typing_users: &[String]) {
         if let Some(mut inner) = self.borrow_mut() {
