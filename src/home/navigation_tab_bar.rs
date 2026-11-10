@@ -494,7 +494,7 @@ impl Widget for ProfileIcon {
                     ..Default::default()
                 };
                 if let Some(c) = bg_color {
-                    options.bg_color = c;
+                    options.bg_color = Some(c);
                 }
                 cx.widget_action(
                     self.widget_uid(),
