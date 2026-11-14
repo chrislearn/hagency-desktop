@@ -38,6 +38,7 @@ mod capture;
 mod start_failure;
 mod claim;
 mod initial_unstarted;
+mod runtime_timeout;
 mod process;
 mod recovery;
 mod successor;

@@ -881,3 +881,63 @@ async fn recurring_native_unstarted_agent_renews_before_first_process_claim(){
     assert!(f.registry.record_unstarted_shared_runtime(ManagedCleanupAuthority::fixture(enrollment(&f),f.child.clone(),Instant::now()+Duration::from_secs(20)),runtime).await.unwrap().is_none(),"issued unknown custody is not non-issuance");
     let child=f.child.clone();f.registry.0.store.call(1024,move|db|{let pin:(String,u64)=db.db.query_row("SELECT assignment_id,assignment_generation FROM owner_managed_assignment_pins WHERE child_id=?1",[child],|r|Ok((r.get(0)?,r.get(1)?)))?;assert_eq!(pin,("period_assignment".into(),1));Ok(())}).await.unwrap();
 }
+
+/// A launch that failed after its claim, before any process reported (as on
+/// River 2026-11-14, when preparation used up the window), left the runtime
+/// issued with no evidence and its Agent stopping for good. Its stop is now
+/// recorded after the grace, once no holder is alive, and the next attempt's
+/// budget chains on it.
+#[tokio::test]
+async fn recurring_native_claimed_runtime_without_process_stops_after_grace(){
+    use shared_execution::*;
+    use std::sync::atomic::Ordering::SeqCst;
+    let clock=Arc::new(std::sync::atomic::AtomicU64::new(graphs::now_ms().unwrap()));graphs::install_test_clock(&clock);
+    let f=fixture_kind(RenewalMode::Automatic,false,Some(clock.clone())).await;
+    let saved=f.registry.recover_managed_agent_reservation(f.profile.clone(),f.grant.executor_device_id.clone(),f.command.command_id.clone(),digest(&f.command)).await.unwrap().unwrap();
+    let now=graphs::now_ms().unwrap();
+    let runtime=SharedRuntimeCommand{version:1,capability:SHARED_EXECUTION_CAPABILITY.into(),operation:"agent.execution.provision".into(),command_id:"claimed_first_runtime".into(),assignment_id:"period_assignment".into(),assignment_generation:1,agent_reservation_id:f.child.clone(),reserve_command:f.command.clone(),reserve_command_digest:digest(&f.command),reserve_receipt_digest:digest(&saved),policy:SHARED_TEXT_POLICY.into(),issued_at_ms:now,expires_at_ms:now+20_000};
+    let cleanup=||ManagedCleanupAuthority::fixture(enrollment(&f),f.child.clone(),Instant::now()+Duration::from_secs(20));
+    let SharedRuntimeClaim::Issued(custody)=f.registry.claim_shared_runtime(VerifiedSharedRuntimeDelivery::new(enrollment(&f),runtime.clone(),digest(&runtime),true,Instant::now()+Duration::from_secs(20)).unwrap()).await.unwrap() else {panic!("first claim issues custody")};
+    let due=runtime.expires_at_ms+30_000+UNCERTAIN_GRACE_MS;
+    clock.store(due,SeqCst);
+    assert!(f.registry.record_shared_runtime_timeout(cleanup(),runtime.clone()).await.unwrap().is_none(),"a live holder may still be starting its process");
+    drop(custody);
+    clock.store(due-1,SeqCst);
+    assert!(f.registry.record_shared_runtime_timeout(cleanup(),runtime.clone()).await.unwrap().is_none(),"nothing is recorded within the grace");
+    clock.store(due,SeqCst);
+    let stopped=f.registry.record_shared_runtime_timeout(cleanup(),runtime.clone()).await.unwrap().expect("the bound records the claim's stop");
+    assert_eq!(stopped.state,"stopped");
+    assert!(stopped.process_digest.is_some()&&stopped.policy_digest.is_none());
+    assert!(f.registry.record_shared_runtime_timeout(cleanup(),runtime.clone()).await.unwrap().is_none(),"recorded evidence decides from here on");
+    let recovered=f.registry.recover_shared_process(cleanup(),runtime.clone(),None).await.unwrap().unwrap();
+    assert_eq!(digest(&recovered),digest(&stopped));
+    assert!(f.registry.record_unstarted_shared_runtime(cleanup(),runtime.clone()).await.unwrap().is_none(),"a claimed command is still never non-issuance");
+    let budget=f.registry.shared_successor_budget(enrollment(&f),runtime.clone()).await.unwrap();
+    assert_eq!(budget.state,SharedSuccessorBudgetState::Available);
+    assert_eq!(budget.stopped_receipt_digest,digest(&stopped));
+    assert_eq!(budget.predecessor_command_digest,digest(&runtime));
+}
+
+/// Process evidence of any kind keeps the time bound away from a claim.
+#[tokio::test]
+async fn recurring_native_claimed_runtime_with_process_evidence_is_not_timed_out(){
+    use shared_execution::*;
+    use std::sync::atomic::Ordering::SeqCst;
+    let clock=Arc::new(std::sync::atomic::AtomicU64::new(graphs::now_ms().unwrap()));graphs::install_test_clock(&clock);
+    let f=fixture_kind(RenewalMode::Automatic,false,Some(clock.clone())).await;
+    let saved=f.registry.recover_managed_agent_reservation(f.profile.clone(),f.grant.executor_device_id.clone(),f.command.command_id.clone(),digest(&f.command)).await.unwrap().unwrap();
+    let now=graphs::now_ms().unwrap();
+    let runtime=SharedRuntimeCommand{version:1,capability:SHARED_EXECUTION_CAPABILITY.into(),operation:"agent.execution.provision".into(),command_id:"observed_first_runtime".into(),assignment_id:"period_assignment".into(),assignment_generation:1,agent_reservation_id:f.child.clone(),reserve_command:f.command.clone(),reserve_command_digest:digest(&f.command),reserve_receipt_digest:digest(&saved),policy:SHARED_TEXT_POLICY.into(),issued_at_ms:now,expires_at_ms:now+20_000};
+    let SharedRuntimeClaim::Issued(custody)=f.registry.claim_shared_runtime(VerifiedSharedRuntimeDelivery::new(enrollment(&f),runtime.clone(),digest(&runtime),true,Instant::now()+Duration::from_secs(20)).unwrap()).await.unwrap() else {panic!("first claim issues custody")};
+    let child=f.child.clone();
+    let id="spro_".to_owned()+&"c".repeat(64);
+    f.registry.0.store.call(4096,move|db|{
+        let rev:u64=db.db.query_row("SELECT revision+1 FROM owner_resource_identity WHERE singleton=1",[],|r|r.get(0))?;
+        db.db.execute("UPDATE owner_resource_identity SET revision=?1 WHERE singleton=1",[rev])?;
+        db.db.execute("INSERT INTO owner_shared_process_observations VALUES(?1,?2,'{}',?3,?4)",rusqlite::params![id,child,"d".repeat(64),rev])?;
+        Ok(())
+    }).await.unwrap();
+    drop(custody);
+    clock.store(runtime.expires_at_ms+30_000+UNCERTAIN_GRACE_MS,SeqCst);
+    assert!(f.registry.record_shared_runtime_timeout(ManagedCleanupAuthority::fixture(enrollment(&f),f.child.clone(),Instant::now()+Duration::from_secs(20)),runtime).await.unwrap().is_none());
+}

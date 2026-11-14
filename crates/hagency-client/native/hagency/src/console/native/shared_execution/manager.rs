@@ -7,6 +7,25 @@ use std::{
 };
 use tokio::sync::{oneshot, watch};
 const MAX_PROCESSES: usize = 128;
+/// What a claimed start still does inside its window: the session route (at
+/// most 3 s), spawn, initialization and the qualified report. A start claimed
+/// with less left fails after its claim, and nothing can then prove it never
+/// ran: the server ends its message. Left unclaimed, it is proven never
+/// started, so its message runs again (ADR-193 amendment) or a first command
+/// is replaced.
+const START_ROOM: Duration = Duration::from_secs(12);
+fn room_to_start(deadline: Instant) -> Result<(), NativeError> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left < START_ROOM {
+        tracing::warn!(
+            code = "shared_execution_start_declined",
+            left_ms = u64::try_from(left.as_millis()).unwrap_or(u64::MAX),
+            "Too little of the start window is left; the start stays unclaimed"
+        );
+        return Err(failure(409, "shared_execution_expired"));
+    }
+    Ok(())
+}
 #[derive(Clone, Copy)]
 enum Phase {
     Pending,
@@ -285,6 +304,17 @@ impl Manager {
                     let _ = sender.send(Err(error));
                     return Ok(()); // No claim was attempted.
                 }
+                // Only a command the non-issuance proof can retire is declined;
+                // any other first command keeps its one chance to start.
+                let grant = &delivery.command.reserve_command;
+                if grant.renewal_mode.is_some()
+                    && grant.pool_grant.as_ref().is_some_and(|g| g.calendar.is_some())
+                {
+                    if let Err(error) = room_to_start(proof.deadline()) {
+                        let _ = sender.send(Err(error));
+                        return Ok(()); // No claim was attempted.
+                    }
+                }
                 let custody = match registry.claim_shared_runtime(proof).await {
                     Ok(SharedRuntimeClaim::Issued(custody)) => custody,
                     Ok(SharedRuntimeClaim::History(_)) => {
@@ -335,6 +365,10 @@ impl Manager {
                 if let Err(error) = slot.before_claim() {
                     let _ = sender.send(Err(error));
                     return Ok(());
+                }
+                if let Err(error) = room_to_start(proof.deadline()) {
+                    let _ = sender.send(Err(error));
+                    return Ok(()); // No claim was attempted.
                 }
                 let custody = match registry.claim_shared_successor(proof).await {
                     Ok(SharedAttemptClaim::Issued(custody)) => custody,

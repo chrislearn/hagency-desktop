@@ -329,6 +329,23 @@ impl SharedExecutionTransport {
                 .map_err(store)?;
             b.transport.check_scope(&b.scope, false).await?;
         }
+        if local.is_none() && !d.execution_allowed && d.cleanup_allowed && historical.is_none() {
+            // A claimed launch that failed before any process reported leaves
+            // no evidence. After its grace, its own stop is recorded and sent,
+            // so the Agent leaves stopping and its next message starts after it.
+            let authority = b.cleanup(r, c).await?;
+            local = r
+                .record_shared_runtime_timeout(authority, c.clone())
+                .await
+                .map_err(store)?;
+            if local.is_some() {
+                tracing::warn!(
+                    code = "shared_runtime_uncertain_timeout",
+                    "A claimed shared runtime left no process evidence; its stop is recorded after the grace"
+                );
+            }
+            b.transport.check_scope(&b.scope, false).await?;
+        }
         if local
             .as_ref()
             .is_some_and(|receipt| receipt.state != "not_started")

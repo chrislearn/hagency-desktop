@@ -82,6 +82,10 @@ struct Inner {
     /// Call ids whose custody object is alive in this process. Owner
     /// reconciliation refuses them: only a dead process leaves a call open.
     live_calls: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Incarnations of original shared runtime claims whose custody object is
+    /// alive in this process. The time bound never ends a claim whose holder
+    /// may still be starting its process.
+    live_runtimes: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 #[derive(Clone)]
 pub struct OwnerResourceRegistry(Arc<Inner>);
@@ -394,6 +398,7 @@ impl OwnerResourceRegistry {
             root: root.clone(),
             closed: AtomicBool::new(false),
             live_calls: std::sync::Mutex::new(std::collections::HashSet::new()),
+            live_runtimes: std::sync::Mutex::new(std::collections::HashSet::new()),
         });
         registries.insert(root, Arc::downgrade(&inner));
         Ok(Self(inner))
