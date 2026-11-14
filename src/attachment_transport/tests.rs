@@ -30,20 +30,38 @@ impl Server {
                     Ok((mut socket, _)) => {
                         let handler = handler.clone();
                         let observed = observed.clone();
+                        let stopping = stop.clone();
                         children.push(std::thread::spawn(move||{
                             // accept() can inherit O_NONBLOCK from this fixture's
                             // polling listener on macOS. Timeouts do not clear it.
                             socket.set_nonblocking(false).unwrap();
-                            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                             socket.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+                            // The SDK's own start-up requests (key upload, backups)
+                            // run on the test's runtime. A connection they opened just
+                            // before the test ends never gets its request written:
+                            // this fixture's synchronous drop blocks that runtime.
+                            // A connection that sent nothing carries no request, so it
+                            // is closed once the fixture stops or after 5 s idle.
+                            socket.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+                            let idle_until = Instant::now() + Duration::from_secs(5);
                             let mut request=Vec::new();let mut byte=[0u8;1];
                             while request.len()<16*1024 && !request.ends_with(b"\r\n\r\n") {
                                 match socket.read(&mut byte) {
                                     Ok(0) if request.is_empty()=>return,
                                     Ok(0)=>panic!("fixture peer closed during HTTP headers after {} bytes",request.len()),
-                                    Ok(1)=>request.push(byte[0]),
+                                    Ok(1)=>{
+                                        if request.is_empty() {
+                                            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                                        }
+                                        request.push(byte[0])
+                                    }
                                     Ok(count)=>unreachable!("one-byte fixture read returned {count}"),
                                     Err(error) if error.kind()==io::ErrorKind::Interrupted=>continue,
+                                    Err(error) if request.is_empty() && matches!(error.kind(), io::ErrorKind::WouldBlock|io::ErrorKind::TimedOut) => {
+                                        if stopping.load(Ordering::Acquire) || Instant::now() >= idle_until {
+                                            return;
+                                        }
+                                    }
                                     Err(error)=>panic!("fixture accepted socket header read failed after {} bytes: {error:?}",request.len()),
                                 }
                             }
@@ -1240,6 +1258,22 @@ async fn file_above_one_gib_streams_and_saves_without_a_payload_vector() {
         "user-saved files survive temporary cache cleanup"
     );
     std::fs::remove_file(target).unwrap();
+}
+
+#[test]
+fn fixture_closes_a_connection_that_never_sent_a_request() {
+    let server = Server::new(|_: &str, _: &mut TcpStream| unreachable!("no request was sent"));
+    let idle = TcpStream::connect(server.url.trim_start_matches("http://")).unwrap();
+    // Let the fixture accept it, then stop while it is still silent.
+    std::thread::sleep(Duration::from_millis(200));
+    let started = Instant::now();
+    drop(server);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "a silent connection held the fixture for {:?}",
+        started.elapsed()
+    );
+    drop(idle);
 }
 
 #[tokio::test]
