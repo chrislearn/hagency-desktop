@@ -367,14 +367,23 @@ impl OwnerGrantIntents {
         }
         let provider = observe(runtime,io.profile.clone(),before.admission.contribution.resource_id.clone(),before.admission.contribution.resource_revision.clone()).await?;
         io.check().await?;
-        let resource = registry
-            .verify_provider_resource(
-                io.profile.clone(),
-                before.admission.contribution.resource_id.clone(),
-                provider,
-            )
-            .await
-            .map_err(storage)?;
+        let resource_id = before.admission.contribution.resource_id.clone();
+        // A Claude pool is supplied by whichever Claude account the owner's
+        // Claude Code is signed in to now, as its pooled launches are: owners
+        // switch between their accounts. Granting, amending or renewing its
+        // capacity must not require the account the pool was created with;
+        // the binding keeps that recorded identity, so the enrollment still
+        // matches the earlier grants. Codex resources keep the exact check.
+        let resource = if local.framework == "claude" {
+            registry
+                .verify_claude_launch_resource(io.profile.clone(), resource_id, provider)
+                .await
+        } else {
+            registry
+                .verify_provider_resource(io.profile.clone(), resource_id, provider)
+                .await
+        }
+        .map_err(storage)?;
         io.check().await?;
         if resource.resource_revision() != before.admission.contribution.resource_revision
             || resource.runtime() != before.admission.contribution.runtime

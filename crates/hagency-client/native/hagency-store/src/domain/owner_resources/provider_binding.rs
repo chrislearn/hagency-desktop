@@ -133,7 +133,9 @@ impl OwnerResourceRegistry {
     /// (provider profile and CLI agree), but it need not be the account the
     /// resource was created with. The binding keeps that recorded identity, so
     /// the resource's records, assignment pins and receipts are unchanged.
-    /// Codex resources and every other caller keep the exact account check.
+    /// Grant enrollment (publishing, amending or renewing a Claude pool's
+    /// capacity) uses the same rule. Codex resources and every other caller
+    /// keep the exact account check.
     pub async fn verify_claude_launch_resource(
         &self,
         profile: ProfileAuthority,

@@ -8,6 +8,57 @@ fn provider_fixture(subject: &str) -> VerifiedProviderAccount {
     .unwrap()
 }
 
+fn claude_sign_in(account: &str, organization: &str, email: &str) -> VerifiedProviderAccount {
+    VerifiedProviderAccount::from_claude_binding(
+        hagency_runtime::claude::account::AccountBinding::from_authenticated_profile(
+            account,
+            organization,
+            email,
+            Instant::now() + Duration::from_secs(45),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+/// Owners switch Claude Code between their accounts. Granting, amending or
+/// renewing a Claude pool's capacity takes whichever verified Claude sign-in is
+/// there now and keeps the pool's recorded identity: the enrollment recorded
+/// under the first account is found again under the second (a different
+/// binding would be refused as `management_enrollment_changed`).
+#[tokio::test]
+async fn claude_pool_enrollment_takes_another_signed_in_account() {
+    const ACCOUNT: &str = "01234567-89ab-cdef-0123-456789abcdef";
+    const ORGANIZATION: &str = "89abcdef-0123-4567-89ab-cdef01234567";
+    let original = hagency_runtime::claude::account::AccountBinding::from_authenticated_profile(
+        ACCOUNT,
+        ORGANIZATION,
+        "owner@example.test",
+        Instant::now() + Duration::from_secs(45),
+    )
+    .unwrap();
+    let mut f = Fixture::new_claude(original).await;
+    f.enable_factory().await;
+    f.service
+        .verified_enrollment_with(&f.registry, "fixture_contribution".into(), |runtime| async move {
+            assert!(matches!(runtime, super::super::ManagementRuntime::Claude));
+            Ok(claude_sign_in(ACCOUNT, ORGANIZATION, "owner@example.test"))
+        })
+        .await
+        .expect("the account the pool was created with enrolls it");
+    f.service
+        .verified_enrollment_with(&f.registry, "fixture_contribution".into(), |_| async {
+            Ok(claude_sign_in(
+                "fedcba98-7654-3210-fedc-ba9876543210",
+                "76543210-fedc-ba98-7654-3210fedcba98",
+                "other@example.test",
+            ))
+        })
+        .await
+        .expect("another signed-in Claude account enrolls the same pool");
+    f.stop().await;
+}
+
 struct DelayedEnrollmentSource {
     source: Source,
     journal: PathBuf,

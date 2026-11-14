@@ -256,6 +256,26 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
+        let provider = VerifiedProviderAccount::new(
+            "codex",
+            "https://provider.test",
+            "synthetic-account",
+            Instant::now() + Duration::from_secs(30),
+        )
+        .unwrap();
+        Self::with_resource(provider, "gpt-5.6-sol", None, "codex").await
+    }
+    /// The same fixture around a Claude pool created under `original`.
+    async fn new_claude(original: hagency_runtime::claude::account::AccountBinding) -> Self {
+        let provider = VerifiedProviderAccount::from_claude_binding(original).unwrap();
+        Self::with_resource(provider, "claude-opus-5", Some("medium".into()), "claude").await
+    }
+    async fn with_resource(
+        provider: VerifiedProviderAccount,
+        model: &str,
+        reasoning: Option<String>,
+        runtime: &str,
+    ) -> Self {
         let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let (origin, task, admission, publications) = server().await;
         let source = Arc::new(AtomicBool::new(true));
@@ -279,15 +299,9 @@ impl Fixture {
             .prepare_enrollment(
                 io.profile.clone(),
                 "intent_resource".into(),
-                VerifiedProviderAccount::new(
-                    "codex",
-                    "https://provider.test",
-                    "synthetic-account",
-                    Instant::now() + Duration::from_secs(30),
-                )
-                .unwrap(),
-                "gpt-5.6-sol".into(),
-                None,
+                provider,
+                model.into(),
+                reasoning,
                 1000,
                 Instant::now() + Duration::from_secs(30),
             )
@@ -303,7 +317,7 @@ impl Fixture {
             .revision;
         drop(io);
         let at = now_ms().unwrap();
-        *admission.lock().unwrap() = json!({"admission":{"contribution":{"id":"fixture_contribution","ownerMxid":"@owner:test","executorDeviceId":"device","executorGeneration":1,"resourceId":resource,"resourceRevision":revision,"label":"Fixture","runtime":"codex","capabilities":["coding"],"coordinatorMxid":"@owner:test","state":"admitted","revision":2,"requestId":"admission_request","createdAtMs":at,"updatedAtMs":at,"verification":null},"request":{"id":"admission_request","kind":"resource_admission","contributionId":"fixture_contribution","projectId":null,"allocationId":null,"projectName":null,"resourceLabel":null,"requesterMxid":"@owner:test","approverMxid":"@admin:test","state":"approved","revision":2,"createdAtMs":at,"expiresAtMs":at+60000,"decidedAtMs":at,"canDecide":false}},"observedAtMs":at});
+        *admission.lock().unwrap() = json!({"admission":{"contribution":{"id":"fixture_contribution","ownerMxid":"@owner:test","executorDeviceId":"device","executorGeneration":1,"resourceId":resource,"resourceRevision":revision,"label":"Fixture","runtime":runtime,"capabilities":["coding"],"coordinatorMxid":"@owner:test","state":"admitted","revision":2,"requestId":"admission_request","createdAtMs":at,"updatedAtMs":at,"verification":null},"request":{"id":"admission_request","kind":"resource_admission","contributionId":"fixture_contribution","projectId":null,"allocationId":null,"projectName":null,"resourceLabel":null,"requesterMxid":"@owner:test","approverMxid":"@admin:test","state":"approved","revision":2,"createdAtMs":at,"expiresAtMs":at+60000,"decidedAtMs":at,"canDecide":false}},"observedAtMs":at});
         Self {
             root,
             origin,
