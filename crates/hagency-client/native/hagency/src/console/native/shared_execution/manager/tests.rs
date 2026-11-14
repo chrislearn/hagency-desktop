@@ -292,3 +292,15 @@ impl Manager {
         self.state.lock().unwrap().entries.contains_key(command)
     }
 }
+
+/// A start with less than its room left is declined before the claim, so the
+/// protocol can still prove it never started (2026-11-14: preparation under
+/// the JIT runner used up 26-29 s of a 30 s window, the late claims failed to
+/// spawn, one Agent stayed stopping and one message ended unanswered).
+#[test]
+fn a_start_without_room_is_declined_before_its_claim() {
+    let short = room_to_start(Instant::now() + START_ROOM - Duration::from_secs(1)).unwrap_err();
+    assert_eq!((short.status, short.code.as_str()), (409, "shared_execution_expired"));
+    assert!(room_to_start(Instant::now()).is_err());
+    assert!(room_to_start(Instant::now() + START_ROOM + Duration::from_secs(2)).is_ok());
+}

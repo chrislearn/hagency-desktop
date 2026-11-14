@@ -235,6 +235,10 @@ impl VerifiedSharedAttemptDelivery {
         }
         Ok(())
     }
+    /// The end of the window in which this proof can still claim.
+    pub fn deadline(&self) -> Instant {
+        self.expires
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

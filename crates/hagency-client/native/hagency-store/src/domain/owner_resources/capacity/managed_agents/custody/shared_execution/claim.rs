@@ -51,6 +51,42 @@ impl VerifiedSharedRuntimeDelivery {
         }
         Ok(())
     }
+    /// The end of the window in which this proof can still claim.
+    pub fn deadline(&self) -> Instant {
+        self.expires
+    }
+}
+/// Marks an original claim as held by live custody in this process until
+/// the custody object is dropped.
+pub(super) struct LiveRuntime {
+    registry: Arc<Inner>,
+    incarnation: String,
+}
+impl LiveRuntime {
+    fn hold(registry: &Arc<Inner>, incarnation: &str) -> Self {
+        if let Ok(mut live) = registry.live_runtimes.lock() {
+            live.insert(incarnation.to_owned());
+        }
+        Self {
+            registry: registry.clone(),
+            incarnation: incarnation.to_owned(),
+        }
+    }
+}
+impl Drop for LiveRuntime {
+    fn drop(&mut self) {
+        if let Ok(mut live) = self.registry.live_runtimes.lock() {
+            live.remove(&self.incarnation);
+        }
+    }
+}
+/// A claim counts as held while this cannot be read.
+pub(super) fn live(registry: &Inner, incarnation: &str) -> bool {
+    registry
+        .live_runtimes
+        .lock()
+        .map(|live| live.contains(incarnation))
+        .unwrap_or(true)
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -68,6 +104,7 @@ pub struct SharedRuntimeCustody {
     pub(super) incarnation: String,
     pub(super) provider: String,
     pub(super) enrollment: Arc<VerifiedManagementEnrollment>,
+    _live: LiveRuntime,
 }
 impl SharedRuntimeCustody {
     pub fn command(&self) -> &SharedRuntimeCommand {
@@ -229,8 +266,10 @@ impl OwnerResourceRegistry {
             tx.execute("INSERT INTO owner_shared_runtime_lifetimes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![c.agent_reservation_id,p.enrollment.profile.digest,c.assignment_id,c.command_id,canonical::encode(&serde_json::to_value(c)?)?,p.digest,binding,b.provider,rev,incarnation])?;
             tx.execute("UPDATE owner_managed_effects SET state='issued',fence=?2 WHERE id=?1 AND state='pending'",params![old.effect_id,rev])?;
             let scope=Scope{registry:registry.clone(),profile:p.enrollment.profile.clone(),child:c.agent_reservation_id.clone(),target:old.effect_id,binding,issued_revision:rev,expires};
+            // Held before commit: no reader may see the claim without its holder.
+            let live=LiveRuntime::hold(&registry,&incarnation);
             p.check()?;tx.commit()?;p.check().map_err(|_|Error::OutcomeUnknown)?;
-            Ok(SharedRuntimeClaim::Issued(Box::new(SharedRuntimeCustody{scope,command:p.command,digest:p.digest,incarnation,provider:b.provider,enrollment:Arc::new(p.enrollment)})))
+            Ok(SharedRuntimeClaim::Issued(Box::new(SharedRuntimeCustody{scope,command:p.command,digest:p.digest,incarnation,provider:b.provider,enrollment:Arc::new(p.enrollment),_live:live})))
         }).await?;
         after(&profile, &self.0, expires)?;
         Ok(result)
