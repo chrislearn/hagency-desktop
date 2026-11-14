@@ -1263,7 +1263,7 @@ impl HagencyPanel {
         let selected = self.provider_models.iter().position(|m| string(m,"model") == configured && (string(m,"credentialRef").is_empty() || string(m,"credentialRef") == string(&self.policy["modelProfile"],"credential_ref")))
             .or_else(|| previous.as_deref().and_then(|id|self.provider_models.iter().position(|m|string(m,"model")==id)))
             .or_else(||self.provider_models.iter().position(|m|m["isDefault"] == true));
-        let labels=std::iter::once("Select a model or profile".to_owned()).chain(self.provider_models.iter().map(|m|format!("{}{}",string(m,"displayName"),if m["isDefault"] == true {" (default)"} else {""}))).collect();
+        let labels=std::iter::once(crate::i18n::tr("Select a model or profile").to_owned()).chain(self.provider_models.iter().map(|m|format!("{}{}",string(m,"displayName"),if m["isDefault"] == true {crate::i18n::tr(" (default)")} else {""}))).collect();
         self.view.drop_down(cx,ids!(model)).set_labels(cx,labels);
         self.view.drop_down(cx,ids!(model)).set_selected_item(cx,selected.map_or(0,|i|i+1));
         self.render_efforts(cx);
@@ -1278,7 +1278,8 @@ impl HagencyPanel {
         self.view.drop_down(cx,ids!(effort)).set_labels(cx,if self.runtime_efforts.is_empty(){vec![crate::i18n::tr("Load this model's reasoning choices").into()]}else{self.runtime_efforts.iter().map(|effort|format!("{}{}",if octos {crate::i18n::tr("Use profile settings")} else {effort},if effort==default {crate::i18n::tr(" (default)")} else {""})).collect()});
         self.view.drop_down(cx,ids!(effort)).set_selected_item(cx,selected);
         self.render_effort_note(cx);
-        self.view.label(cx,ids!(model_note)).set_text(cx,model.as_ref().map(|m|string(m,"description")).unwrap_or_else(||crate::i18n::tr("Connect a local runtime and refresh its models or profiles. Availability is confirmed when an actual request runs.")));
+        // Catalog text from a coding tool has no translation and stays as given.
+        self.view.label(cx,ids!(model_note)).set_text(cx,model.as_ref().map(|m|crate::i18n::tr(string(m,"description"))).unwrap_or_else(||crate::i18n::tr("Connect a local runtime and refresh its models or profiles. Availability is confirmed when an actual request runs.")));
     }
     fn render_effort_note(&self, cx:&mut Cx) {
         let effort=self.runtime_efforts.get(self.view.drop_down(cx,ids!(effort)).selected_item());
@@ -1602,12 +1603,12 @@ impl HagencyPanel {
             .and_then(|id|crate::sliding_sync::get_client()?.get_room(&id))
             .is_some_and(|room|room.encryption_state().is_encrypted()));
         let encrypting=!room.is_empty() && self.direct_encrypting.as_deref()==Some(room);
-        self.view.label(cx,ids!(owner_direct_status)).set_text(cx,match state {
-            "active" if encrypted=>crate::i18n::tr("Your private chat with this Agent is ready and end-to-end encrypted. Matrix cannot turn encryption off again."),
+        self.view.label(cx,ids!(owner_direct_status)).set_text(cx,crate::i18n::tr(match state {
+            "active" if encrypted=>"Your private chat with this Agent is ready and end-to-end encrypted. Matrix cannot turn encryption off again.",
             "active"=>"Your private chat with this Agent is ready.",
             "pending"=>"Your Agent exists. Private chat setup is still pending; retry its original setup when connected.",
             _=>"Set up a private chat with this Agent. Retrying preserves the original setup request.",
-        });
+        }));
         self.view.button(cx,ids!(open_owner_direct)).set_enabled(cx,exact && state == "active" && !string(&self.direct_state,"roomId").is_empty() && !self.busy);
         // Matrix has no way to turn a room's encryption off: on stays on.
         self.view.check_box(cx,ids!(encrypt_owner_direct)).set_active(cx,encrypted || encrypting,Animate::No);
@@ -1887,7 +1888,7 @@ impl HagencyPanel {
                 (ids!(context_title), if projects {"Spaces for people and Agents"} else if no_host.is_some() {"Local agents can't run on this computer"} else {"Manage agents you run locally"}),
                 (ids!(context_description), if projects {"An Agent space is a Matrix Space connected to a Hagency project. The creation wizard handles this setup."} else if let Some(text) = no_host {text} else {"Configure this account's local agents, their models, rooms and execution permissions."}),
                 (ids!(context_steps), if projects {"1 · Create an Agent space    2 · Create a room    3 · Invite people and Agents"} else if no_host.is_some() {""} else {"1 · Create an agent    2 · Choose a model    3 · Connect rooms"}),
-                (ids!(context_scope), if projects {"To use contributed capacity, open Hagency → Resource pools and request an Agent."} else {"To use contributed capacity, open Hagency → Resource pools and request an Agent."}),
+                (ids!(context_scope), "To use contributed capacity, open Hagency → Resource pools and request an Agent."),
             ] { self.view.label(cx,id).set_text(cx,crate::i18n::tr(text)); }
             self.view.view(cx,ids!(context_project_icon)).set_visible(cx,projects);
             self.view.view(cx,ids!(context_agent_icon)).set_visible(cx,!projects);
