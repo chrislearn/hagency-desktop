@@ -38,7 +38,7 @@ script_mod! {
         ..mod.draw.DrawQuad
         radius: 0.0
         shade_color: uniform(#00000080)
-        ring_color: uniform(#ffffffd9)
+        ring_color: uniform(#ffffffd9) // theme-content: drawn on the photo and its dark mask, never on app surfaces
         // Half the ring's width, in points.
         ring_half_width: uniform(0.75)
         pixel: fn() {
@@ -60,7 +60,7 @@ script_mod! {
         width: 256, height: 256
         circle_inset: 12.0
         // The ground shows where the picture doesn't reach, darkened like the rest outside the circle.
-        draw_bg +: { color: #1c1c1c }
+        draw_bg +: { color: #1c1c1c } // theme-content: matches the dark mask outside the circle in every theme
     }
 
     // The zoom slider: 0 is the smallest zoom, 1 the largest, in even steps of the zoom factor.
