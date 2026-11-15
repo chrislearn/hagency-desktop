@@ -229,6 +229,7 @@ impl AgentAccessPanel {
                 room.state() == RoomState::Joined,
                 "Join the BotFather chat before sending a command."
             );
+            crate::room_encryption::confirmed_state(&room).await?;
             room.send(
                 matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(
                     command,

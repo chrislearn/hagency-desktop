@@ -1146,7 +1146,10 @@ async fn matrix_worker_task(
                 // Spawn a new async task that will make the actual edit request.
                 let _edit_task = crate::account_session::spawn(async move {
                     log!("Sending request to edit message {timeline_event_item_id:?} in {timeline_kind}...");
-                    let result = timeline.edit(&timeline_event_item_id, edited_content).await;
+                    let result = match crate::room_encryption::confirmed_state(timeline.room()).await {
+                        Ok(_) => timeline.edit(&timeline_event_item_id, edited_content).await,
+                        Err(error) => Err(error.into()),
+                    };
                     match result {
                         Ok(_) => {
                             log!("Successfully edited message {timeline_event_item_id:?} in {timeline_kind}.");
@@ -2562,6 +2565,10 @@ async fn matrix_worker_task(
                         });
                     };
                     if !claim.is_current(&room.client()) {claim.complete(SendResult::ConfirmedPreSendFailure); return;}
+                    if let Err(error) = crate::room_encryption::confirmed_state(room).await {
+                        fail(format!("could not check whether the room is encrypted: {error}"), SendResult::ConfirmedPreSendFailure);
+                        return;
+                    }
                     // The bridge may have registered a new device since our outbound session
                     // began; refresh its keys and rotate the session so it can decrypt this.
                     if let Err(error) = room.client().encryption().request_user_identity(&bridge_user_id).await {
@@ -2668,6 +2675,14 @@ async fn matrix_worker_task(
                         }
                     };
 
+                    if let Err(error) = crate::room_encryption::confirmed_state(timeline.room()).await {
+                        error!("Could not check the encryption of {timeline_kind} before sending: {error:?}");
+                        enqueue_popup_notification(crate::i18n::tr(crate::room_encryption::UNCONFIRMED).to_string(), PopupKind::Error, None);
+                        let _ = sender.send(TimelineUpdate::SendFailedBeforeBeingQueued { message, replied_to });
+                        SignalToUI::set_ui_signal();
+                        return;
+                    }
+
                     #[cfg(feature = "agent_chat")]
                     if let Err(error) = crate::agent_chat::encrypted_send::ensure_ready(timeline.room(), &message).await {
                         enqueue_popup_notification(crate::i18n::tr(error).to_string(), PopupKind::Error, None);
@@ -2771,6 +2786,17 @@ async fn matrix_worker_task(
                                 upload_id,
                                 error,
                                 retryable_upload: None,
+                            });
+                            SignalToUI::set_ui_signal();
+                            return false;
+                        }
+
+                        if let Err(e) = crate::room_encryption::confirmed_state(timeline.room()).await {
+                            error!("Could not check the encryption of {timeline_kind} before an upload: {e:?}");
+                            let _ = sender_clone.send(TimelineUpdate::FileUploadError {
+                                upload_id,
+                                error: format!("couldn't check whether this room is encrypted: {e}"),
+                                retryable_upload: Some(upload.clone()),
                             });
                             SignalToUI::set_ui_signal();
                             return false;
@@ -4891,6 +4917,7 @@ async fn add_new_room(
     // an `AddJoinedRoom` update to the RoomsList widget, because that widget might
     // immediately issue a `MatrixRequest` that relies on that room being in `ALL_JOINED_ROOMS`.
     log!("Adding new joined room {}, name: {:?}", new_room.room_id, new_room.display_name);
+    crate::room_encryption::check_in_background(new_room.room.clone());
     ALL_JOINED_ROOMS.lock().unwrap().insert(
         new_room.room_id.clone(),
         JoinedRoomDetails {

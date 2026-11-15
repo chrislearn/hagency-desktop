@@ -114,6 +114,7 @@ pub mod agent_chat_dummy;
 pub mod agent_access;
 pub mod sliding_sync;
 mod matrix_context;
+mod room_encryption;
 pub mod space_service_sync;
 pub mod avatar_cache;
 pub mod room_preview_cache;

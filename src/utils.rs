@@ -28,7 +28,7 @@ pub(crate) async fn invite_room_member(
     use matrix_sdk::ruma::api::client::membership::invite_user::v3::{
         InvitationRecipient, InviteUserId, Request,
     };
-    if !matches!(room.latest_encryption_state().await?, matrix_sdk::EncryptionState::NotEncrypted) {
+    if !matches!(crate::room_encryption::confirmed_state(room).await?, matrix_sdk::EncryptionState::NotEncrypted) {
         return room.invite_user_by_id(user).await;
     }
     let recipient = InvitationRecipient::UserId(InviteUserId::new(user.to_owned()));

@@ -559,6 +559,9 @@ impl MiniAppPanel {
                         ruma::events::relation::Thread::plain(root.clone(), root.clone()),
                     ));
                 }
+                crate::room_encryption::confirmed_state(&room)
+                    .await
+                    .map_err(|error| error.to_string())?;
                 room.send(message)
                     .with_transaction_id(transaction.clone())
                     .await
