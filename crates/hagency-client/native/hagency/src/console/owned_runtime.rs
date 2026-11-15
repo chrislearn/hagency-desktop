@@ -509,6 +509,8 @@ pub(super) struct OwnedRuntime {
     tasks: TaskCustody,
     entries: Arc<Mutex<BTreeMap<String, Entry>>>,
     services: Arc<Mutex<BTreeMap<String, service::ServiceEntry>>>,
+    /// The server's last answers about Rooms' space project folders.
+    project_folders: super::space_folder::KnownFolders,
 }
 fn identity(device: &AuthorizedDevice, agent: &str) -> String {
     serde_json::to_string(&(
@@ -1163,6 +1165,23 @@ trait Transport {
         &self,
         op: Op,
     ) -> impl std::future::Future<Output = Result<Response, RuntimeError>> + Send;
+    /// The shared project folder of `room`'s space for `owner`, if it has one.
+    fn room_folder(
+        &self,
+        _owner: &str,
+        _room: &str,
+    ) -> impl std::future::Future<Output = Option<super::space_folder::RoomFolder>> + Send {
+        std::future::ready(None)
+    }
+    /// Where space project folders go on this computer. Tests never use the
+    /// real home.
+    fn space_root(&self) -> Option<std::path::PathBuf> {
+        if cfg!(test) {
+            None
+        } else {
+            super::space_folder::default_root()
+        }
+    }
 }
 #[derive(Clone)]
 struct PinnedConsole {
@@ -1193,6 +1212,27 @@ impl Transport for PinnedConsole {
             .execution_api_pinned(op, &self.pin)
             .await
             .map_err(|e| transport_error(e.status, &e.code, acquiring, request))
+    }
+    async fn room_folder(
+        &self,
+        owner: &str,
+        room: &str,
+    ) -> Option<super::space_folder::RoomFolder> {
+        use super::space_folder::Answer;
+        let asked = async {
+            match self.console.room_project_folder_pinned(room, &self.pin).await {
+                Ok(folder) => Answer::Folder(folder),
+                // An older server has no such route: no space has a folder.
+                Err(error) if error.status == 404 => Answer::Unsupported,
+                Err(_) => Answer::Unavailable,
+            }
+        };
+        self.console
+            .0
+            .owned_runtime
+            .project_folders
+            .folder(owner, room, asked)
+            .await
     }
 }
 // Only explicit per-event refusals are isolated. Authentication, device and
@@ -2432,6 +2472,29 @@ async fn review_request<T: Transport>(
             )
             .is_ok())
 }
+/// The space project folder a turn works in: its Room's space has one, and the
+/// Agent works with native tools in a folder Hagency chooses. An Agent with
+/// the owner's shared project or with host file tools keeps the owner's
+/// choice, and so does Octos, whose instance state lives beside its folder.
+#[cfg(unix)]
+async fn space_project<T: Transport>(
+    transport: &T,
+    owner: &str,
+    config: &StartConfig,
+    scope: &Scope,
+) -> Option<hagency_runtime::owned::SharedProject> {
+    if config.shared_workspace
+        || config.host_files
+        || !matches!(
+            runtime::kind(&config.credential_ref),
+            runtime::Kind::Codex | runtime::Kind::Claude
+        )
+    {
+        return None;
+    }
+    let folder = transport.room_folder(owner, &scope.room).await?;
+    super::space_folder::place(transport.space_root(), owner, folder).await
+}
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip_all, fields(agent_id = %config.agent_id, binding_id = %config.binding_id, dispatch_id = %prepared.dispatch.id))]
 async fn run_turn<T: Transport>(
@@ -2471,6 +2534,8 @@ async fn run_turn<T: Transport>(
     #[cfg(not(unix))]
     let profile = config.profile.clone();
     #[cfg(unix)]
+    let space = space_project(transport, owner, config, &scope).await;
+    #[cfg(unix)]
     let (profile, workspace) = working_directory::for_turn(
         &config.profile,
         owner,
@@ -2478,6 +2543,7 @@ async fn run_turn<T: Transport>(
         config.host_files,
         config.shared_workspace,
         config.shared_workspace_pin.as_deref(),
+        space.as_ref(),
     )?;
     let (queue, mut receiver) = codex::approval_queue(1).map_err(|_| RuntimeError::Profile)?;
     let (question_queue, question_receiver) = hagency_agent_local::questions::question_queue();
@@ -3788,6 +3854,67 @@ mod tests {
             assert!(ledger.outstanding_calls(OWNER).unwrap().is_empty());
             assert!(fake.calls.lock().unwrap().is_empty());
         }
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_codex_and_claude_turns_take_their_rooms_space_folder() {
+        use super::super::space_folder::RoomFolder;
+        struct Space {
+            folder: Option<RoomFolder>,
+            root: PathBuf,
+            asked: StdMutex<Vec<(String, String)>>,
+        }
+        impl Transport for Space {
+            async fn execute(&self, _: Op) -> Result<Response, RuntimeError> {
+                Err(RuntimeError::Transport)
+            }
+            async fn room_folder(&self, owner: &str, room: &str) -> Option<RoomFolder> {
+                self.asked.lock().unwrap().push((owner.into(), room.into()));
+                self.folder.clone()
+            }
+            fn space_root(&self) -> Option<PathBuf> {
+                Some(self.root.clone())
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let root = base.join("Hagency Projects");
+        let scope = event().scope();
+        let space = Space {
+            folder: Some(RoomFolder { project_id: "prj_space".into(), folder: "Team app".into() }),
+            root: root.clone(),
+            asked: StdMutex::new(vec![]),
+        };
+        let codex = config(&base);
+        let placed = space_project(&space, OWNER, &codex, &scope).await.unwrap();
+        assert_eq!(placed.directory(), root.join("Team app"));
+        let mut claude = config(&base);
+        claude.credential_ref = format!("claude-managed:shared-home:{}", "a".repeat(64));
+        assert_eq!(space_project(&space, OWNER, &claude, &scope).await, Some(placed.clone()));
+        let asked = space.asked.lock().unwrap().clone();
+        assert_eq!(asked, vec![(OWNER.to_owned(), scope.room.clone()); 2]);
+        // Octos, the owner's shared project and host file tools keep their
+        // own folders and never ask.
+        let mut octos = config(&base);
+        octos.credential_ref = format!("octos-managed:shared-home:{}:first", "a".repeat(64));
+        let mut shared = config(&base);
+        shared.shared_workspace = true;
+        let mut hosted = config(&base);
+        hosted.host_files = true;
+        for other in [octos, shared, hosted] {
+            assert_eq!(space_project(&space, OWNER, &other, &scope).await, None);
+        }
+        assert_eq!(space.asked.lock().unwrap().len(), 2);
+        // A Room whose space has no folder keeps its own folder.
+        let plain = Space { folder: None, root: root.clone(), asked: StdMutex::new(vec![]) };
+        assert_eq!(space_project(&plain, OWNER, &codex, &scope).await, None);
+        assert_eq!(plain.asked.lock().unwrap().len(), 1);
+        let mut names: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, [".hagency", "Team app"]);
     }
     #[tokio::test]
     async fn last_worker_completion_consumes_already_accepted_new_binding_start() {

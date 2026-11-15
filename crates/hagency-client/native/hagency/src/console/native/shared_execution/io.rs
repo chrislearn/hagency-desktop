@@ -72,7 +72,7 @@ impl ServerOperation {
                 input.validate().map_err(store)?;
             }
             Action::RoomProjectFolder { room } => {
-                if !super::project_folder::room_id(room) {
+                if !crate::console::space_folder::room_id(room) {
                     return Err(invalid());
                 }
             }
@@ -168,12 +168,11 @@ impl ServerOperation {
             ));
         }
         if let Action::RoomProjectFolder { room } = &*self.0 {
-            let room = percent_encoding::utf8_percent_encode(room, percent_encoding::NON_ALPHANUMERIC);
-            return Ok((
-                reqwest::Method::GET,
-                format!("/hagency/api/v1/room-project-folder?roomId={room}"),
-                None,
-            ));
+            let path = crate::console::space_folder::lookup_path(room).ok_or(OwnerError {
+                status: 400,
+                code: "invalid_shared_execution_payload".into(),
+            })?;
+            return Ok((reqwest::Method::GET, path, None));
         }
         let read = matches!(&*self.0,Action::Demand(a) if matches!(&**a,super::demand_io::DemandAction::Control{..}));
         let (mut path, body) = match *self.0 {
@@ -280,7 +279,7 @@ pub(super) struct Io {
     namespace: Option<Arc<hagency_store::owner_resources::ResourceNamespace>>,
     provider_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     claude_discovery: Arc<tokio::sync::Mutex<Option<(Instant, PollVersion)>>>,
-    pub(super) project_folders: super::project_folder::KnownFolders,
+    pub(super) project_folders: crate::console::space_folder::KnownFolders,
     #[cfg(test)]
     pub(super) crypto_fixture: Option<Arc<super::e2ee::CryptoFixture>>,
     /// Where tests keep space project folders; tests never use the real home.
@@ -332,7 +331,7 @@ impl Io {
             namespace: None,
             provider_gate: None,
             claude_discovery: Arc::default(),
-            project_folders: Arc::default(),
+            project_folders: Default::default(),
             #[cfg(test)]
             crypto_fixture: None,
             #[cfg(test)]
@@ -558,8 +557,8 @@ impl Bound {
     pub async fn room_project_folder(
         &self,
         room: &str,
-    ) -> Result<Option<super::project_folder::RoomFolder>, NativeError> {
-        let reply: super::project_folder::RoomFolderReply = self
+    ) -> Result<Option<crate::console::space_folder::RoomFolder>, NativeError> {
+        let reply: crate::console::space_folder::RoomFolderReply = self
             .transport
             .request(
                 &self.scope,
