@@ -2971,6 +2971,7 @@ impl HagencyPanel {
                     Target::ProjectAdopted,
                     Command::AdoptProject {
                         space_id: string(&space, "spaceId").into(),
+                        project_folder: None,
                     },
                 );
             } else {

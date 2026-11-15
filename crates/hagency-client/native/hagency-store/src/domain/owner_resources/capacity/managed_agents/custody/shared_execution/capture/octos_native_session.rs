@@ -65,6 +65,9 @@ impl SharedBudgetAttemptCustody {
 }
 impl SharedOctosSession {
     pub fn storage_scope(&self) -> &str { self.scope.as_deref().unwrap_or(&self.digest) }
+    /// The routed room, known before the process starts. Admitted work must
+    /// match the route, so a choice made from this room holds for the turn.
+    pub fn route_room(&self) -> Option<&str> { self.route.as_ref().map(|r| r.room_id.as_str()) }
 
     pub async fn attach(&mut self, a: VerifiedSharedActivity, w: SharedWorkItem, process: &OwnedOctosSession) -> Result<(), Error> {
         a.work(&w)?;

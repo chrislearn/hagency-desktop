@@ -432,15 +432,30 @@ impl OwnedSession {
         room: &str,
         resume: Option<session::ResumeThreadId>,
     ) -> Result<(String, bool), session::Error> {
+        self.open_shared_text_thread_in(room, resume, None).await
+    }
+    /// With a space's shared project folder, the thread works there instead
+    /// of in this Agent's private folder for the room.
+    pub async fn open_shared_text_thread_in(
+        &mut self,
+        room: &str,
+        resume: Option<session::ResumeThreadId>,
+        project: Option<&super::SharedProject>,
+    ) -> Result<(String, bool), session::Error> {
         self.text_source.begin_thread()?;
         self.managed_source.retire();
         let operation = Operation::new(self)?;
         let result = async {
-            let directory = super::room_workspace::open(
-                Path::new(operation.runner.session.settings().cwd()),
-                room,
-            )?;
-            operation.runner.session.bind_shared_workspace(directory)?;
+            match project {
+                Some(project) => operation.runner.session.bind_project_workspace(project)?,
+                None => {
+                    let directory = super::room_workspace::open(
+                        Path::new(operation.runner.session.settings().cwd()),
+                        room,
+                    )?;
+                    operation.runner.session.bind_shared_workspace(directory)?;
+                }
+            }
             operation.runner.session.resume_or_start_thread(resume).await
         }
         .await;

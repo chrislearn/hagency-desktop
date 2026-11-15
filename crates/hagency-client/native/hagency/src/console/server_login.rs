@@ -1531,6 +1531,7 @@ pub(super) enum OwnerOperation {
     },
     AdoptProject {
         space: String,
+        project_folder: Option<String>,
     },
     ProjectRooms {
         project: String,
@@ -1720,13 +1721,21 @@ impl OwnerOperation {
                 format!("{}/creation-policy", policy_scope(&project, Some(&room))?),
                 Some(json!({"expectedRevision":expected,"policy":policy})),
             ),
-            Self::AdoptProject { space } => {
+            Self::AdoptProject {
+                space,
+                project_folder,
+            } => {
                 matrix_creations::room_id(&space)?;
-                (
-                    Method::POST,
-                    "projects/adopt".into(),
-                    Some(json!({"spaceId":space})),
-                )
+                let mut body = json!({"spaceId":space});
+                // Sent only when chosen, so a server without shared project
+                // folders adopts every other space as before.
+                if let Some(folder) = project_folder {
+                    if !super::native::valid_project_folder_name(&folder) {
+                        return Err(OwnerError::new(400, "invalid_project_folder"));
+                    }
+                    body["projectFolder"] = json!(folder);
+                }
+                (Method::POST, "projects/adopt".into(), Some(body))
             }
             Self::ProjectRooms { project } => {
                 operation_id(&project)?;

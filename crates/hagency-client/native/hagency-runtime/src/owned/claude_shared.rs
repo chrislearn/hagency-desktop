@@ -145,11 +145,13 @@ pub(super) struct State {
 impl OwnedClaudeSession {
     /// Shared credentials and plaintext stay in one host-owned conversation
     /// scope. The OS sandbox covers the CLI and every native tool descendant.
+    /// With a space's shared project folder, the process works there instead.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_shared_isolated_resuming(
         guardian: &Path,
         mut launch: Launch,
         scope: &Path,
+        project: Option<&super::SharedProject>,
         credential: &crate::claude::account::SharedCredential,
         limits: Limits,
         policy: SharedClaudePolicy,
@@ -161,7 +163,7 @@ impl OwnedClaudeSession {
         credential
             .inject(&mut launch)
             .map_err(|_| StartError::Settings)?;
-        isolation::confine(&mut launch, scope)?;
+        isolation::confine(&mut launch, scope, project)?;
         let mut session = Self::start_shared(guardian, &launch, limits, policy, resume)?;
         session
             .bind_shared_credential(credential.binding())

@@ -228,6 +228,7 @@ mod tests {
             },
             Command::AdoptProject {
                 space_id: "!s:test".into(),
+                project_folder: None,
             },
             Command::AdoptRoom {
                 project_id: "p".into(),

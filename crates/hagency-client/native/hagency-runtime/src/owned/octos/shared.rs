@@ -144,13 +144,28 @@ impl OwnedOctosSession {
         policy: SharedOctosPolicy,
         auth_home: Option<&Path>,
     ) -> Result<Self, StartError> {
+        Self::spawn_shared_isolated_in(guardian, executable, scope, None, profile, limits, policy, auth_home)
+    }
+    /// With a space's shared project folder, Octos works in that folder
+    /// instead of the scope's own `work` directory.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_shared_isolated_in(
+        guardian: &Path,
+        executable: &Path,
+        scope: &Path,
+        project: Option<&crate::owned::SharedProject>,
+        profile: ProfileBinding,
+        limits: Limits,
+        policy: SharedOctosPolicy,
+        auth_home: Option<&Path>,
+    ) -> Result<Self, StartError> {
         #[cfg(target_os = "macos")]
         {
-            spawn_macos(guardian, executable, scope, profile, limits, policy, auth_home)
+            spawn_macos(guardian, executable, scope, project, profile, limits, policy, auth_home)
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = (guardian, executable, scope, profile, limits, policy, auth_home);
+            let _ = (guardian, executable, scope, project, profile, limits, policy, auth_home);
             Err(StartError::Unsupported)
         }
     }
@@ -280,10 +295,12 @@ impl OwnedOctosSession {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
 fn spawn_macos(
     guardian: &Path,
     executable: &Path,
     scope: &Path,
+    project: Option<&crate::owned::SharedProject>,
     profile: ProfileBinding,
     limits: Limits,
     policy: SharedOctosPolicy,
@@ -313,7 +330,11 @@ fn spawn_macos(
     let patch_executable = executable.clone();
     let home = scope.join("home");
     let archived_config = scope.join("config");
-    let workspace = scope.join("work");
+    let workspace = match project {
+        Some(project) if project.check() && project.apart_from(scope) => project.directory().to_path_buf(),
+        Some(_) => return Err(StartError::Settings),
+        None => scope.join("work"),
+    };
     let temporary = scope.join("tmp");
     for path in [&home, &archived_config, &workspace, &temporary] {
         if !path.is_dir() || path.canonicalize().ok().as_deref() != Some(path) {
@@ -384,7 +405,7 @@ fn spawn_macos(
             environment,
             require_crash_containment: false,
         };
-        super::super::claude_shared::isolation::confine_octos(&mut launch, scope)?;
+        super::super::claude_shared::isolation::confine_octos(&mut launch, scope, project)?;
         profile
             .snapshot_into_with_ambient(&data, auth_home.is_some())
             .map_err(|_| StartError::Settings)?;

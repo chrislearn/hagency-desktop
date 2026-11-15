@@ -3169,5 +3169,13 @@
   "To use contributed capacity, open Hagency → Resource pools and request an Agent.": "要使用别人贡献的额度，请打开 Hagency → 资源池，申请一个 Agent。",
   "Claude Code local model alias": "Claude Code 本地模型别名",
   "Agent run record": "Agent 运行记录",
-  "Question from the Agent": "Agent 提问"
+  "Question from the Agent": "Agent 提问",
+  "Shared project folder": "共享项目文件夹",
+  "Coding Agents of this space that run on the same computer work in one folder.": "此空间中在同一台电脑上运行的编程 Agent 在同一个文件夹中工作。",
+  "Folder name": "文件夹名称",
+  "Each such computer keeps it in its home folder, under Hagency Projects.": "这样的每台电脑都把它放在用户主文件夹的 Hagency Projects 下。",
+  "Use up to 64 characters, with no slashes or colons, not starting with a dot.": "最多 64 个字符，不能包含斜杠或冒号，也不能以点开头。",
+  "This server cannot keep a shared project folder yet, so each Agent keeps its own folder.": "此服务器暂不支持共享项目文件夹，每个 Agent 仍使用自己的文件夹。",
+  "Coding Agents of this space share its project folder.": "此空间的编程 Agent 共用它的项目文件夹。",
+  "The shared project folder was not confirmed; each Agent may keep its own folder.": "共享项目文件夹未获确认，各 Agent 可能仍使用自己的文件夹。"
 }

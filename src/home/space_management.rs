@@ -338,8 +338,10 @@ async fn finish_creation(
     config: CreateRoomConfig,
     agent_space: bool,
     project: Option<String>,
+    project_folder: Option<String>,
 ) -> (String, Option<RoomNameId>, bool) {
-    let result: Result<()> = async {
+    let result: Result<Option<&'static str>> = async {
+        let mut note = None;
         matrix_context::ensure_current(client)?;
         if let Some(parent) = &config.parent {
             link(client, parent, name.room_id(), true).await?;
@@ -351,6 +353,7 @@ async fn finish_creation(
             let command = if agent_space {
                 crate::hagency::model::Command::AdoptProject {
                     space_id: name.room_id().to_string(),
+                    project_folder: project_folder.clone(),
                 }
             } else {
                 crate::hagency::model::Command::AdoptRoom {
@@ -359,15 +362,25 @@ async fn finish_creation(
                 }
             };
             matrix_context::ensure_current(client)?;
-            service.execute(command).await.map_err(|e| anyhow!(e))?;
+            let reply = service.execute(command).await.map_err(|e| anyhow!(e))?;
+            if agent_space && project_folder.is_some() {
+                note = Some(folder_note(&reply));
+            }
         }
         matrix_context::ensure_current(client)?;
-        Ok(())
+        Ok(note)
     }
     .await;
     let (message, pending) = match result {
-        Ok(()) => (
-            crate::i18n::tr("Created. Continue with the next step below.").to_owned(),
+        Ok(note) => (
+            match note {
+                Some(note) => format!(
+                    "{}\n{}",
+                    crate::i18n::tr("Created. Continue with the next step below."),
+                    crate::i18n::tr(note)
+                ),
+                None => crate::i18n::tr("Created. Continue with the next step below.").to_owned(),
+            },
             false,
         ),
         Err(error) => (
@@ -379,6 +392,30 @@ async fn finish_creation(
         ),
     };
     (message, Some(name), pending)
+}
+
+/// What the server kept of the requested shared project folder.
+fn folder_note(reply: &serde_json::Value) -> &'static str {
+    if reply["projectFolderUnsupported"] == true {
+        "This server cannot keep a shared project folder yet, so each Agent keeps its own folder."
+    } else if reply["projectFolder"].is_string() {
+        "Coding Agents of this space share its project folder."
+    } else {
+        "The shared project folder was not confirmed; each Agent may keep its own folder."
+    }
+}
+
+/// A folder name from the space name: characters the rule forbids become
+/// "-", leading dots and outer spaces are dropped, and it is cut to 64
+/// characters.
+fn suggested_folder(name: &str) -> String {
+    let replaced: String = name
+        .trim()
+        .chars()
+        .map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':') { '-' } else { c })
+        .collect();
+    let cut: String = replaced.trim_start_matches('.').trim().chars().take(64).collect();
+    cut.trim_end().to_owned()
 }
 
 #[derive(Clone, Debug)]
@@ -689,6 +726,20 @@ script_mod! {
                             Hint {text: #(crate::i18n::tr("Private space · members join by invitation.")) i18n_text: "Private space · members join by invitation."}
                         }
                     }
+                    project_folder := Section {visible: false spacing: 8
+                        View {width: Fill height: Fit align: Align{y: 0.5} spacing: 12
+                            View {width: Fill height: Fit flow: Down spacing: 4
+                                Text {text: #(crate::i18n::tr("Shared project folder")) i18n_text: "Shared project folder"}
+                                Hint {text: #(crate::i18n::tr("Coding Agents of this space that run on the same computer work in one folder.")) i18n_text: "Coding Agents of this space that run on the same computer work in one folder."}
+                            }
+                            shared_folder := Switch {}
+                        }
+                        folder_details := View {visible: false width: Fill height: Fit flow: Down spacing: 8
+                            folder_name := Input {empty_text: #(crate::i18n::tr("Folder name")) i18n_empty_text: "Folder name"}
+                            folder_hint := Hint {text: #(crate::i18n::tr("Each such computer keeps it in its home folder, under Hagency Projects.")) i18n_text: "Each such computer keeps it in its home folder, under Hagency Projects."}
+                            folder_error := Hint {visible: false draw_text.color: mod.widgets.RINX_DANGER_FG text: #(crate::i18n::tr("Use up to 64 characters, with no slashes or colons, not starting with a dot.")) i18n_text: "Use up to 64 characters, with no slashes or colons, not starting with a dot."}
+                        }
+                    }
                     details_help := Hint {padding: Inset{left: 4 right: 4 bottom: 8}}
                 }
                 creation_done := View {visible: false width: Fill height: Fit flow: Down spacing: 16
@@ -773,6 +824,9 @@ pub struct SpaceManagementPanel {
     setup_agent_space: bool,
     #[rust]
     setup_project: Option<String>,
+    /// The shared project folder asked for with a new Agent space.
+    #[rust]
+    setup_project_folder: Option<String>,
     #[cfg(feature = "onboarding-test-support")]
     #[rust]
     review_room_registration: bool,
@@ -888,6 +942,15 @@ impl SpaceManagementPanel {
         self.view.check_box(cx, ids!(public)).set_visible(cx, public_visible);
         self.view.view(cx, ids!(public_row)).set_visible(cx, public_visible);
         self.view.view(cx, ids!(private_note)).set_visible(cx, kind == 1);
+        self.view.view(cx, ids!(project_folder)).set_visible(cx, kind == 1);
+        let shared_folder = kind == 1 && self.view.check_box(cx, ids!(shared_folder)).active(cx);
+        self.view.view(cx, ids!(folder_details)).set_visible(cx, shared_folder);
+        let folder = self.view.text_input(cx, ids!(folder_name)).text();
+        let folder_valid = !shared_folder
+            || crate::hagency::model::valid_project_folder_name(folder.trim());
+        let folder_error = !folder_valid && !folder.trim().is_empty();
+        self.view.label(cx, ids!(folder_error)).set_visible(cx, folder_error);
+        self.view.label(cx, ids!(folder_hint)).set_visible(cx, !folder_error);
         if self.wizard_step == 1 && room {
             let guidance = if !self.data.projects_known {
                 "Space types could not be checked. Refresh before creating a room."
@@ -908,6 +971,7 @@ impl SpaceManagementPanel {
         self.view.label(cx, ids!(name_error)).set_visible(cx, invalid);
         self.view.label(cx, ids!(name_error)).set_text(cx, crate::i18n::tr(if !topic_valid {"The description is too long."} else {"Use a name of 255 characters or fewer."}));
         self.view.button(cx, ids!(create)).set_enabled(cx, !self.busy && name_valid && topic_valid
+            && folder_valid
             && (!room || self.choice().is_some_and(|c| c.can_link) && self.data.projects_known)
             && self.created.is_none());
         self.view.button(cx, ids!(create)).set_text(cx, crate::i18n::tr(if self.busy {"Creating…"} else if room {"Create room"} else {"Create space"}));
@@ -1169,8 +1233,9 @@ impl Widget for SpaceManagementPanel {
             ) {
                 let agent_space = self.setup_agent_space;
                 let project = self.setup_project.clone();
+                let project_folder = self.setup_project_folder.clone();
                 self.run(cx, async move {
-                    Ok(finish_creation(&client, room, config, agent_space, project).await)
+                    Ok(finish_creation(&client, room, config, agent_space, project, project_folder).await)
                 });
             }
             return;
@@ -1198,8 +1263,16 @@ impl Widget for SpaceManagementPanel {
         if self.view.check_box(cx, ids!(encrypted)).changed(actions) == Some(true) {
             self.view.check_box(cx, ids!(public)).set_active(cx, false, Animate::Yes);
         }
+        if self.view.check_box(cx, ids!(shared_folder)).changed(actions) == Some(true)
+            && self.view.text_input(cx, ids!(folder_name)).text().trim().is_empty()
+        {
+            let suggested = suggested_folder(&self.view.text_input(cx, ids!(name)).text());
+            self.view.text_input(cx, ids!(folder_name)).set_text(cx, &suggested);
+        }
         if self.view.text_input(cx, ids!(name)).changed(actions).is_some()
-            || self.view.text_input(cx, ids!(topic)).changed(actions).is_some() {
+            || self.view.text_input(cx, ids!(topic)).changed(actions).is_some()
+            || self.view.text_input(cx, ids!(folder_name)).changed(actions).is_some()
+            || self.view.check_box(cx, ids!(shared_folder)).changed(actions).is_some() {
             self.sync(cx);
         }
         if let Some(query) = self.view.text_input(cx, ids!(search)).changed(actions) {
@@ -1277,6 +1350,17 @@ impl Widget for SpaceManagementPanel {
             }
             self.created_space = config.space;
             self.setup_agent_space = self.view.drop_down(cx, ids!(kind)).selected_item() == 1;
+            self.setup_project_folder = (self.setup_agent_space
+                && self.view.check_box(cx, ids!(shared_folder)).active(cx))
+                .then(|| self.view.text_input(cx, ids!(folder_name)).text().trim().to_owned());
+            if self
+                .setup_project_folder
+                .as_deref()
+                .is_some_and(|folder| !crate::hagency::model::valid_project_folder_name(folder))
+            {
+                self.status(cx, StatusTone::Warning, "Use up to 64 characters, with no slashes or colons, not starting with a dot.");
+                return;
+            }
             self.setup_project = if config.space {
                 None
             } else {
@@ -1289,6 +1373,7 @@ impl Widget for SpaceManagementPanel {
             self.setup_config = Some(config.clone());
             let agent_space = self.setup_agent_space;
             let project = self.setup_project.clone();
+            let project_folder = self.setup_project_folder.clone();
             self.run(cx, async move {
                 let request = config.request()?;
                 if let Some(parent) = &config.parent {
@@ -1300,7 +1385,7 @@ impl Widget for SpaceManagementPanel {
                     matrix_sdk::RoomDisplayName::Named(config.name.trim().into()),
                     room.room_id().to_owned(),
                 );
-                Ok(finish_creation(&client, name, config, agent_space, project).await)
+                Ok(finish_creation(&client, name, config, agent_space, project, project_folder).await)
             });
             return;
         }
@@ -1575,6 +1660,12 @@ impl SpaceManagementPanelRef {
                 inner.setup_project = None;
                 inner.created_space = false;
                 inner.setup_agent_space = false;
+                inner.setup_project_folder = None;
+                inner
+                    .view
+                    .check_box(cx, ids!(shared_folder))
+                    .set_active(cx, false, Animate::No);
+                inner.view.text_input(cx, ids!(folder_name)).set_text(cx, "");
                 inner.data = Snapshot::default();
                 inner.query.clear();
                 inner
@@ -1855,5 +1946,72 @@ mod tests {
         assert!(config.request().is_err());
         config.name = "界".repeat(256);
         assert!(config.request().is_err());
+    }
+    #[test]
+    fn agent_space_offers_a_shared_project_folder_that_must_follow_the_rule() {
+        let (mut cx, mut panel) = panel();
+        let enabled = |cx: &mut Cx, panel: &SpaceManagementPanel| {
+            panel.view.button(cx, ids!(create)).borrow().unwrap().enabled()
+        };
+        panel.view.text_input(&mut cx, ids!(name)).set_text(&mut cx, "Team");
+        panel.wizard_step = 1;
+        for kind in [0, 2] {
+            panel.view.drop_down(&mut cx, ids!(kind)).set_selected_item(&mut cx, kind);
+            panel.sync(&mut cx);
+            assert!(!panel.view.view(&mut cx, ids!(project_folder)).visible(), "kind {kind}");
+        }
+        panel.view.drop_down(&mut cx, ids!(kind)).set_selected_item(&mut cx, 1);
+        panel.sync(&mut cx);
+        // Off by default: nothing changes for the space.
+        assert!(panel.view.view(&mut cx, ids!(project_folder)).visible());
+        assert!(!panel.view.check_box(&mut cx, ids!(shared_folder)).active(&mut cx));
+        assert!(!panel.view.view(&mut cx, ids!(folder_details)).visible());
+        assert!(enabled(&mut cx, &panel));
+        panel.view.check_box(&mut cx, ids!(shared_folder)).set_active(&mut cx, true, Animate::No);
+        panel.sync(&mut cx);
+        assert!(panel.view.view(&mut cx, ids!(folder_details)).visible());
+        // An empty name waits for one without an error.
+        assert!(!enabled(&mut cx, &panel));
+        assert!(!panel.view.label(&mut cx, ids!(folder_error)).visible());
+        for bad in [".app", "a/b", "c:d", &"a".repeat(65)] {
+            panel.view.text_input(&mut cx, ids!(folder_name)).set_text(&mut cx, bad);
+            panel.sync(&mut cx);
+            assert!(!enabled(&mut cx, &panel), "{bad:?}");
+            assert!(panel.view.label(&mut cx, ids!(folder_error)).visible(), "{bad:?}");
+        }
+        // Outer spaces are dropped before the rule applies.
+        panel.view.text_input(&mut cx, ids!(folder_name)).set_text(&mut cx, " Team app ");
+        panel.sync(&mut cx);
+        assert!(enabled(&mut cx, &panel));
+        assert!(!panel.view.label(&mut cx, ids!(folder_error)).visible());
+        assert!(panel.view.label(&mut cx, ids!(folder_hint)).visible());
+    }
+    #[test]
+    fn suggested_folder_names_follow_the_folder_rule() {
+        use crate::hagency::model::valid_project_folder_name as valid;
+        assert_eq!(suggested_folder("  Team Room  "), "Team Room");
+        assert_eq!(suggested_folder("a/b\\c:d"), "a-b-c-d");
+        assert_eq!(suggested_folder("..hidden"), "hidden");
+        assert_eq!(suggested_folder("项目"), "项目");
+        let long = suggested_folder(&format!("{} tail", "x".repeat(63)));
+        assert_eq!(long, "x".repeat(63));
+        for name in ["Team Room", "a/b\\c:d", "..hidden", "项目", "x"] {
+            assert!(valid(&suggested_folder(name)), "{name:?}");
+        }
+        // Nothing usable is left: the owner types a name.
+        assert_eq!(suggested_folder(" ... "), "");
+        assert!(!valid(""));
+    }
+    #[test]
+    fn the_result_note_says_whether_the_folder_was_kept() {
+        let kept = serde_json::json!({"project": {}, "projectFolder": "app"});
+        let unsupported = serde_json::json!({"project": {}, "projectFolderUnsupported": true});
+        let silent = serde_json::json!({"project": {}});
+        assert_eq!(folder_note(&kept), "Coding Agents of this space share its project folder.");
+        assert!(folder_note(&unsupported).starts_with("This server cannot keep"));
+        assert!(folder_note(&silent).starts_with("The shared project folder was not confirmed"));
+        for note in [folder_note(&kept), folder_note(&unsupported), folder_note(&silent)] {
+            assert_ne!(crate::i18n::tr(note), "", "{note}");
+        }
     }
 }

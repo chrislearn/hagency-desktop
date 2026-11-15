@@ -388,6 +388,7 @@ async fn real_daemon_encrypted_child() {
     let project = native
         .execute(Command::AdoptProject {
             space_id: space["room_id"].as_str().unwrap().into(),
+            project_folder: None,
         })
         .await
         .unwrap();

@@ -71,6 +71,8 @@ pub(super) struct OctosLaunch {
     binding: Option<VerifiedOwnerResourceBinding>,
     workspaces: Option<super::claude_workspace::Workspaces>,
     workspace: Option<super::claude_workspace::Lease>,
+    /// The space's shared project folder, when the space has one.
+    project: Option<hagency_runtime::owned::SharedProject>,
     pub policy: SharedOctosPolicy,
     #[cfg(test)]
     fixture_guardian: Option<PathBuf>,
@@ -87,6 +89,8 @@ pub(super) struct ClaudeLaunch {
     credential: Option<SharedCredential>,
     workspaces: Option<super::claude_workspace::Workspaces>,
     workspace: Option<super::claude_workspace::Lease>,
+    /// The space's shared project folder, when the space has one.
+    project: Option<hagency_runtime::owned::SharedProject>,
 }
 impl Launch {
     pub async fn for_resource(
@@ -124,7 +128,7 @@ impl Launch {
                 profile_id, model: resource.model.clone(), executable: owner_provider::external::executable(Kind::Octos)
                     .map_err(|e| failure(e.status, e.code))?, base,
                 running_guard: Arc::new(std::sync::OnceLock::new()), binding: None,
-                workspaces: None, workspace: None, policy: SharedOctosPolicy::Text,
+                workspaces: None, workspace: None, project: None, policy: SharedOctosPolicy::Text,
                 #[cfg(test)] fixture_guardian: None,
             }));
         }
@@ -181,6 +185,7 @@ impl Launch {
             credential: None,
             workspaces: None,
             workspace: None,
+            project: None,
             profile: Profile {
                 executable: owner_provider::external::executable(Kind::Claude)
                     .map_err(|e| failure(e.status, e.code))?,
@@ -360,7 +365,7 @@ impl OctosLaunch {
             profile_authority: authority, registry, resource: resource.id.clone(), revision: resource.revision.clone(),
             profile_id, model: resource.model.clone(), executable: PathBuf::from(std::env::var_os("HAGENCY_TEST_OCTOS_EXECUTABLE").unwrap()), base,
             running_guard: Arc::new(std::sync::OnceLock::new()), binding: None, workspaces: None, workspace: None,
-            policy: SharedOctosPolicy::Text,
+            project: None, policy: SharedOctosPolicy::Text,
             fixture_guardian: Some(PathBuf::from(std::env::var_os("HAGENCY_TEST_OCTOS_GUARDIAN").unwrap())),
         }
     }
@@ -375,7 +380,10 @@ impl OctosLaunch {
             "profile":self.profile_id,"model":self.model,"resource":self.resource,"revision":self.revision,
             "isolation":"host-owned-room-v1","nativeSession":"fresh","policy":self.policy.name()}))
     }
-    pub fn bind_scope(&mut self, root: &SharedRuntimeCommand, scope: &str) -> Result<(), NativeError> {
+    pub fn bind_scope(
+        &mut self, root: &SharedRuntimeCommand, scope: &str,
+        project: Option<hagency_runtime::owned::SharedProject>,
+    ) -> Result<(), NativeError> {
         self.check()?;
         hash(scope)?;
         if self.workspace.is_some() || root.runtime().map_err(store)? != "octos" {
@@ -383,14 +391,22 @@ impl OctosLaunch {
         }
         // A route selects exactly one conversation; without one the original
         // command digest is a private bootstrap scope.
-        self.workspace = Some(self.workspaces.as_ref().ok_or_else(invalid)?.open(
+        let lease = self.workspaces.as_ref().ok_or_else(invalid)?.open(
             &self.base, scope, &root.assignment_id, root.assignment_generation,
-        )?);
+        )?;
+        // A space's shared project folder replaces the conversation's work
+        // folder; the rest of the scope stays private to the conversation.
+        self.project = project.filter(|p| p.apart_from(lease.path()));
+        self.workspace = Some(lease);
         Ok(())
     }
     pub fn profile_id(&self) -> &str { &self.profile_id }
     pub fn workspace(&self) -> Result<PathBuf, NativeError> {
-        Ok(self.workspace.as_ref().ok_or_else(invalid)?.path().join("work"))
+        let scope = self.workspace.as_ref().ok_or_else(invalid)?;
+        Ok(match &self.project {
+            Some(project) => project.directory().to_path_buf(),
+            None => scope.path().join("work"),
+        })
     }
     pub fn spawn(&self, until: Instant) -> Result<OwnedOctosSession, NativeError> {
         self.check()?;
@@ -406,8 +422,9 @@ impl OctosLaunch {
             _ => Some(hagency_runtime::octos::profile_binding::auth_home_for_owner(&self.selection.paths.home)
                 .map_err(|_| failure(409, "shared_execution_launch_unavailable"))?),
         };
-        OwnedOctosSession::spawn_shared_isolated_with_auth(
+        OwnedOctosSession::spawn_shared_isolated_in(
             &guardian, &self.executable, self.workspace.as_ref().ok_or_else(invalid)?.path(),
+            self.project.as_ref(),
             witness, hagency_runtime::octos::session::Limits { event_wait_ms: 180_000, ..Default::default() }, self.policy,
             auth_home.as_deref(),
         ).map_err(|_| failure(409, "shared_execution_launch_unavailable"))
@@ -497,6 +514,7 @@ impl ClaudeLaunch {
             credential: None,
             workspaces: None,
             workspace: None,
+            project: None,
         }
     }
     pub fn check(&self) -> Result<(), NativeError> {
@@ -522,6 +540,7 @@ impl ClaudeLaunch {
         &mut self,
         session: &SharedClaudeSession,
         command: &SharedRuntimeCommand,
+        project: Option<hagency_runtime::owned::SharedProject>,
     ) -> Result<(), NativeError> {
         if self.workspace.is_some() {
             return Err(invalid());
@@ -535,6 +554,12 @@ impl ClaudeLaunch {
         self.profile.home = lease.path().join("home");
         self.profile.codex_home = lease.path().join("config");
         self.profile.cwd = lease.path().join("work");
+        // A space's shared project folder replaces the conversation's work
+        // folder; its home, settings and temporary files stay private.
+        if let Some(project) = project.filter(|p| p.apart_from(lease.path())) {
+            self.profile.cwd = project.directory().to_path_buf();
+            self.project = Some(project);
+        }
         self.workspace = Some(lease);
         Ok(())
     }
@@ -625,6 +650,7 @@ impl ClaudeLaunch {
             &guardian,
             launch,
             workspace.path(),
+            self.project.as_ref(),
             self.credential.as_ref().ok_or_else(invalid)?,
             Default::default(),
             self.policy,

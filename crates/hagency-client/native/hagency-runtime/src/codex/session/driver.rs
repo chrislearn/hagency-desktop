@@ -186,6 +186,31 @@ impl<R, W, E> SessionDriver<R, W, E> {
         .cwd;
         Ok(())
     }
+    /// A space's shared project folder replaces the private room folder. The
+    /// host resolved it outside the Agent's own folder; the same phase rules
+    /// apply, and cwd still drives the sandbox roots and the approval scope.
+    pub(crate) fn bind_project_workspace(
+        &mut self,
+        project: &crate::owned::SharedProject,
+    ) -> Result<(), Error> {
+        if self.phase() != Phase::Ready
+            || self.wire.is_warm_idle()
+            || self.settings.task_mcp.is_some()
+        {
+            return Err(Error::State);
+        }
+        let agent = std::path::Path::new(self.settings.cwd());
+        if !project.check() || !project.apart_from(agent) {
+            return Err(Error::Scope);
+        }
+        self.settings.cwd = Settings::new(
+            project.directory().to_path_buf(),
+            self.settings.model.clone(),
+            self.settings.effort.clone(),
+        )?
+        .cwd;
+        Ok(())
+    }
     /// The acknowledgement budget for a startup RPC (`initialize`,
     /// `thread/start`, `thread/resume`). TS 1:1, and **unconditional**: TS
     /// applies `acknowledgementTimeoutMs` (`?? 60_000`) to these three waits

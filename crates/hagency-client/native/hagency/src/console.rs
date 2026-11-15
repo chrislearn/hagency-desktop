@@ -32,6 +32,7 @@ mod setup;
 mod side_budget;
 mod side_lifecycle;
 pub mod side_registration;
+mod space_folder;
 mod stream;
 mod tasks;
 mod usage;

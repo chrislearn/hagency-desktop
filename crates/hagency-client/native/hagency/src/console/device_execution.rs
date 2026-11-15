@@ -1040,6 +1040,58 @@ impl Console {
         }
         parse_response(&operation, value, &device)
     }
+    /// The shared project folder of `room`'s space, asked with the execution
+    /// device the local runtime is pinned to. `Ok(None)` is the server's
+    /// answer that there is none for this owner.
+    #[cfg(unix)]
+    pub(super) async fn room_project_folder_pinned(
+        &self,
+        room: &str,
+        expected: &DeviceIdentity,
+    ) -> Result<Option<super::space_folder::RoomFolder>, DeviceError> {
+        let path = super::space_folder::lookup_path(room)
+            .ok_or_else(|| error(400, "invalid_room_id"))?;
+        let device = self
+            .authorized_device()
+            .await
+            .map_err(|_| error(401, "device_authorization_required"))?;
+        if expected != &DeviceIdentity::from(&device) {
+            return Err(error(401, "device_authorization_required"));
+        }
+        let server =
+            Url::parse(device.origin()).map_err(|_| error(503, "invalid_server_binding"))?;
+        let url = server
+            .join(&path)
+            .map_err(|_| error(503, "invalid_server_binding"))?;
+        let client = super::server_login::http().map_err(|_| error(503, "server_unavailable"))?;
+        let bearer = device
+            .bearer()
+            .map_err(|_| error(401, "device_authorization_required"))?;
+        let mut response = client
+            .get(url)
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .map_err(|_| error(503, "server_unavailable"))?;
+        let status = response.status().as_u16();
+        let mut raw = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| error(503, "server_unavailable"))?
+        {
+            if raw.len() + chunk.len() > super::space_folder::MAX_REPLY_BYTES {
+                return Err(error(502, "execution_response_too_large"));
+            }
+            raw.extend_from_slice(&chunk);
+        }
+        if !(200..300).contains(&status) {
+            return Err(error(status, "room_project_folder_unavailable"));
+        }
+        let reply: super::space_folder::RoomFolderReply =
+            serde_json::from_slice(&raw).map_err(|_| error(502, "invalid_execution_response"))?;
+        Ok(reply.project_folder)
+    }
 }
 
 #[cfg(test)]

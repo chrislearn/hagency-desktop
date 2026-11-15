@@ -232,6 +232,11 @@ impl SharedClaudeSession {
     pub fn storage_scope(&self) -> &str {
         self.scope.as_deref().unwrap_or(&self.digest)
     }
+    /// The routed room, known before the process starts. Admitted work must
+    /// match the route, so a choice made from this room holds for the turn.
+    pub fn route_room(&self) -> Option<&str> {
+        self.route.as_ref().map(|r| r.room_id.as_str())
+    }
     pub fn resume_id(&self) -> Option<&str> {
         self.previous.as_ref().map(|p| p.native.as_str())
     }

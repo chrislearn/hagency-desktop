@@ -7,6 +7,9 @@ use std::sync::{Arc, Mutex};
 #[path = "daemon_lifecycle.rs"]
 mod daemon_lifecycle;
 
+/// Adoption bodies the fake server received, in order.
+static ADOPTS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
+
 #[derive(Clone)]
 struct OAuthFixture {
     origin: String,
@@ -454,6 +457,18 @@ async fn oauth(req: &mut Request, depot: &Depot, res: &mut Response) {
                 }
                 json!({"reply":reply})
             }
+        }
+        // An older server: the opt-in folder field is an unknown argument.
+        "/hagency/api/v1/projects/adopt" => {
+            assert_eq!(req.method(), Method::POST);
+            let input: Value = req.parse_json().await.unwrap();
+            ADOPTS.lock().unwrap().push(input.clone());
+            if input.get("projectFolder").is_some() {
+                res.status_code(StatusCode::BAD_REQUEST);
+                res.render(Json(json!({"code":"invalid_arguments"})));
+                return;
+            }
+            json!({"project":{"id":"prj_fixture","spaceId":input["spaceId"],"active":true,"archived":false,"creationPolicy":"{}","revision":1}})
         }
         "/hagency/api/v1/projects/prj_fixture/service-state"
         | "/hagency/api/v1/projects/prj_fixture/rooms/%21room%3Aexample%2Etest/service-state"
@@ -2722,6 +2737,40 @@ async fn native_owner_space_candidates_use_own_oauth_and_paginate_partial_failur
     .await;
     assert_eq!(nonempty.status_code, Some(StatusCode::BAD_REQUEST));
     assert_eq!(fake.state.lock().unwrap().management_calls, before_admin);
+    // A server without shared project folders refuses the field; the space is
+    // adopted without it and the reply says the folder was not kept.
+    let space = "!space:example.test";
+    let mut adopted = post("/console/api/owner-projects", &cookie)
+        .json(&json!({"spaceId":space,"projectFolder":"Team app"}))
+        .send(&service)
+        .await;
+    assert_eq!(adopted.status_code, Some(StatusCode::OK));
+    let adopted = adopted.take_json::<Value>().await.unwrap();
+    assert_eq!(adopted["projectFolderUnsupported"], true);
+    assert_eq!(adopted["project"]["id"], "prj_fixture");
+    assert_eq!(
+        *ADOPTS.lock().unwrap(),
+        vec![
+            json!({"spaceId":space,"projectFolder":"Team app"}),
+            json!({"spaceId":space})
+        ]
+    );
+    // Without the option nothing changes, and a name outside the rule never
+    // reaches the server.
+    let mut plain = post("/console/api/owner-projects", &cookie)
+        .json(&json!({"spaceId":space}))
+        .send(&service)
+        .await;
+    let plain = plain.take_json::<Value>().await.unwrap();
+    assert!(plain.get("projectFolderUnsupported").is_none());
+    for bad in [".hidden", "a/b", ""] {
+        let refused = post("/console/api/owner-projects", &cookie)
+            .json(&json!({"spaceId":space,"projectFolder":bad}))
+            .send(&service)
+            .await;
+        assert_eq!(refused.status_code, Some(StatusCode::BAD_REQUEST), "{bad:?}");
+    }
+    assert_eq!(ADOPTS.lock().unwrap().len(), 3);
 
     let mut candidates = get("/console/api/owner-projects/space-candidates", &cookie)
         .send(&service)

@@ -497,8 +497,14 @@ async fn work_loop(
                 .map_err(|_| failure(409, "shared_file_tool_unavailable"))?;
         }
         super::questions::offer(process);
+        // With tools, the Room's space may name a shared project folder.
+        let project = if process.shared_tools_enabled() {
+            super::project_folder::for_room(io, &work.room_id).await
+        } else {
+            None
+        };
         native_session
-            .open_codex(process)
+            .open_codex_in(process, project.as_ref())
             .await
             .map_err(|error| {
                 tracing::warn!(

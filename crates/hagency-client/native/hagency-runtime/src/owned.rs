@@ -12,6 +12,8 @@ pub use shared_text::{
 };
 mod session;
 mod room_workspace;
+mod shared_project;
+pub use shared_project::{InvalidSharedProject, SharedProject};
 pub use managed::{
     MANAGED_DISABLED_FEATURES, MANAGED_INSTRUCTIONS, MANAGED_INSTRUCTIONS_FILE,
     ManagedPolicyOverrides, ManagedProcessObservation, ManagedProcessSource, ManagedProcessState,

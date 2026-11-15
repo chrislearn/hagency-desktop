@@ -27,7 +27,13 @@ pub(super) async fn run(
             return Err(DrainFailure::Unknown);
         }
     };
-    if let Err(error) = launch.bind_scope(claimed.root(), session.storage_scope()) {
+    // With tools, the routed Room's space may name a shared project folder.
+    // A run without a route (the bootstrap) or without tools uses no files.
+    let project = match session.route_room() {
+        Some(room) if launch.policy.tools() => super::project_folder::for_room(&io, room).await,
+        _ => None,
+    };
+    if let Err(error) = launch.bind_scope(claimed.root(), session.storage_scope(), project) {
         let _ = sender.take().unwrap().send(Err(error));
         return Err(DrainFailure::Unknown);
     }
