@@ -275,7 +275,7 @@ impl Service {
         // The local encryption state must be known before send_raw; otherwise it
         // might send plaintext even though the server state is encrypted.
         ensure!(
-            sdk.encryption_state().is_encrypted(),
+            crate::room_encryption::confirmed_state(&sdk).await?.is_encrypted(),
             crate::i18n::tr("Waiting for encryption state to sync. Refresh before sending.")
         );
         Ok((sdk, timeline))

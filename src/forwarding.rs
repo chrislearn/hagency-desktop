@@ -449,6 +449,10 @@ impl ForwardPanel {
                     error = Some(crate::i18n::tr("A destination chat is no longer joined.").into());
                     break;
                 };
+                if let Err(e) = crate::room_encryption::confirmed_state(&room).await {
+                    error = Some(e.to_string());
+                    break;
+                }
                 match room
                     .send(job.content.clone())
                     .with_transaction_id(job.transaction.clone())

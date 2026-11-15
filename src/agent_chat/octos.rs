@@ -203,7 +203,7 @@ impl Context {
                     room.state() == matrix_sdk::RoomState::Joined,
                     "Join the room first."
                 );
-                if room.latest_encryption_state().await?.is_encrypted() {
+                if crate::room_encryption::confirmed_state(&room).await?.is_encrypted() {
                     context
                         .client
                         .encryption()

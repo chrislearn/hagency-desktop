@@ -382,14 +382,14 @@ fn accept_event(
 
 /// Whether the room is known not to be encrypted.
 async fn plaintext_room(room: &Room) -> bool {
-    let state = room.encryption_state();
-    let state = if state.is_unknown() {
-        match tokio::time::timeout(Duration::from_secs(5), room.latest_encryption_state()).await {
-            Ok(Ok(state)) => state,
-            _ => return false,
-        }
-    } else {
-        state
+    let state = match tokio::time::timeout(
+        Duration::from_secs(5),
+        crate::room_encryption::confirmed_state(room),
+    )
+    .await
+    {
+        Ok(Ok(state)) => state,
+        _ => return false,
     };
     !state.is_unknown() && !state.is_encrypted()
 }
@@ -856,8 +856,7 @@ pub fn send(request: QuestionAnswerRequested) {
             let room = client.get_room(&room_id).ok_or("room_unavailable")?;
             // The room's own encryption state must be known first; an unknown
             // state could otherwise send plaintext into an encrypted room.
-            let encryption = room
-                .latest_encryption_state()
+            let encryption = crate::room_encryption::confirmed_state(&room)
                 .await
                 .map_err(|_| "room_state_unavailable")?;
             if encryption.is_unknown() {

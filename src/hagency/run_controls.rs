@@ -348,8 +348,7 @@ pub fn send(request: Requested) {
             let room_id =
                 OwnedRoomId::try_from(request.room.as_str()).map_err(|_| "room_unavailable")?;
             let room = client.get_room(&room_id).ok_or("room_unavailable")?;
-            if room
-                .latest_encryption_state()
+            if crate::room_encryption::confirmed_state(&room)
                 .await
                 .map_err(|_| "room_state_unavailable")?
                 .is_unknown()

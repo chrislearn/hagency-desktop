@@ -25,8 +25,7 @@ pub(crate) async fn ensure_ready(
     message: &RoomMessageEventContent,
 ) -> Result<(), &'static str> {
     let result = tokio::time::timeout(Duration::from_secs(30), async {
-        if !room
-            .latest_encryption_state()
+        if !crate::room_encryption::confirmed_state(room)
             .await
             .map_err(|_| ())?
             .is_encrypted()

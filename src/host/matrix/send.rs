@@ -21,6 +21,12 @@ pub(super) async fn message(room_id: OwnedRoomId, body: String) -> Result<String
         room_id.as_str(),
         &serde_json::to_value(&content).map_err(|_| "Cannot review message content.")?,
     )?;
+    super::policy::audit_room_operation(
+        room_id.as_str(),
+        crate::room_encryption::confirmed_state(&room),
+    )
+    .await
+    .map_err(|e| format!("couldn't check whether the room is encrypted: {e}"))?;
     super::policy::audit_room_operation(room_id.as_str(), room.send(content))
         .await
         .map_err(|e| format!("couldn't send the message: {e}"))?;
@@ -71,6 +77,12 @@ pub(super) async fn reply(
         room_id.as_str(),
         &serde_json::to_value(&content).map_err(|_| "Cannot review reply content.")?,
     )?;
+    super::policy::audit_room_operation(
+        room_id.as_str(),
+        crate::room_encryption::confirmed_state(&room),
+    )
+    .await
+    .map_err(|e| format!("couldn't check whether the room is encrypted: {e}"))?;
     let sent = super::policy::audit_room_operation(room_id.as_str(), room.send(content))
         .await
         .map_err(|e| format!("couldn't send the reply: {e}"))?;
