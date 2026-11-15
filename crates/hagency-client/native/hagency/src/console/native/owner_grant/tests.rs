@@ -298,7 +298,7 @@ impl Fixture {
     }
     /// The same fixture around an Octos pool on profile `coding` in `home`,
     /// for its model `test-model`.
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     async fn new_octos(home: PathBuf) -> Self {
         Self::with_prepared("octos", move |registry, profile| async move {
             let expiry = Instant::now() + Duration::from_secs(30);

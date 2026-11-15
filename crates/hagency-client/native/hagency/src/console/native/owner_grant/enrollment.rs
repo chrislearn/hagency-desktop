@@ -237,7 +237,8 @@ impl OwnerGrantIntents {
         if resource.revision != c.resource_revision || resource.framework != c.runtime {
             return Err(failure(409, "management_enrollment_changed"));
         }
-        let calendar = registry.resource_calendar(io.profile.clone(), c.resource_id.clone()).await.map_err(storage)?;
+        let calendar = registry.resource_calendar(io.profile.clone(), c.resource_id.clone()).await.map_err(storage)?
+            .or_else(|| shared_limit_calendar(&resource.budget));
         io.check().await?;
         Ok(OwnerGrantForm {
             awaiting_admission: c.state != "admitted",

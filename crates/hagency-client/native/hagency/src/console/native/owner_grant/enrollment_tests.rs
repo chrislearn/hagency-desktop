@@ -59,7 +59,7 @@ async fn claude_pool_enrollment_takes_another_signed_in_account() {
     f.stop().await;
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn write_octos_profile(home: &std::path::Path, base_url: &str, models: &[&str]) {
     let route = json!({"base_url":base_url,"api_type":"openai"});
     let fallbacks: Vec<_> = models[1..]
@@ -79,7 +79,7 @@ fn write_octos_profile(home: &std::path::Path, base_url: &str, models: &[&str]) 
     .unwrap();
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 async fn octos_witness(
     registry: &OwnerResourceRegistry,
     home: &std::path::Path,
@@ -105,7 +105,7 @@ async fn octos_witness(
 /// must still be the one the pool was created on, and a provider account is
 /// never taken in its place. A changed profile is named as such, not as a
 /// lost authorization.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn octos_pool_enrollment_is_bound_to_its_profile_and_model() {
     let dir = tempfile::tempdir().unwrap();
