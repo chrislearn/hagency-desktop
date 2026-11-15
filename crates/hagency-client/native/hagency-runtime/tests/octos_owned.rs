@@ -4,7 +4,7 @@
 use hagency_platform::Launch;
 use hagency_runtime::{
     octos::{
-        Outcome,
+        Outcome, Usage,
         session::{
             Error, Event, Idle, Limits, ObservationKind, Permissions, Phase, QUIET_MS,
             UsageCoverage, UsageEvidence,
@@ -244,6 +244,10 @@ async fn native_octos_owned_session_reports_usage_per_turn_and_at_idle() {
     // reasoning breakdown.
     assert!(idle.coverage() == UsageCoverage::Session);
     assert_eq!(counts(idle), [Some(10), Some(7), None, Some(20), Some(30)]);
+    // Both records stay available to the host whatever the coverage.
+    assert_eq!(idle.turn_sums(), Some(Usage { input: 10, output: 7, reasoning: 2, cache_read: 20, cache_write: 30 }));
+    assert_eq!(idle.session_totals(), Some(Usage { input: 10, output: 7, reasoning: 0, cache_read: 20, cache_write: 30 }));
+    assert_eq!(turn.session_totals(), None);
     let last = run.runner.last_observation().unwrap();
     assert!(last.source() == &source);
     // The turn's tool start, its terminal's usage, then the idle usage.
@@ -344,6 +348,8 @@ async fn native_octos_owned_absent_usage_stays_unknown() {
     assert_eq!(counts(turn), [None; 5]);
     assert!(idle.coverage() == UsageCoverage::Turns);
     assert_eq!(counts(idle), [None; 5]);
+    assert_eq!(idle.turn_sums(), None);
+    assert_eq!(idle.session_totals(), None);
     cleanup(run.runner.stop());
 }
 
@@ -360,6 +366,10 @@ async fn native_octos_owned_missing_turn_usage_cannot_be_closed_by_partial_sessi
     assert_eq!(counts(turn), [None; 5]);
     assert!(idle.coverage() == UsageCoverage::Turns);
     assert_eq!(counts(idle), [None; 5]);
+    // As after a stop: no turn report, but the session's record is still
+    // given, so the host can keep it as the next dispatch's baseline.
+    assert_eq!(idle.turn_sums(), None);
+    assert_eq!(idle.session_totals(), Some(Usage { input: 10, output: 7, reasoning: 0, cache_read: 20, cache_write: 30 }));
     cleanup(run.runner.stop());
 }
 
@@ -376,6 +386,7 @@ async fn native_octos_owned_lagging_totals_keep_the_turn_sums() {
         counts(idle),
         [Some(10), Some(7), Some(2), Some(20), Some(30)]
     );
+    assert_eq!(idle.session_totals(), Some(Usage { input: 1, output: 1, reasoning: 0, cache_read: 0, cache_write: 0 }));
     cleanup(run.runner.stop());
 }
 

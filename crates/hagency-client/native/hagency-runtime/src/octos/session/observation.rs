@@ -66,8 +66,21 @@ pub struct UsageEvidence {
     cache_write: Option<u64>,
     coverage: UsageCoverage,
     turns: u32,
+    turn_sums: Option<Usage>,
+    session_totals: Option<Usage>,
 }
 impl UsageEvidence {
+    /// The sum of this dispatch's own turn reports, whatever the coverage
+    /// above; `None` when a turn ended without one.
+    pub fn turn_sums(&self) -> Option<Usage> {
+        self.turn_sums
+    }
+    /// Octos's record for the whole session, read when it went idle, whatever
+    /// the coverage above. It may include earlier dispatches, and it leaves
+    /// out turns Octos did not record. `None` before idle or when unknown.
+    pub fn session_totals(&self) -> Option<Usage> {
+        self.session_totals
+    }
     pub fn input(&self) -> Option<u64> {
         self.input
     }
@@ -171,12 +184,20 @@ impl State {
             cache_write: known(self.sums.cache_write),
             coverage: UsageCoverage::Turns,
             turns: self.turns,
+            turn_sums: (!self.unknown).then_some(self.sums),
+            session_totals: None,
+        }
+    }
+    fn final_evidence(&self) -> UsageEvidence {
+        UsageEvidence {
+            session_totals: self.totals.filter(bounded),
+            ..self.chosen_final_evidence()
         }
     }
     /// The session's totals when every turn reported complete usage and the
     /// ledger covers those reports. Totals alone do not prove that a missing
     /// turn was included: the ledger may contain earlier calls.
-    fn final_evidence(&self) -> UsageEvidence {
+    fn chosen_final_evidence(&self) -> UsageEvidence {
         let s = self.sums;
         if self.unknown { return self.turn_evidence(); }
         match self.totals.filter(|t| {
@@ -194,6 +215,8 @@ impl State {
                 cache_write: Some(t.cache_write),
                 coverage: UsageCoverage::Session,
                 turns: self.turns,
+                turn_sums: Some(s),
+                session_totals: None,
             },
             _ => self.turn_evidence(),
         }

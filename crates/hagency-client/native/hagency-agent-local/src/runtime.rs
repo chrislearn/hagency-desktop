@@ -10,6 +10,7 @@ use std::{
 };
 mod claude_controls;
 pub mod claude_turn;
+use claude_turn::OctosCounters;
 pub mod octos_turn;
 #[cfg(unix)]
 mod octos_files;
@@ -837,6 +838,7 @@ impl Session {
             returns,
             cumulative,
             late_failure,
+            octos,
         } = result?;
         if late_failure.is_some() {
             // The native stream failed after this answer was read. The charge
@@ -852,7 +854,6 @@ impl Session {
                 late_failure,
             });
         }
-        let is_claude = matches!(self, Self::Claude { .. });
         let (context, session) = match self {
             Self::Claude { wire, context, .. } => {
                 (context.as_str(), wire.session_id().ok_or(Error::Unknown)?)
@@ -862,11 +863,9 @@ impl Session {
             }
             _ => unreachable!(),
         };
-        // Claude projects UUID-deduplicated native result deltas for this
-        // admitted turn. Octos retains its distinct session counter contract.
-        let counters = if usage.is_reported() {
+        let saved = || -> Result<Option<String>> {
             use rusqlite::OptionalExtension;
-            let baseline: Option<(String, String)> = charge
+            let saved: Option<(String, String)> = charge
                 .ledger
                 .db
                 .query_row(
@@ -876,61 +875,36 @@ impl Session {
                 )
                 .optional()
                 .map_err(crate::Error::from)?;
-            if baseline.as_ref().is_some_and(|(prior, _)| prior != session) {
-                return Err(Error::Protocol("resumed native session identity differs"));
+            match saved {
+                Some((prior, _)) if prior != session => {
+                    Err(Error::Protocol("resumed native session identity differs"))
+                }
+                saved => Ok(saved.map(|(_, counters)| counters)),
             }
-            let baseline = if is_claude {
-                None
-            } else {
-                baseline.map(|(_, counters)| counters)
+        };
+        // Claude projects UUID-deduplicated native result deltas for this
+        // admitted turn. Octos retains its distinct session counter contract.
+        let counters = if let Some(octos) = &octos {
+            let kept = match saved()? {
+                None => None,
+                Some(counters) if counters.is_empty() || counters == "null" => Some(None),
+                Some(counters) => Some(Some(serde_json::from_str(&counters)?)),
             };
-            let baseline_missing = baseline
-                .as_deref()
-                .is_some_and(|s| s.is_empty() || s == "null");
-            let prior: Option<Usage> = baseline
-                .filter(|s| !s.is_empty() && s != "null")
-                .map(|s| serde_json::from_str(&s))
-                .transpose()?;
+            let (charged, next) = octos_charge(octos, kept);
+            usage = charged;
+            match next {
+                Some(next) => serde_json::to_string(&next)?,
+                None => "null".into(),
+            }
+        } else if usage.is_reported() {
+            // Claude: its per-turn deltas are charged as reported. Main-loop
+            // counters exclude subagents, so they cannot establish a
+            // whole-session baseline for a future modelUsage.
+            saved()?;
             if cumulative {
-                let absolute = serde_json::to_string(&usage)?;
-                if baseline_missing {
-                    usage = crate::unreported_usage();
-                } else if let Some(prior) = prior {
-                    // A backwards native counter makes the charge unknown,
-                    // not the already completed answer unavailable.
-                    usage = usage_delta(&usage, &prior).unwrap_or_else(crate::unreported_usage);
-                }
-                absolute
+                serde_json::to_string(&usage)?
             } else {
-                // Claude main-loop counters exclude subagents, so they cannot
-                // establish a whole-session baseline for a future modelUsage.
-                if is_claude || baseline_missing {
-                    "null".into()
-                } else {
-                    let mut absolute = usage.clone();
-                    if let Some(prior) = prior {
-                        absolute.input = absolute
-                            .input
-                            .checked_add(prior.input)
-                            .ok_or(Error::Unknown)?;
-                        absolute.output = absolute
-                            .output
-                            .checked_add(prior.output)
-                            .ok_or(Error::Unknown)?;
-                        absolute.cached_input = absolute
-                            .cached_input
-                            .checked_add(prior.cached_input)
-                            .ok_or(Error::Unknown)?;
-                        absolute.cache_write_input =
-                            match (absolute.cache_write_input, prior.cache_write_input) {
-                                (Some(current), Some(prior)) => {
-                                    Some(current.checked_add(prior).ok_or(Error::Unknown)?)
-                                }
-                                _ => None,
-                            };
-                    }
-                    serde_json::to_string(&absolute)?
-                }
+                "null".into()
             }
         } else {
             String::new()
@@ -960,6 +934,77 @@ impl Session {
     }
 }
 
+/// What one Octos dispatch is charged, and the session counters kept for the
+/// next one. Octos starts a process per dispatch, but its own record covers
+/// the whole session: the charge is how much that record grew since the
+/// counters kept last time, when the growth covers this dispatch's own turn
+/// reports. Octos keeps no record of a stopped or failed turn, so when the
+/// growth falls short the turn reports are charged instead. A turn that ended
+/// without any report leaves the charge unknown. The record is kept either
+/// way, so the next dispatch is charged exactly. `kept` is `None` before the
+/// first dispatch and `Some(None)` when the last one left no counters.
+fn octos_charge(counters: &OctosCounters, kept: Option<Option<Usage>>) -> (Usage, Option<Usage>) {
+    let Some(session) = &counters.session else {
+        // Without a session record (an Octos with no usage ledger) the turn
+        // reports accumulate in its place.
+        let next = match (&counters.turns, kept) {
+            (Some(turns), None) => Some(turns.clone()),
+            (Some(turns), Some(Some(prior))) => usage_sum(turns, &prior),
+            _ => None,
+        };
+        let charged = counters.turns.clone().unwrap_or_else(crate::unreported_usage);
+        return (charged, next);
+    };
+    let growth = match kept {
+        None => Some(session.clone()),
+        Some(None) => None,
+        // A record that went backwards gives no growth.
+        Some(Some(prior)) => usage_delta(session, &prior),
+    };
+    let charged = match (growth, &counters.turns) {
+        (Some(growth), Some(turns)) if usage_covers(&growth, turns) => growth,
+        (_, Some(turns)) => turns.clone(),
+        (_, None) => crate::unreported_usage(),
+    };
+    (charged, Some(session.clone()))
+}
+fn usage_covers(total: &Usage, part: &Usage) -> bool {
+    total.input >= part.input
+        && total.output >= part.output
+        && total.cached_input >= part.cached_input
+        && match (total.cache_write_input, part.cache_write_input) {
+            (Some(total), Some(part)) => total >= part,
+            (_, None) => true,
+            (None, Some(_)) => false,
+        }
+}
+fn usage_sum(a: &Usage, b: &Usage) -> Option<Usage> {
+    let mut sum = a.clone();
+    sum.input = a.input.checked_add(b.input)?;
+    sum.output = a.output.checked_add(b.output)?;
+    sum.cached_input = a.cached_input.checked_add(b.cached_input)?;
+    sum.cache_write_input = match (a.cache_write_input, b.cache_write_input) {
+        (Some(a), Some(b)) => Some(a.checked_add(b)?),
+        _ => None,
+    };
+    Some(sum)
+}
+/// Octos counts fresh input apart from cache reads and writes; the ledger's
+/// input includes both.
+fn octos_usage(usage: octos::Usage) -> Result<Usage> {
+    Ok(Usage {
+        input: usage
+            .input
+            .checked_add(usage.cache_read)
+            .and_then(|v| v.checked_add(usage.cache_write))
+            .ok_or(Error::Unknown)?,
+        output: usage.output,
+        cached_input: usage.cache_read,
+        cache_write_input: Some(usage.cache_write),
+        reasoning_output: 0,
+        accounting_version: "octos-reported-v1".into(),
+    })
+}
 fn usage_delta(current: &Usage, prior: &Usage) -> Option<Usage> {
     let mut delta = current.clone();
     delta.input = current.input.checked_sub(prior.input)?;
@@ -1609,28 +1654,15 @@ async fn run_octos(
                 let octos::session::ObservationKind::Idle(evidence) = observation.kind() else {
                     return Err(Error::Unknown);
                 };
-                let usage = match (
-                    evidence.input(),
-                    evidence.cache_read(),
-                    evidence.cache_write(),
-                    evidence.output(),
-                ) {
-                    (Some(input), Some(cache), Some(write), Some(output)) => Usage {
-                        input: input
-                            .checked_add(cache)
-                            .and_then(|v| v.checked_add(write))
-                            .ok_or(Error::Unknown)?,
-                        output,
-                        cached_input: cache,
-                        cache_write_input: Some(write),
-                        reasoning_output: 0,
-                        accounting_version: "octos-reported-v1".into(),
-                    },
-                    _ => crate::unreported_usage(),
+                // Charged by `octos_charge` once the counters kept after the
+                // previous dispatch are read.
+                let counters = OctosCounters {
+                    turns: evidence.turn_sums().map(octos_usage).transpose()?,
+                    session: evidence.session_totals().map(octos_usage).transpose()?,
                 };
                 return Ok(TurnResult {
                     text: idle.reply.unwrap_or_default(),
-                    usage,
+                    usage: crate::unreported_usage(),
                     status: match idle.outcome {
                         octos::Outcome::Completed => TurnStatus::Completed,
                         octos::Outcome::Interrupted => TurnStatus::Interrupted,
@@ -1638,8 +1670,9 @@ async fn run_octos(
                     },
                     requests: requests.len(),
                     returns: returns.len(),
-                    cumulative: evidence.coverage() == octos::session::UsageCoverage::Session,
+                    cumulative: false,
                     late_failure: None,
+                    octos: Some(counters),
                 });
             }
             octos::session::Event::ToolCall { params } => {
@@ -2000,6 +2033,65 @@ fn approval_directory(cwd: &Path, arguments: &Value) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Session records and turn reports, as `run_octos` passes them on.
+    fn octos(input: u64, output: u64) -> Usage {
+        octos_usage(octos::Usage { input, output, reasoning: 0, cache_read: 10, cache_write: 0 }).unwrap()
+    }
+    fn record(turns: Option<Usage>, session: Option<Usage>) -> OctosCounters {
+        OctosCounters { turns, session }
+    }
+    fn sum(a: &Usage, b: &Usage) -> Usage {
+        usage_sum(a, b).unwrap()
+    }
+    #[test]
+    fn a_stopped_octos_turn_leaves_the_next_one_charged_exactly() {
+        let (first, stopped, next) = (octos(100, 20), octos(40, 5), octos(70, 9));
+        // The first dispatch: Octos's session record is that turn.
+        let (charged, kept) = octos_charge(&record(Some(first.clone()), Some(first.clone())), None);
+        assert_eq!((charged, kept.clone()), (first.clone(), Some(first.clone())));
+        // A stop today: the turn ends without a report and Octos records none
+        // of it. Its charge is unknown, but the session record is kept.
+        let (charged, kept) = octos_charge(&record(None, Some(first.clone())), Some(kept));
+        assert!(!charged.is_reported());
+        assert_eq!(kept, Some(first.clone()));
+        // The next dispatch was unknown as well before; now it is its own growth.
+        let total = sum(&first, &next);
+        let (charged, kept) = octos_charge(&record(Some(next.clone()), Some(total.clone())), Some(kept));
+        assert_eq!((charged, kept), (next.clone(), Some(total.clone())));
+        // A stop that reports its own usage, which Octos's record leaves out:
+        // the report is charged, and the record stays the baseline.
+        let (charged, kept) =
+            octos_charge(&record(Some(stopped.clone()), Some(total.clone())), Some(Some(total.clone())));
+        assert_eq!((charged, kept), (stopped.clone(), Some(total.clone())));
+        // Recorded there too, it is charged once, from the record.
+        let after = sum(&total, &stopped);
+        let (charged, _) = octos_charge(&record(Some(stopped.clone()), Some(after.clone())), Some(Some(total.clone())));
+        assert_eq!(charged, stopped);
+        // Sub-agents' work is in the record only: growth beyond the turn
+        // reports is charged.
+        let (charged, _) = octos_charge(&record(Some(next.clone()), Some(after.clone())), Some(Some(first.clone())));
+        assert_eq!(charged, usage_delta(&after, &first).unwrap());
+    }
+    #[test]
+    fn octos_counters_left_unknown_by_an_earlier_version_recover_at_once() {
+        let (earlier, next) = (octos(500, 50), octos(70, 9));
+        let total = sum(&earlier, &next);
+        // A stop used to store no counters; the next dispatch's own report is
+        // charged and the record becomes the baseline again.
+        let (charged, kept) = octos_charge(&record(Some(next.clone()), Some(total.clone())), Some(None));
+        assert_eq!((charged, kept), (next.clone(), Some(total.clone())));
+        // A record that went backwards (Octos's ledger was reset) gives no
+        // growth: the turn reports are charged.
+        let (charged, kept) = octos_charge(&record(Some(next.clone()), Some(next.clone())), Some(Some(total)));
+        assert_eq!((charged, kept), (next.clone(), Some(next.clone())));
+        // Without a session record the turn reports accumulate, as before.
+        let (charged, kept) = octos_charge(&record(Some(next.clone()), None), Some(Some(earlier.clone())));
+        assert_eq!((charged, kept), (next.clone(), Some(sum(&next, &earlier))));
+        let (charged, kept) = octos_charge(&record(None, None), Some(Some(earlier)));
+        assert!(!charged.is_reported());
+        assert_eq!(kept, None);
+    }
 
     #[test]
     fn octos_progress_uses_the_host_call_identity_and_cannot_choose_a_room() {
