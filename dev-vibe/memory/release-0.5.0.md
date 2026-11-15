@@ -1,6 +1,17 @@
 # Desktop 0.5.0 发布
 
-更新：2026-11-14。
+更新：2026-11-15。
+
+## 2026-11-14 rc.8 发布
+
+用户要求合并全部 PR 后发布；由 Claude 执行。
+
+- [v0.5.0-rc.8](https://github.com/hagency-org/hagency-desktop/releases/tag/v0.5.0-rc.8) 于 2026-11-14 15:18:44 UTC 公开为 prerelease。标签和两个安装包都由 Desktop `217e97f7071ec00081a66e8586a4372e6cb89790` 构建：版本与发布说明的 PR #103 合入 main 后，又合入了发布修复 #108。Makepad 为 `8f788cbb788f287f4e684de913e83fbbb70df701`（`.jit/sources.lock`）。
+- 第一次 dispatch（run 43563898752）没有发布任何内容。Windows 安装包在 "Package installers" 步骤失败，报 `The system cannot find the file specified`。原因：cargo-packager 0.10.1 会把包里的每个 `[[bin]]` 目标都打进安装包，不看 `required-features`，而一个仅供测试的 `[[bin]] hagency_visual_jit` 已经合入。PR #108 删除了这个目标，并让 `tools/release-assets.py plan` 遇到第二个二进制目标时报错。
+- [release.yml run 43573841696](https://github.com/hagency-org/hagency-desktop/actions/runs/43573841696) 使用 publish=true、macos-arm64-windows。第一次尝试中两个平台的安装包检查都通过了，但回归门禁在 `attachment-downloads` 的一个测试上失败：测试服务器没有关闭空闲连接，与产品代码无关，后来由 PR #109 修复。只重跑失败的任务（第二次尝试）后，门禁和发布都通过。
+- 只有两个安装包：`hagency-desktop-macos-arm64.dmg`（168,957,704 字节）和 `hagency-desktop-windows-amd64.exe`（121,760,487 字节）。公开附件已重新下载，`SHA256SUMS.txt` 校验通过。`SHA256SUMS-windows-amd64.txt` 是 CRLF 行尾，在 macOS 上不能直接交给 `shasum -c`；这只是格式问题，没有修。
+- 在构建机以外的一台 Mac 上，用空 profile 和隐藏窗口，通过 `tools/release-desktop-smoke.py` 运行了公开的 macOS 安装包：检查通过。随包内核为 `octos 2.0.3-rc.13 (fe08d8e)`，包目录为 `../Resources`，包内标志已绘制，没有资源错误。
+- 这次发布没有部署服务端。
 
 ## 2026-11-12 rc.7 发布
 
