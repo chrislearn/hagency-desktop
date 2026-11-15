@@ -413,7 +413,8 @@ impl OctosLaunch {
         let expires = until.min(Instant::now() + Duration::from_secs(30));
         let witness = ProfileBinding::observe_model(&self.selection.paths.codex_home, &self.profile_id, &self.model, expires)
             .map_err(|_| failure(409, "provider_account_changed"))?;
-        let guardian = std::env::current_exe().map_err(|_| failure(409, "shared_execution_launch_unavailable"))?;
+        let guardian = hagency_platform::helper_executable()
+            .map_err(|_| failure(409, "shared_execution_launch_unavailable"))?;
         #[cfg(test)]
         let guardian = self.fixture_guardian.clone().unwrap_or(guardian);
         let auth_home = match () {
