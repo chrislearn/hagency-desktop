@@ -340,7 +340,8 @@ async fn scope_refuses_each_identity_change_before_any_matrix_or_owner_write() {
                     Some(&cookie),
                     None,
                     OwnerOperation::AdoptProject {
-                        space: "!room:example.test".into()
+                        space: "!room:example.test".into(),
+                        project_folder: None,
                     },
                     Some(&scope)
                 )

@@ -17,6 +17,15 @@ impl SharedNativeSession {
         self.previous.is_some()
     }
     pub async fn open_codex(&mut self, process: &mut OwnedSession) -> Result<(), Error> {
+        self.open_codex_in(process, None).await
+    }
+    /// With a space's shared project folder the thread works there; the
+    /// admitted work still names the room and every other check is the same.
+    pub async fn open_codex_in(
+        &mut self,
+        process: &mut OwnedSession,
+        project: Option<&hagency_runtime::owned::SharedProject>,
+    ) -> Result<(), Error> {
         if !self.source.same(&process.shared_text_process_source())
             || !self.source.has_live_activity()
         {
@@ -29,7 +38,7 @@ impl SharedNativeSession {
             .transpose()
             .map_err(|_| Error::Conflict)?;
         let (_, resumed) = process
-            .open_shared_text_thread_for_room(&self.work.room_id, resume)
+            .open_shared_text_thread_in(&self.work.room_id, resume, project)
             .await
             .map_err(|_| Error::OutcomeUnknown)?;
         if !resumed {

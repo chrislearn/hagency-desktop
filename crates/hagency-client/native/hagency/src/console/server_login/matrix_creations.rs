@@ -561,7 +561,10 @@ async fn continue_known(
                 .owner_api_inner(
                     Some(cookie),
                     None,
-                    OwnerOperation::AdoptProject { space: room },
+                    OwnerOperation::AdoptProject {
+                        space: room,
+                        project_folder: None,
+                    },
                     scope,
                 )
                 .await?

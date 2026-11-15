@@ -391,6 +391,9 @@ pub enum Command {
     },
     AdoptProject {
         space_id: String,
+        /// Opt-in shared project folder of a new Agent space (its name).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_folder: Option<String>,
     },
     AdoptRoom {
         project_id: String,
@@ -464,6 +467,18 @@ fn failure(status: u16, code: &str) -> NativeError {
         status,
         code: code.into(),
     }
+}
+/// The one rule for an Agent space's shared project folder name, the same as
+/// the server's: 1 to 64 characters, no control characters, none of `/`, `\` or
+/// `:`, no leading `.`, and no leading or trailing whitespace.
+pub fn valid_project_folder_name(name: &str) -> bool {
+    (1..=64).contains(&name.chars().count())
+        && !name.starts_with('.')
+        && !name.starts_with(char::is_whitespace)
+        && !name.ends_with(char::is_whitespace)
+        && !name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | '\\' | ':' | '\0'))
 }
 fn key(id: &str) -> Result<(), NativeError> {
     if id.is_empty()
@@ -636,9 +651,19 @@ fn request(command: Command) -> Result<(&'static str, String, Option<Value>), Na
             }
             ("GET", p)
         }
-        Command::AdoptProject { space_id } => {
+        Command::AdoptProject {
+            space_id,
+            project_folder,
+        } => {
             segment(&space_id)?;
-            body = Some(json!({"spaceId":space_id}));
+            let mut adopt = json!({"spaceId":space_id});
+            if let Some(folder) = project_folder {
+                if !valid_project_folder_name(&folder) {
+                    return Err(failure(400, "invalid_project_folder"));
+                }
+                adopt["projectFolder"] = json!(folder);
+            }
+            body = Some(adopt);
             ("POST", format!("{root}/owner-projects"))
         }
         Command::AdoptRoom {

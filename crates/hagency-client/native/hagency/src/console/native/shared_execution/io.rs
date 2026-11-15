@@ -10,6 +10,8 @@ enum PollVersion { Legacy, Claude, Octos }
 pub(in crate::console::native) struct ServerOperation(Box<Action>, PollVersion);
 pub(super) enum Action {
     SessionRoute { id: String, input: SharedSessionRouteInput },
+    /// The shared project folder of the space a room belongs to, if any.
+    RoomProjectFolder { room: String },
     Crypto(super::e2ee::CryptoAction),
     ApprovalRegister {
         authority: SharedActivityRef,
@@ -68,6 +70,11 @@ impl ServerOperation {
             Action::SessionRoute { id, input } => {
                 super::super::key(id)?;
                 input.validate().map_err(store)?;
+            }
+            Action::RoomProjectFolder { room } => {
+                if !super::project_folder::room_id(room) {
+                    return Err(invalid());
+                }
             }
             Action::Crypto(_) => {}
             Action::ApprovalRegister {
@@ -160,9 +167,21 @@ impl ServerOperation {
                 None,
             ));
         }
+        if let Action::RoomProjectFolder { room } = &*self.0 {
+            let room = percent_encoding::utf8_percent_encode(room, percent_encoding::NON_ALPHANUMERIC);
+            return Ok((
+                reqwest::Method::GET,
+                format!("/hagency/api/v1/room-project-folder?roomId={room}"),
+                None,
+            ));
+        }
         let read = matches!(&*self.0,Action::Demand(a) if matches!(&**a,super::demand_io::DemandAction::Control{..}));
         let (mut path, body) = match *self.0 {
             Action::SessionRoute { id, input } => (format!("runtime/{id}/session-route"), json!(input)),
+            // Answered by the read above; never a shared-execution upload.
+            Action::RoomProjectFolder { .. } => {
+                return Err(OwnerError { status: 400, code: "invalid_shared_execution_payload".into() });
+            }
             Action::Crypto(v) => v.body(),
             Action::ApprovalRegister {
                 authority,
@@ -261,8 +280,12 @@ pub(super) struct Io {
     namespace: Option<Arc<hagency_store::owner_resources::ResourceNamespace>>,
     provider_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     claude_discovery: Arc<tokio::sync::Mutex<Option<(Instant, PollVersion)>>>,
+    pub(super) project_folders: super::project_folder::KnownFolders,
     #[cfg(test)]
     pub(super) crypto_fixture: Option<Arc<super::e2ee::CryptoFixture>>,
+    /// Where tests keep space project folders; tests never use the real home.
+    #[cfg(test)]
+    pub(super) project_root: Option<std::path::PathBuf>,
 }
 pub(super) struct Bound {
     permission: Permission,
@@ -309,8 +332,11 @@ impl Io {
             namespace: None,
             provider_gate: None,
             claude_discovery: Arc::default(),
+            project_folders: Arc::default(),
             #[cfg(test)]
             crypto_fixture: None,
+            #[cfg(test)]
+            project_root: None,
         }
     }
     #[cfg(feature = "shared-intake")]
@@ -525,6 +551,25 @@ impl Bound {
                 false,
             )
             .await
+    }
+
+    /// The shared project folder of a Room's space. A plain read, answered
+    /// without a server timestamp, like discovery.
+    pub async fn room_project_folder(
+        &self,
+        room: &str,
+    ) -> Result<Option<super::project_folder::RoomFolder>, NativeError> {
+        let reply: super::project_folder::RoomFolderReply = self
+            .transport
+            .request(
+                &self.scope,
+                Operation::SharedExecution(ServerOperation::new(Action::RoomProjectFolder {
+                    room: room.into(),
+                })?),
+                false,
+            )
+            .await?;
+        Ok(reply.project_folder)
     }
 
     async fn operation(&self, action: Action) -> Result<ServerOperation, NativeError> {

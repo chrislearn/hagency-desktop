@@ -53,6 +53,8 @@ fn room(value: &str) -> Result<String, OwnerError> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AdoptProject {
     space_id: String,
+    #[serde(default)]
+    project_folder: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -185,7 +187,16 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
         (Method::POST, []) => {
             let input: AdoptProject = parse(req).await?;
             let space = room(&input.space_id)?;
-            OwnerOperation::AdoptProject { space }
+            if let Some(folder) = input.project_folder {
+                if !super::native::valid_project_folder_name(&folder) {
+                    return Err(error(400, "invalid_project_folder"));
+                }
+                return adopt_with_folder(req, depot, space, folder).await;
+            }
+            OwnerOperation::AdoptProject {
+                space,
+                project_folder: None,
+            }
         }
         (Method::GET, [project, "rooms"]) => {
             key(project)?;
@@ -220,6 +231,49 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
         .await?;
     current(req, depot).map_err(|_| error(401, "sign_in_required"))?;
     Ok(reply.value)
+}
+/// A server without shared project folders refuses the field as an unknown
+/// argument. The space is then adopted without one, which changes nothing for
+/// its Agents, and the reply says the folder was not kept.
+async fn adopt_with_folder(
+    req: &mut Request,
+    depot: &Depot,
+    space: String,
+    folder: String,
+) -> Result<Value, OwnerError> {
+    let console = console(depot).map_err(|_| error(503, "local_state_unavailable"))?;
+    let cookie = cookie(req).map_err(|_| error(401, "sign_in_required"))?;
+    let reply = match console
+        .owner_api(
+            cookie,
+            OwnerOperation::AdoptProject {
+                space: space.clone(),
+                project_folder: Some(folder),
+            },
+        )
+        .await
+    {
+        Ok(reply) => reply.value,
+        Err(e) if e.status == 400 && e.code == "invalid_arguments" => {
+            let mut value = console
+                .owner_api(
+                    cookie,
+                    OwnerOperation::AdoptProject {
+                        space,
+                        project_folder: None,
+                    },
+                )
+                .await?
+                .value;
+            if let Some(object) = value.as_object_mut() {
+                object.insert("projectFolderUnsupported".into(), Value::Bool(true));
+            }
+            value
+        }
+        Err(e) => return Err(e),
+    };
+    current(req, depot).map_err(|_| error(401, "sign_in_required"))?;
+    Ok(reply)
 }
 #[handler]
 async fn dispatch(req: &mut Request, depot: &Depot, res: &mut Response) {

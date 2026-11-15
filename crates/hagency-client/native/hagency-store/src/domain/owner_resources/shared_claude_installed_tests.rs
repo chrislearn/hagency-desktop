@@ -72,6 +72,7 @@ impl Native {
                 require_crash_containment: false,
             },
             &self.scope,
+            None,
             &credential,
             ClaudeLimits {
                 write_timeout_ms: 1000,

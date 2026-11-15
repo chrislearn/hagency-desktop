@@ -1074,6 +1074,57 @@ async fn native_shared_owner_policy_applies_before_the_first_model_call() {
     }
 }
 #[tokio::test]
+#[ignore = "requires explicit offline supervised runtime probe"]
+async fn native_shared_codex_with_tools_works_in_its_space_project_folder() {
+    for named in [true, false] {
+        let (f, t, c) = Box::pin(fixture()).await;
+        let projects = f._root.path().canonicalize().unwrap().join("Hagency Projects");
+        let t = t.with_project_root(projects.clone());
+        {
+            let db = rusqlite::Connection::open(f._root.path().join("registry/domain.sqlite3")).unwrap();
+            db.execute("INSERT INTO owner_shared_tool_policies(child_id,yolo,revision) VALUES(?1,0,1)", rusqlite::params![c.agent_reservation_id]).unwrap();
+        }
+        if named {
+            f.state.lock().unwrap().room_project_folder = Some(json!({"projectId":"prj_space","folder":"Team app"}));
+        }
+        t.poll_fixture(&f.registry, launch(&f, "text-usage")).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if f.state.lock().unwrap().shared.processes.values().any(|r| r.state == "stopped") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        {
+            let mut state = f.state.lock().unwrap();
+            state.shared.demands.active = true;
+            state.shared.demands.revision = 1;
+        }
+        offer(&f, 1);
+        let room = f.state.lock().unwrap().shared.work.as_ref().unwrap().room_id.clone();
+        t.poll_demand_fixture(&f.registry, None, Some(launch(&f, "text-workspace-standard-usage").shared_fixture()))
+            .await.unwrap().outcome.unwrap();
+        attempts::wait_stopped(&f).await;
+        let thread: Value = serde_json::from_slice(&std::fs::read(f._root.path().join("shared-probe/thread-request.json")).unwrap()).unwrap();
+        assert_eq!(thread["sandbox"], "workspace-write");
+        let cwd = std::path::PathBuf::from(thread["cwd"].as_str().unwrap());
+        // The server is asked about the work's own Room before the thread opens.
+        assert!(f.state.lock().unwrap().room_folder_lookups.iter().all(|r| r == &room));
+        assert!(!f.state.lock().unwrap().room_folder_lookups.is_empty());
+        if named {
+            assert_eq!(cwd, projects.join("Team app"));
+            assert!(cwd.is_dir());
+        } else {
+            // Without a space folder the Agent keeps its private Room folder.
+            assert!(!cwd.starts_with(&projects));
+            assert!(!projects.exists());
+        }
+        assert!(f.state.lock().unwrap().shared.receipts.values().any(|r| r.usage_complete && r.state == "completed"));
+        f.registry.shutdown().await.unwrap();
+    }
+}
+#[tokio::test]
 #[ignore = "requires explicitly built offline supervised probe"]
 async fn native_demand_never_started_attempt_retries_same_event_exactly_once() {
     for mode in ["retry", "old_server", "logout", "refused", "blocked"] {

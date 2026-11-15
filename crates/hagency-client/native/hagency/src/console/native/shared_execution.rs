@@ -14,6 +14,7 @@ pub(in crate::console) mod questions;
 mod demand_io;
 mod demands;
 mod io;
+mod project_folder;
 mod guarded;
 mod stop_capture;
 mod run_controls;

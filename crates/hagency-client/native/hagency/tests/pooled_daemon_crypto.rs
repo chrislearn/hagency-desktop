@@ -634,6 +634,7 @@ mod fixture {
         let project = if native_admin {
             a.execute(Command::AdoptProject {
                 space_id: space["room_id"].as_str().unwrap().into(),
+                project_folder: None,
             })
             .await
             .unwrap()

@@ -168,6 +168,10 @@ struct State {
     ledger_fresh: Vec<Option<bool>>,
     /// Some: the answer to a declaration, in place of a current server's.
     ledger_reply: Option<Value>,
+    /// The space project folder named for every Room; none by default.
+    room_project_folder: Option<Value>,
+    /// The Rooms whose project folder was asked for, in order.
+    room_folder_lookups: Vec<String>,
 }
 fn admission(g: &NativeGrantReceipt) -> Value {
     let at = now();
@@ -464,6 +468,17 @@ async fn server(state: Arc<Mutex<State>>) -> (String, tokio::task::JoinHandle<()
                             }
                         }
                         "/hagency/api/v1/sessions/current" => json!({}),
+                        p if p.starts_with("/hagency/api/v1/room-project-folder?roomId=") => {
+                            let room = percent_encoding::percent_decode_str(
+                                p.strip_prefix("/hagency/api/v1/room-project-folder?roomId=").unwrap(),
+                            )
+                            .decode_utf8()
+                            .unwrap()
+                            .into_owned();
+                            let mut state = state.lock().unwrap();
+                            state.room_folder_lookups.push(room);
+                            json!({"projectFolder":state.room_project_folder.clone()})
+                        }
                         "/hagency/api/v1/projects" => {
                             let mut state = state.lock().unwrap();
                             state.project_reads += 1;
