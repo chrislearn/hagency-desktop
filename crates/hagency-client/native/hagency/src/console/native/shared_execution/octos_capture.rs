@@ -33,9 +33,12 @@ impl Host {
         let allowed = match self.policy {
             SharedOctosPolicy::Yolo { .. } => true,
             SharedOctosPolicy::Standard { .. } => {
+                // As for Claude, the person who sent the message decides; the
+                // owner is not asked. The command runs in the workspace-only
+                // sandbox without network (`SharedOctosShell`).
                 let request = json!({"id":id,"method":"octos/can_use_tool",
                     "params":{"sessionId":session,"toolName":"shell","input":args},
-                    "sessionAllowed":false,"managerCanDecide":false});
+                    "sessionAllowed":false,"managerCanDecide":true});
                 // Leave time to send the result and recheck the live lease.
                 tokio::time::timeout(Duration::from_secs(45), bridge::permission(&self.live, &self.work, request))
                     .await.is_ok_and(|result| result.unwrap_or(false))
@@ -85,7 +88,7 @@ impl octos_turn::Host for Host {
             SharedOctosPolicy::Standard { .. } => {
                 let request = json!({"id":id,"method":"octos/can_use_tool",
                     "params":{"sessionId":session,"toolName":tool,"input":params},
-                    "sessionAllowed":false,"managerCanDecide":false});
+                    "sessionAllowed":false,"managerCanDecide":true});
                 tokio::time::timeout(Duration::from_secs(100), bridge::permission(&self.live, &self.work, request))
                     .await.is_ok_and(|result| result.unwrap_or(false))
             }
