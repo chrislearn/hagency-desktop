@@ -36,7 +36,9 @@ const KEEP_FOUND: Duration = Duration::from_secs(10 * 60);
 /// (or a Room added to such a space) is picked up quickly.
 const KEEP_NONE: Duration = Duration::from_secs(60);
 const MAX_KNOWN: usize = 4096;
-/// The longest server answer read.
+/// The longest server answer the local runtime reads. Local Agents work with
+/// native tools, and so in a space folder, only on Unix.
+#[cfg(unix)]
 pub(super) const MAX_REPLY_BYTES: usize = 64 * 1024;
 
 /// The Room id rule of the server route.
@@ -219,11 +221,14 @@ fn record_key(account: &str, project: &str) -> Result<String, Refused> {
     Ok(format!("{:x}", Sha256::digest(encoded)))
 }
 
+#[cfg(unix)]
 fn new_directory(path: &Path) -> std::io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(path)
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().mode(0o700).create(path)
+}
+#[cfg(not(unix))]
+fn new_directory(path: &Path) -> std::io::Result<()> {
+    std::fs::DirBuilder::new().create(path)
 }
 
 /// Folder names on the usual macOS volume ignore case, so two names that

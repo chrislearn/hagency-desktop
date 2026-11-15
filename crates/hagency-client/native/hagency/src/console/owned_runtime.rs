@@ -510,6 +510,7 @@ pub(super) struct OwnedRuntime {
     entries: Arc<Mutex<BTreeMap<String, Entry>>>,
     services: Arc<Mutex<BTreeMap<String, service::ServiceEntry>>>,
     /// The server's last answers about Rooms' space project folders.
+    #[cfg(unix)]
     project_folders: super::space_folder::KnownFolders,
 }
 fn identity(device: &AuthorizedDevice, agent: &str) -> String {
@@ -1166,6 +1167,7 @@ trait Transport {
         op: Op,
     ) -> impl std::future::Future<Output = Result<Response, RuntimeError>> + Send;
     /// The shared project folder of `room`'s space for `owner`, if it has one.
+    #[cfg(unix)]
     fn room_folder(
         &self,
         _owner: &str,
@@ -1175,6 +1177,7 @@ trait Transport {
     }
     /// Where space project folders go on this computer. Tests never use the
     /// real home.
+    #[cfg(unix)]
     fn space_root(&self) -> Option<std::path::PathBuf> {
         if cfg!(test) {
             None
@@ -1213,6 +1216,7 @@ impl Transport for PinnedConsole {
             .await
             .map_err(|e| transport_error(e.status, &e.code, acquiring, request))
     }
+    #[cfg(unix)]
     async fn room_folder(
         &self,
         owner: &str,

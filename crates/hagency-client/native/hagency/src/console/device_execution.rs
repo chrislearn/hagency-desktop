@@ -1043,6 +1043,7 @@ impl Console {
     /// The shared project folder of `room`'s space, asked with the execution
     /// device the local runtime is pinned to. `Ok(None)` is the server's
     /// answer that there is none for this owner.
+    #[cfg(unix)]
     pub(super) async fn room_project_folder_pinned(
         &self,
         room: &str,
