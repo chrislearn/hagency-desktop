@@ -2277,7 +2277,7 @@ A.server_status=fn(c){
     if cap.id==c.id && (cap.state=="ready" || cap.state=="missing") {return {text:A.t("Not published","未发布") tone:"waiting" step:3}}
     return {text:A.t("Connected","已连接") tone:"elsewhere" step:3}
 }
-A.server_runtime=fn(runtime){if runtime=="codex" {return "Codex"} if runtime=="claude" {return "Claude"} return ""+runtime}
+A.server_runtime=fn(runtime){if runtime=="codex" {return "Codex"} if runtime=="claude" {return "Claude"} if runtime=="octos" {return "Octos"} return ""+runtime}
 A.server_caps=fn(caps){let acc={text:""} for cap in caps {acc.text=acc.text+(if acc.text=="" {""} else {"、"})+A.capability_label(cap)} return acc.text}
 // Publishing happens on the pool page, where the per-request limit is set.
 A.server_publish=fn(c){
@@ -6400,6 +6400,8 @@ A.pool_grant_error=fn(code){
     if code=="pool_grant_device_required" {return A.t("This computer can’t publish now. Open This Computer at the bottom of Resource Pools, or use the computer that published before.","这台电脑现在不能发布。请在「资源池」底部的「这台电脑」里处理，或在原来发布的电脑上操作。")}
     if code=="owner_grant_prior_intent_required" {return A.readmission_error(code)}
     if code=="current_profile_required" || code=="management_outcome_unknown" || code=="onboarding_unavailable" {return A.onboarding_reason(code)}
+    if code=="octos_profile_changed" {return A.t("The Octos profile this pool uses changed after the pool was created. Put the profile’s model and settings back in Octos, then publish again.","此资源池使用的 Octos 配置在创建后有变化。请在 Octos 中恢复该配置的模型和设置，然后重新发布。")}
+    if code=="octos_pool_platform_unsupported" {return A.t("Octos pools can be published only from a Mac.","Octos 资源池只能从 Mac 发布。")}
     return A.error_text(code)
 }
 // A busy request whose callback also sees failures, for pages that explain them inline.

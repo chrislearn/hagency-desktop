@@ -59,6 +59,115 @@ async fn claude_pool_enrollment_takes_another_signed_in_account() {
     f.stop().await;
 }
 
+#[cfg(unix)]
+fn write_octos_profile(home: &std::path::Path, base_url: &str, models: &[&str]) {
+    let route = json!({"base_url":base_url,"api_type":"openai"});
+    let fallbacks: Vec<_> = models[1..]
+        .iter()
+        .map(|model| json!({"family_id":"local","model_id":model,"route":route}))
+        .collect();
+    std::fs::write(
+        home.join("profiles/coding.json"),
+        json!({
+            "id":"coding", "name":"Fixture", "enabled":true,
+            "created_at":"2026-01-01T00:00:00Z", "updated_at":"2026-01-01T00:00:00Z",
+            "config":{"llm":{"primary":{"family_id":"local","model_id":models[0],"route":route},
+                "fallbacks":fallbacks}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+#[cfg(unix)]
+async fn octos_witness(
+    registry: &OwnerResourceRegistry,
+    home: &std::path::Path,
+    model: &str,
+) -> super::super::provider_identity::ResourceWitness {
+    let observed = registry
+        .observe_octos_profile(
+            hagency_runtime::octos::profile_binding::ProfileBinding::observe_model(
+                home,
+                "coding",
+                model,
+                Instant::now() + Duration::from_secs(30),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    super::super::provider_identity::ResourceWitness::Octos(observed)
+}
+
+/// An Octos pool is published, amended and renewed on the owner's Octos
+/// profile and model, as its pooled launches run: the profile observed now
+/// must still be the one the pool was created on, and a provider account is
+/// never taken in its place. A changed profile is named as such, not as a
+/// lost authorization.
+#[cfg(unix)]
+#[tokio::test]
+async fn octos_pool_enrollment_is_bound_to_its_profile_and_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap();
+    std::fs::create_dir(home.join("profiles")).unwrap();
+    write_octos_profile(&home, "http://127.0.0.1:9/v1", &["test-model", "other-model"]);
+    let mut f = Fixture::new_octos(home.clone()).await;
+    f.enable_factory().await;
+
+    let witness = octos_witness(&f.registry, &home, "test-model").await;
+    f.service
+        .verified_enrollment_witness_with(&f.registry, "fixture_contribution".into(), |runtime| async move {
+            assert!(matches!(runtime, super::super::ManagementRuntime::Octos));
+            Ok(witness)
+        })
+        .await
+        .expect("the profile and model the pool was created on enroll it");
+
+    let error = f
+        .service
+        .verified_enrollment_with(&f.registry, "fixture_contribution".into(), |_| async {
+            Ok(provider_fixture("synthetic-account"))
+        })
+        .await
+        .err()
+        .expect("a provider account is not an Octos profile");
+    assert_eq!(error.code, "management_enrollment_changed");
+
+    let witness = octos_witness(&f.registry, &home, "other-model").await;
+    let error = f
+        .service
+        .verified_enrollment_witness_with(&f.registry, "fixture_contribution".into(), |_| async {
+            Ok(witness)
+        })
+        .await
+        .err()
+        .expect("another model of the profile is another pool");
+    assert_eq!(error.code, "octos_profile_changed");
+
+    write_octos_profile(&home, "http://127.0.0.1:10/v1", &["test-model", "other-model"]);
+    let witness = octos_witness(&f.registry, &home, "test-model").await;
+    let error = f
+        .service
+        .verified_enrollment_witness_with(&f.registry, "fixture_contribution".into(), |_| async {
+            Ok(witness)
+        })
+        .await
+        .err()
+        .expect("changed profile settings are not the pool's");
+    assert_eq!(error.code, "octos_profile_changed");
+
+    write_octos_profile(&home, "http://127.0.0.1:9/v1", &["test-model", "other-model"]);
+    let witness = octos_witness(&f.registry, &home, "test-model").await;
+    f.service
+        .verified_enrollment_witness_with(&f.registry, "fixture_contribution".into(), |_| async {
+            Ok(witness)
+        })
+        .await
+        .expect("the profile put back enrolls the pool again");
+    f.stop().await;
+}
+
 struct DelayedEnrollmentSource {
     source: Source,
     journal: PathBuf,

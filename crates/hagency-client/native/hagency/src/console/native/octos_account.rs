@@ -293,6 +293,48 @@ impl NativeManagement {
             "provider":{"runtime":"octos","connected":true,"accountVerified":false,"sharedQuota":shared_quota,"models":models}}),
         )
     }
+    /// The owner's Octos profile behind a pool's resource, observed now with
+    /// the resource's model. An Octos grant is enrolled, reviewed and renewed
+    /// on this, as a pooled launch is prepared on it (`Launch::prepare`); a
+    /// profile is never proof of a provider account.
+    pub(super) async fn octos_resource_profile(
+        &self,
+        context: &HostContext,
+        session: &Session,
+        registry: &hagency_store::owner_resources::OwnerResourceRegistry,
+        profile: hagency_store::owner_resources::ProfileAuthority,
+        resource: String,
+        revision: String,
+    ) -> Result<hagency_store::owner_resources::OwnerOctosProfile, NativeError> {
+        if !cfg!(target_os = "macos") {
+            return Err(failure(409, "octos_pool_platform_unsupported"));
+        }
+        let local = registry
+            .resource(&profile, resource.clone())
+            .await
+            .map_err(store_error)?;
+        if local.framework != "octos" || local.revision != revision {
+            return Err(failure(409, "management_enrollment_changed"));
+        }
+        let id = registry
+            .octos_profile_for_resource(profile, resource, revision)
+            .await
+            .map_err(store_error)?;
+        let paths = self.octos_paths(context).await?;
+        let deadline = session
+            .valid_until()
+            .min(Instant::now() + Duration::from_secs(30));
+        let binding = ProfileBinding::observe_model(&paths.codex_home, &id, &local.model, deadline)
+            .map_err(|_| failure(409, "octos_profile_changed"))?;
+        let observed = registry
+            .observe_octos_profile(binding)
+            .await
+            .map_err(store_error)?;
+        if !same_paths(&paths, &self.octos_paths(context).await?) {
+            return Err(failure(409, "octos_profile_changed"));
+        }
+        Ok(observed)
+    }
     #[cfg(feature = "resource-adoption")]
     pub(super) async fn enroll_octos_resource(
         &self,

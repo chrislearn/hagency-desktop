@@ -1,6 +1,17 @@
 //! Trusted provider-account proof for the installation-level owner registry.
 use super::{ManagementRuntime, NativeError, NativeManagement, failure};
-use hagency_store::{management::Permission, owner_resources::VerifiedProviderAccount};
+use hagency_store::{
+    management::Permission,
+    owner_resources::{OwnerOctosProfile, VerifiedProviderAccount},
+};
+
+/// What a pool's resource is observed as before its grant is enrolled: the
+/// provider account a Codex or Claude resource runs on, or the owner's Octos
+/// profile, which is a local budget boundary and never an account proof.
+pub(in crate::console::native) enum ResourceWitness {
+    Account(VerifiedProviderAccount),
+    Octos(OwnerOctosProfile),
+}
 
 impl NativeManagement {
     /// The credential one shared Claude launch runs on. The caller is the
@@ -75,6 +86,39 @@ impl NativeManagement {
 }
 
 impl NativeManagement {
+    /// The resource's provider account, or for Octos its profile, observed
+    /// under the same owner permissions before and after.
+    pub(super) async fn verified_resource_witness(
+        &self,
+        registry: &hagency_store::owner_resources::OwnerResourceRegistry,
+        profile: hagency_store::owner_resources::ProfileAuthority,
+        runtime: ManagementRuntime,
+        resource: String,
+        revision: String,
+    ) -> Result<ResourceWitness, NativeError> {
+        if runtime != ManagementRuntime::Octos {
+            return self
+                .verified_resource_provider_account(registry, profile, runtime, resource, revision)
+                .await
+                .map(ResourceWitness::Account);
+        }
+        let _guard = self.owner.0.calls.lock().await;
+        let (context, session) = self.authorized().await?;
+        for p in [Permission::ReadProviders, Permission::ConnectProviders] {
+            session.authorize(&context, p).map_err(super::management::store_error)?;
+        }
+        let result = self
+            .octos_resource_profile(&context, &session, registry, profile, resource, revision)
+            .await;
+        let (fresh, live) = self.authorized().await?;
+        if fresh != context {
+            return Err(failure(401, "management_scope_changed"));
+        }
+        for p in [Permission::ReadProviders, Permission::ConnectProviders] {
+            live.authorize(&context, p).map_err(super::management::store_error)?;
+        }
+        result.map(ResourceWitness::Octos)
+    }
     pub(super) async fn namespace_provider(
         &self,
         namespace: &hagency_store::owner_resources::ResourceNamespace,
