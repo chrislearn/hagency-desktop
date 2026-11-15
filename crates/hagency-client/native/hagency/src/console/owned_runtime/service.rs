@@ -396,6 +396,15 @@ impl OwnedRuntime {
                             // Takeover applies only to the initial Agent lease,
                             // and cannot be repeated because a Room was added.
                             if takeover_consumed { child.takeover = Takeover::Never; }
+                            // Every start, retries included, runs the coding tool as it
+                            // is found now: an update may have moved the file this
+                            // service started with, and `start` refuses any other.
+                            if let Err(error) = current_program(&mut child.profile, &child.credential_ref) {
+                                let code = failure_code(&Err(error)).unwrap_or("runtime_start_failed");
+                                tracing::warn!(stage = "agent_room_start", code, "An Agent room did not start; it will be retried");
+                                schedule_retry(&mut retries,&binding,code,Instant::now());
+                                continue;
+                            }
                             match manager.start(host.clone(), "", child).await {
                                 Ok(_) => { attempted.insert(binding); takeover_consumed = true; }
                                 Err(RuntimeError::AlreadyActive) => {
@@ -412,6 +421,7 @@ impl OwnedRuntime {
                                 Err(RuntimeError::Stopped | RuntimeError::Authorization | RuntimeError::ExecutionDevice) => return Err(RuntimeError::Authorization),
                                 Err(error) => {
                                     let code = failure_code(&Err(error)).unwrap_or("runtime_start_failed");
+                                    tracing::warn!(stage = "agent_room_start", code, "An Agent room did not start; it will be retried");
                                     schedule_retry(&mut retries,&binding,code,Instant::now());
                                 }
                             }
@@ -699,11 +709,20 @@ mod tests {
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         std::fs::create_dir(root.join("work")).unwrap();
         std::fs::write(root.join("claude"), b"").unwrap();
+        // Claude Code's launcher points at the installed version, as its own
+        // installer and Homebrew set it up.
+        #[cfg(unix)]
+        let launcher = {
+            std::os::unix::fs::symlink(root.join("claude"), root.join("claude-launcher")).unwrap();
+            root.join("claude-launcher")
+        };
+        #[cfg(not(unix))]
+        let launcher = root.join("claude");
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", CHILD, "--ignored", "--nocapture"])
             .env("HOME", &home)
             .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
-            .env("HAGENCY_CLAUDE_BINARY", root.join("claude"))
+            .env("HAGENCY_CLAUDE_BINARY", launcher)
             .env(CHILD_ROOT, &root)
             .output()
             .unwrap();
@@ -773,6 +792,30 @@ mod tests {
         let mut other = config.clone();
         other.credential_ref = "codex".into();
         assert!(matches!(check(&other), Err(RuntimeError::Profile)));
+        // An update points the launcher at a new version. The program saved
+        // when the service started is refused from then on; each retry looks
+        // the program up again and starts with the new version.
+        #[cfg(unix)]
+        {
+            std::fs::write(root.join("claude-2"), b"").unwrap();
+            std::fs::remove_file(root.join("claude-launcher")).unwrap();
+            std::os::unix::fs::symlink(root.join("claude-2"), root.join("claude-launcher")).unwrap();
+            assert!(matches!(check(&config), Err(RuntimeError::Profile)));
+            let mut retry = config.clone();
+            assert_eq!(
+                current_program(&mut retry.profile, &retry.credential_ref).unwrap(),
+                Some(root.join("claude"))
+            );
+            assert_eq!(retry.profile.executable, root.join("claude-2"));
+            check(&retry).unwrap();
+            assert_eq!(current_program(&mut retry.profile, &retry.credential_ref).unwrap(), None);
+            // An uninstalled program is retried under its own code.
+            std::fs::remove_file(root.join("claude-launcher")).unwrap();
+            assert!(matches!(
+                current_program(&mut retry.profile, &retry.credential_ref),
+                Err(RuntimeError::Execution("claude_binary_unavailable"))
+            ));
+        }
     }
     #[test]
     fn obsolete_service_preferences_reset_before_current_options_are_saved() {
