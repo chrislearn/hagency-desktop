@@ -918,6 +918,39 @@ async fn recurring_native_claimed_runtime_without_process_stops_after_grace(){
     assert_eq!(budget.predecessor_command_digest,digest(&runtime));
 }
 
+/// A start declined before any claim leaves a non-issuance proof for its own
+/// command. When the next original for the same Agent is claimed and its launch
+/// fails, that earlier proof must not hold the later claim's stop back, or the
+/// Agent stays stopping for good.
+#[tokio::test]
+async fn recurring_native_claim_after_a_declined_original_still_stops_after_grace(){
+    use shared_execution::*;
+    use std::sync::atomic::Ordering::SeqCst;
+    let clock=Arc::new(std::sync::atomic::AtomicU64::new(graphs::now_ms().unwrap()));graphs::install_test_clock(&clock);
+    let f=fixture_kind(RenewalMode::Automatic,false,Some(clock.clone())).await;
+    let saved=f.registry.recover_managed_agent_reservation(f.profile.clone(),f.grant.executor_device_id.clone(),f.command.command_id.clone(),digest(&f.command)).await.unwrap().unwrap();
+    let cleanup=||ManagedCleanupAuthority::fixture(enrollment(&f),f.child.clone(),Instant::now()+Duration::from_secs(20));
+    let original=|id:&str,now:u64|SharedRuntimeCommand{version:1,capability:SHARED_EXECUTION_CAPABILITY.into(),operation:"agent.execution.provision".into(),command_id:id.into(),assignment_id:"period_assignment".into(),assignment_generation:1,agent_reservation_id:f.child.clone(),reserve_command:f.command.clone(),reserve_command_digest:digest(&f.command),reserve_receipt_digest:digest(&saved),policy:SHARED_TEXT_POLICY.into(),issued_at_ms:now,expires_at_ms:now+20_000};
+    let declined=original("declined_first_runtime",graphs::now_ms().unwrap());
+    clock.store(declined.expires_at_ms+1,SeqCst);
+    let proof=f.registry.record_unstarted_shared_runtime(cleanup(),declined.clone()).await.unwrap().expect("a never-claimed original is proven not started");
+    assert_eq!(proof.state,"not_started");
+    let runtime=original("claimed_second_runtime",graphs::now_ms().unwrap());
+    let SharedRuntimeClaim::Issued(custody)=f.registry.claim_shared_runtime(VerifiedSharedRuntimeDelivery::new(enrollment(&f),runtime.clone(),digest(&runtime),true,Instant::now()+Duration::from_secs(20)).unwrap()).await.unwrap() else {panic!("the next original is claimed")};
+    drop(custody);
+    let due=runtime.expires_at_ms+30_000+UNCERTAIN_GRACE_MS;
+    clock.store(due-1,SeqCst);
+    assert!(f.registry.record_shared_runtime_timeout(cleanup(),runtime.clone()).await.unwrap().is_none(),"nothing is recorded within the grace");
+    clock.store(due,SeqCst);
+    let stopped=f.registry.record_shared_runtime_timeout(cleanup(),runtime.clone()).await.unwrap().expect("the earlier command's proof does not hold this claim's stop back");
+    assert_eq!((stopped.state.as_str(),stopped.command_id.as_str()),("stopped","claimed_second_runtime"));
+    assert!(f.registry.record_shared_runtime_timeout(cleanup(),declined.clone()).await.is_err(),"the declined command never becomes the claim");
+    assert_eq!(digest(&f.registry.record_unstarted_shared_runtime(cleanup(),declined).await.unwrap().unwrap()),digest(&proof),"its proof stays as it was");
+    let budget=f.registry.shared_successor_budget(enrollment(&f),runtime.clone()).await.unwrap();
+    assert_eq!(budget.state,SharedSuccessorBudgetState::Available);
+    assert_eq!(budget.stopped_receipt_digest,digest(&stopped));
+}
+
 /// Process evidence of any kind keeps the time bound away from a claim.
 #[tokio::test]
 async fn recurring_native_claimed_runtime_with_process_evidence_is_not_timed_out(){

@@ -45,15 +45,18 @@ impl OwnerResourceRegistry {
                 return Err(Error::Conflict);
             }
             // Any process evidence, successor or call means a process spoke
-            // for this claim: its own evidence decides, never this bound.
+            // for this claim: its own evidence decides, never this bound. A
+            // non-issuance proof counts only for this command: an earlier
+            // original of the same Agent that was declined before any claim
+            // (as when a start missed its window) says nothing about this one.
             let evidence: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM owner_shared_process_observations WHERE child_id=?1) \
-                 OR EXISTS(SELECT 1 FROM owner_shared_unstarted_runtimes WHERE child_id=?1) \
+                 OR EXISTS(SELECT 1 FROM owner_shared_unstarted_runtimes WHERE child_id=?1 AND command_id=?2) \
                  OR EXISTS(SELECT 1 FROM owner_shared_successor_attempts WHERE child_id=?1) \
                  OR EXISTS(SELECT 1 FROM owner_shared_successor_fences WHERE child_id=?1) \
                  OR EXISTS(SELECT 1 FROM owner_managed_runtime_lifetimes WHERE child_id=?1) \
                  OR EXISTS(SELECT 1 FROM owner_managed_calls WHERE child_id=?1)",
-                [&c.agent_reservation_id],
+                params![c.agent_reservation_id, c.command_id],
                 |r| r.get(0),
             )?;
             if evidence
