@@ -180,8 +180,9 @@ impl<S: HistoryIo> Reader<S> {
             documents: Documents::default(), native_compaction: false, context_remaining: 32 * 1024,
             last_usage: None, child_budgets: HashMap::new() }
     }
-    /// Only the trusted Claude Code host selects this mode. Its native loop
-    /// compacts between model calls but exposes no Codex ContextUsage samples.
+    /// Only trusted Claude Code and Octos hosts select this mode. Claude Code
+    /// compacts between model calls and Octos trims to the model's window
+    /// before each one; neither exposes Codex ContextUsage samples.
     /// Keep each tool result bounded; a lifetime byte allowance would never
     /// refill after compaction and would permanently strand earlier history.
     pub(in crate::console) fn use_native_compaction(&mut self) {

@@ -190,6 +190,12 @@ async fn work(
         let (b, _, _) = live.proof().await?;
         super::history::Reader::new(&live.io, &b, &work, plaintext_input.as_ref()).await
     }).await?;
+    // Octos trims its messages to the model's window before each call and
+    // reports no context samples, so a fixed byte allowance would never refill
+    // and would strand earlier history: bound each page instead, as for Claude.
+    if let Some(reader) = &mut history {
+        reader.use_native_compaction();
+    }
     let input = active.wait(cancel, async {
         let (b, _, _) = live.proof().await?;
         if work.encrypted {
