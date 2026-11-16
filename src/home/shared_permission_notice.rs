@@ -14,7 +14,8 @@ fn execution_busy(value:&Value,room:&str,thread:&str)->bool {
     execution_row(value,room,thread).is_some_and(|row|
         row["reason"]!="budget_blocked" && matches!(row["state"].as_str(),Some("started"|"pending"|"queued"|"acknowledged"|"bound"|"reply_pending")))
 }
-fn execution_notice(value:&Value,room:&str,thread:&str)->Option<&'static str> {
+/// `stopped` says whether the run card for a message shows its run stopped.
+fn execution_notice(value:&Value,room:&str,thread:&str,stopped:impl Fn(&str)->bool)->Option<&'static str> {
     let row=execution_row(value,room,thread)?;
     if row["reason"]=="owner_daemon_update_required" {
         return Some("Message has not started. The resource owner needs to update Hagency and start its service; the same message can then continue.");
@@ -34,6 +35,8 @@ fn execution_notice(value:&Value,room:&str,thread:&str)->Option<&'static str> {
         "started"=>Some("Agent is working…"),
         "pending"|"queued"|"acknowledged"|"bound"=>Some("Message queued; waiting for Agent."),
         "unknown"=>Some("Run interrupted; no final answer confirmed. Send the message again if you still need it."),
+        // The Agent records a stopped run as failed; its run card tells them apart.
+        "failed" if row["eventId"].as_str().is_some_and(&stopped)=>Some("Run stopped."),
         "failed"=>Some("Agent run failed."),
         "blocked"=>Some("Message could not start. Check the resource and Agent connection."),
         "paused"=>Some("Agent is paused."),
@@ -204,6 +207,18 @@ impl SharedPermissionNotice {
         self.view.widget(cx,ids!(next)).set_visible(cx,shown.next);
         self.view.redraw(cx);
     }
+    /// Take in one read of the room's requests and the run's state. `stopped`
+    /// says whether a message's run card shows its run stopped.
+    fn read_status(&mut self,value:&Value,stopped:impl Fn(&str)->bool) {
+        self.error.clear();
+        self.execution_busy=execution_busy(value,&self.room,&self.thread);
+        // The run the last decision belonged to has ended: a later run must
+        // not show it as its own last or previous request.
+        if !self.execution_busy {self.last_decision=None;}
+        self.execution_text=execution_notice(value,&self.room,&self.thread,stopped).unwrap_or_default().into();
+        self.rows=value["approvals"].as_array().cloned().unwrap_or_default().into_iter().filter(|r|r["approval"]["roomId"]==self.room && (self.thread.is_empty() || r["approval"]["threadRoot"]==self.thread)).take(16).collect();
+        if self.selected>=self.rows.len(){self.selected=0;}
+    }
     /// Read the room's requests and the run's state again.
     fn poll(&mut self,_cx:&mut Cx) {
         if self.loading || !self.active || self.room.is_empty(){return;}
@@ -240,11 +255,8 @@ impl Widget for SharedPermissionNotice {
                     self.loading=false;
                     match &done.value {
                         Ok(value)=>{
-                            self.error.clear();
-                            self.execution_busy=execution_busy(value,&self.room,&self.thread);
-                            self.execution_text=execution_notice(value,&self.room,&self.thread).unwrap_or_default().into();
-                            self.rows=value["approvals"].as_array().cloned().unwrap_or_default().into_iter().filter(|r|r["approval"]["roomId"]==self.room && (self.thread.is_empty() || r["approval"]["threadRoot"]==self.thread)).take(16).collect();
-                            if self.selected>=self.rows.len(){self.selected=0;}
+                            let room=self.room.clone();
+                            self.read_status(value,|event|crate::hagency::run_controls::stopped(&room,event));
                             // The cards on the messages read the same requests.
                             if crate::hagency::pending_approvals::merge_room(&self.identity,&self.room,value,self.active){cx.action(PendingApprovalsChanged);}
                             self.render(cx);
@@ -296,17 +308,17 @@ mod tests {
                 {"roomId":"!other","threadRoot":"$thread","state":"started"},
                 {"roomId":"!room","threadRoot":"$thread","eventId":"$original","state":"blocked","reason":reason}
             ]});
-            let notice = execution_notice(&value, "!room", "$thread").unwrap();
+            let notice = execution_notice(&value, "!room", "$thread", |_| false).unwrap();
             assert!(notice.starts_with("Message has not started."));
             assert!(notice.contains(explanation));
             assert!(!notice.contains("Send the message again"));
             assert!(!execution_busy(&value, "!room", "$thread"));
-            assert!(execution_notice(&value, "!room", "$unrelated").is_none());
+            assert!(execution_notice(&value, "!room", "$unrelated", |_| false).is_none());
             assert!(!execution_busy(&value, "!room", "$unrelated"));
         }
         // The same retained event can become eligible when its daemon returns.
         let current = json!({"executions":[{"roomId":"!room","threadRoot":"$thread","eventId":"$original","state":"pending","reason":null}]});
-        assert_eq!(execution_notice(&current, "!room", "$thread"), Some("Message queued; waiting for Agent."));
+        assert_eq!(execution_notice(&current, "!room", "$thread", |_| false), Some("Message queued; waiting for Agent."));
         assert!(execution_busy(&current, "!room", "$thread"));
     }
 
@@ -317,16 +329,53 @@ mod tests {
             {"roomId":"!room","threadRoot":"$old","state":"unknown"},
             {"roomId":"!room","threadRoot":"$done","state":"replied"}
         ]});
-        assert!(execution_notice(&v,"!room","").unwrap().contains("unsettled calls"));
-        assert!(execution_notice(&v,"!room","$old").unwrap().contains("interrupted"));
-        assert!(execution_notice(&v,"!room","$done").is_none());
-        assert!(execution_notice(&v,"!room","$foreign").is_none());
-        assert!(execution_notice(&v,"!foreign","").is_none());
+        let never=|_:&str|false;
+        assert!(execution_notice(&v,"!room","",never).unwrap().contains("unsettled calls"));
+        assert!(execution_notice(&v,"!room","$old",never).unwrap().contains("interrupted"));
+        assert!(execution_notice(&v,"!room","$done",never).is_none());
+        assert!(execution_notice(&v,"!room","$foreign",never).is_none());
+        assert!(execution_notice(&v,"!foreign","",never).is_none());
         for (state, expected) in [("usage_unresolved","previous call"),("exhausted","used")] {
             let v=json!({"executions":[{"roomId":"!room","state":"blocked","reason":"budget_blocked","budgetState":state}]});
-            assert!(execution_notice(&v,"!room","").unwrap().contains(expected));
+            assert!(execution_notice(&v,"!room","",never).unwrap().contains(expected));
             assert!(!execution_busy(&v,"!room",""));
         }
+    }
+
+    /// The Agent records a stopped run as failed. When the run card for that
+    /// message shows it stopped, the person who sent it reads that, not a failure.
+    #[test]
+    fn a_stopped_run_reads_as_stopped_not_failed() {
+        let v=json!({"executions":[{"roomId":"!room","threadRoot":"$thread","eventId":"$message","state":"failed"}]});
+        assert_eq!(execution_notice(&v,"!room","$thread",|event|event=="$message"),Some("Run stopped."));
+        assert_eq!(execution_notice(&v,"!room","$thread",|event|event=="$other"),Some("Agent run failed."));
+        // Without its message, a row cannot be matched to a run card.
+        let v=json!({"executions":[{"roomId":"!room","threadRoot":"$thread","state":"failed"}]});
+        assert_eq!(execution_notice(&v,"!room","$thread",|_|true),Some("Agent run failed."));
+        // Other states keep their own text.
+        let v=json!({"executions":[{"roomId":"!room","eventId":"$message","state":"unknown"}]});
+        assert!(execution_notice(&v,"!room","",|_|true).unwrap().contains("interrupted"));
+    }
+
+    /// The last decision belongs to its run. Once that run ends, a later run
+    /// shows neither its "last request" hint nor "previous request" context.
+    #[test]
+    fn the_last_decision_is_forgotten_when_its_run_ends() {
+        let mut cx=Cx::new(Box::new(|_,_|{}));
+        let widget=notice(&mut cx);
+        let mut n=widget.borrow_mut().unwrap();
+        (n.active,n.room)=(true,"!room".into());
+        let working=json!({"executions":[{"roomId":"!room","state":"started"}],"approvals":[]});
+        n.read_status(&working,|_|false);
+        n.last_decision=Some(("sap_1".into(),"approve_once".into()));
+        n.read_status(&working,|_|false);
+        assert_eq!(n.display().hint,"Last request: Approved once. The Agent is continuing.");
+        n.read_status(&json!({"executions":[{"roomId":"!room","state":"replied"}],"approvals":[]}),|_|false);
+        assert!(n.last_decision.is_none());
+        n.read_status(&working,|_|false);
+        let next=n.display();
+        assert_eq!(next.title,"Agent is working…");
+        assert!(next.hint.is_empty(),"a new run shows no earlier decision: {}",next.hint);
     }
 
     #[test]

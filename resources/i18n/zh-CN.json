@@ -2231,6 +2231,7 @@
   "Message queued; waiting for Agent.": "消息已排队，等待 Agent 处理。",
   "Run interrupted; no final answer confirmed. Send the message again if you still need it.": "任务已中断，未确认最终回复。如仍需要，请重新发送。",
   "Agent run failed.": "Agent 运行失败。",
+  "Run stopped.": "运行已停止。",
   "Message could not start. Check the resource and Agent connection.": "消息未能开始处理，请检查资源和 Agent 连接。",
   "Agent is paused.": "Agent 已暂停。",
   "This message was not processed; it will not retry automatically.": "此消息未完成处理，不会自动重试。",
