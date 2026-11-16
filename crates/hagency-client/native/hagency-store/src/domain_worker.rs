@@ -37,7 +37,10 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 #[path = "../tests/common/mod.rs"]
 pub(crate) mod clock_fixtures;
 
-type Operation = Box<dyn FnOnce(&mut DomainRepository) + Send>;
+/// An operation is handed its job's byte reservation so it can free it before
+/// it answers: a caller that sends its next request as soon as one answers
+/// must find the budget free again.
+type Operation = Box<dyn FnOnce(&mut DomainRepository, OwnedSemaphorePermit) + Send>;
 enum ReceiverPolicy {
     CancelIfDropped,
     RetainEnqueuedInvalidation,
@@ -196,7 +199,7 @@ mod shutdown_tests {
         store
             .tx
             .try_send(Job::Run {
-                operation: Box::new(move |_| {
+                operation: Box::new(move |_, _| {
                     let _ = entered.send(());
                     let _ = paused.recv_timeout(Duration::from_secs(6));
                 }),
@@ -268,7 +271,7 @@ mod shutdown_tests {
         store
             .tx
             .try_send(Job::Run {
-                operation: Box::new(move |_| {
+                operation: Box::new(move |_, _| {
                     let _ = entered.send(());
                     let _ = paused.recv_timeout(Duration::from_secs(6));
                 }),
@@ -351,6 +354,28 @@ mod shutdown_tests {
             assert_eq!(probe.snapshot(outcome).acknowledgement_sent_us, None);
             assert_eq!(snapshot.outcome, ShutdownOutcome::ReplyTimedOut);
         }
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    /// A caller that sends its next request the moment one answers must find
+    /// the budget free again. The writer used to answer first and free the
+    /// reservation after, so on a loaded runner a call made right after a
+    /// full-budget graph transaction failed with Busy.
+    #[tokio::test]
+    async fn native_domain_budget_is_free_when_a_call_answers() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("state");
+        let store = DomainStore::start(DomainRepository::open(&state).unwrap(), 16).unwrap();
+        let full = store.bytes.available_permits();
+        for _ in 0..200 {
+            store.call(full as u32, |_| Ok(())).await.unwrap();
+            assert_eq!(store.bytes.available_permits(), full);
+        }
+        store.shutdown().await.unwrap();
     }
 }
 
@@ -3053,7 +3078,7 @@ impl DomainStore {
             .spawn(move || {
                 while let Some(job) = rx.blocking_recv() {
                     match job {
-                        Job::Run { operation, _bytes } => operation(&mut repository),
+                        Job::Run { operation, _bytes: bytes } => operation(&mut repository, bytes),
                         Job::Shutdown { reply, probe } => {
                             mark(&probe, Phase::WorkerPickedUp);
                             mark(&probe, Phase::DropStarted);
@@ -3105,7 +3130,7 @@ impl DomainStore {
             .map_err(|_| Error::Busy)?;
         let (reply, rx) = oneshot::channel();
         let progress = self.progress.clone();
-        let operation = Box::new(move |db: &mut DomainRepository| {
+        let operation = Box::new(move |db: &mut DomainRepository, bytes: OwnedSemaphorePermit| {
             // Publish the running ticket BEFORE this job's operation can block,
             // so a caller whose reply bound expires while this job runs
             // observes "dequeued" and never "still queued" (accepted design
@@ -3117,7 +3142,12 @@ impl DomainStore {
             // An admitted negative observation must retire its exact old scope
             // even after receiver loss. Ordinary abandoned work still stops here.
             if matches!(policy, ReceiverPolicy::RetainEnqueuedInvalidation) || !reply.is_closed() {
-                let _ = reply.send(operation(db));
+                let result = operation(db);
+                // Free the reservation before answering. Freed after, a call
+                // sent the moment this one answers could find the budget still
+                // held and fail with Busy, as on a loaded runner.
+                drop(bytes);
+                let _ = reply.send(result);
             }
         });
         self.tx

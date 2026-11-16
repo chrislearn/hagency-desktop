@@ -174,6 +174,27 @@ mod tests {
         );
         journal.shutdown().await.unwrap();
     }
+    /// The journal frees a command's reservation before it answers, so a
+    /// caller that sends its next command the moment one answers finds the
+    /// budget free again.
+    #[tokio::test]
+    async fn server_journal_budget_is_free_when_a_command_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = ServerManagementJournal::open(
+            &dir.path().join("server"),
+            &"a".repeat(64),
+            "@admin:test",
+        )
+        .unwrap();
+        let access = session(&journal, &[Permission::ReadIntents]);
+        let owner = context("@admin:test");
+        let full = journal.bytes.available_permits();
+        for _ in 0..100 {
+            assert!(access.pending_intents(&owner).await.unwrap().is_empty());
+            assert_eq!(journal.bytes.available_permits(), full);
+        }
+        journal.shutdown().await.unwrap();
+    }
 
 }
 
@@ -257,7 +278,7 @@ impl ServerManagementJournal {
             .spawn(move || {
                 while let Some(job) = rx.blocking_recv() {
                     match job {
-                        Job::Command(command, reply, _bytes) => {
+                        Job::Command(command, reply, bytes) => {
                             let authority = command.authority.clone();
                             let deadline = command.deadline;
                             let result = (|| {
@@ -273,6 +294,9 @@ impl ServerManagementJournal {
                                     .progress_handler(0, None::<fn() -> bool>)?;
                                 result
                             })();
+                            // Free the reservation before answering, so the
+                            // caller's next command never finds it held.
+                            drop(bytes);
                             let _ = reply.send(result);
                         }
                         Job::Shutdown(reply) => {

@@ -138,7 +138,7 @@ async fn hold(
     store
         .tx
         .try_send(Job::Run {
-            operation: Box::new(move |db| {
+            operation: Box::new(move |db, _| {
                 picked_up.send(()).unwrap();
                 held.recv_timeout(Duration::from_secs(6)).unwrap();
                 before_next(db);

@@ -360,7 +360,7 @@ async fn native_domain_acceptance_reply_timeout_reconciles() {
     store
         .tx
         .try_send(Job::Run {
-            operation: Box::new(move |_| {
+            operation: Box::new(move |_, _| {
                 let _ = entered.send(());
                 let _ = paused.recv_timeout(Duration::from_secs(6));
             }),

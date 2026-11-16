@@ -137,7 +137,7 @@ async fn native_upload_worker_lost_and_concurrent() {
     store
         .tx
         .try_send(Job::Run {
-            operation: Box::new(move |db| {
+            operation: Box::new(move |db, _| {
                 let admitted = db
                     .upload_transaction(writer_time, |tx, n| {
                         crate::domain::uploads::reserve(tx, &original, &input("lost"), n)
@@ -221,7 +221,7 @@ async fn native_upload_worker_queued_expiry() {
     store
         .tx
         .try_send(Job::Run {
-            operation: Box::new(move |_db| {
+            operation: Box::new(move |_db, _| {
                 // Keep ownership while a real caller queues, then let its persisted
                 // lease expire before the queued transaction samples writer time.
                 rusqlite::Connection::open(&path)
