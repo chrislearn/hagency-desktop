@@ -182,7 +182,9 @@ pub(super) fn message_root<T: Transport>(transport: &T, lease: &LeaseRef, config
 }
 /// The owner's private folder, which holds the file tools' workspace state.
 /// It is not the folder above the provider home: a local Claude or Octos
-/// sign-in has the person's own home folder there.
+/// sign-in has the person's own home folder there. Only the Unix turn setup
+/// asks for it.
+#[cfg(unix)]
 pub(super) fn owner_directory<T: Transport>(transport: &T, lease: &LeaseRef, config: &StartConfig)
     -> Result<std::path::PathBuf, RuntimeError>
 {
