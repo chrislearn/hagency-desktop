@@ -1580,13 +1580,15 @@ async fn native_owned_agents_user_scope_local_policy_privacy_and_lifecycle() {
     .await;
     assert_eq!(reset.status_code, Some(StatusCode::OK));
     let reset = reset.take_json::<Value>().await.unwrap();
-    assert_eq!(reset["policies"][2]["revision"], 2);
+    // A reset member is not saved any more and follows the Agent again; its
+    // revision reads 0 and its stored rule is the default.
+    assert_eq!(reset["policies"][2]["revision"], 0);
     assert_eq!(reset["policies"][2]["policy"]["high_risk"], "Deny");
     assert_eq!(
         reset["policies"][2]["policy"]["budget"]["limit"],
         "Unlimited"
     );
-    // Resetting a Room removes its optional limit without granting high-risk tools.
+    // Resetting a Room the owner never saved leaves it unsaved, without a limit.
     let mut reset_room = delete(
         "/console/api/owned-agents/agt_fixture/local-policy",
         &cookie,
@@ -1596,7 +1598,7 @@ async fn native_owned_agents_user_scope_local_policy_privacy_and_lifecycle() {
     .await;
     assert_eq!(reset_room.status_code, Some(StatusCode::OK));
     let reset_room = reset_room.take_json::<Value>().await.unwrap();
-    assert_eq!(reset_room["policies"][1]["revision"], 1);
+    assert_eq!(reset_room["policies"][1]["revision"], 0);
     assert_eq!(
         reset_room["policies"][1]["policy"]["budget"]["limit"],
         "Unlimited"

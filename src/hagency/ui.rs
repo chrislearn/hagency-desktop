@@ -745,6 +745,8 @@ script_mod! {
                         requests := Select {labels: [#(crate::i18n::tr("Allow requests")) #(crate::i18n::tr("Deny requests")) #(crate::i18n::tr("Ask owner per request"))] i18n_labels: ["Allow requests" "Deny requests" "Ask owner per request"]}
                         Text {text: #(crate::i18n::tr("High-risk tools")) i18n_text: "High-risk tools"}
                         tool_risk := Select {labels: [#(crate::i18n::tr("Deny high-risk tools")) #(crate::i18n::tr("Ask owner per tool")) #(crate::i18n::tr("Allow only exact tools/directories")) #(crate::i18n::tr("Full trust (unrestricted)"))] i18n_labels: ["Deny high-risk tools" "Ask owner per tool" "Allow only exact tools/directories" "Full trust (unrestricted)"]}
+                        tool_risk_follows := Text {visible: false text: #(crate::i18n::tr("Not saved for this scope: high-risk tools follow Entire Agent until you save here.")) i18n_text: "Not saved for this scope: high-risk tools follow Entire Agent until you save here." draw_text.color: mod.widgets.RINX_MUTED}
+                        tool_risk_owner_only := Text {visible: false text: #(crate::i18n::tr("Not saved for this scope: Full trust on Entire Agent covers only your own messages here, and anyone else's high-risk tools are denied.")) i18n_text: "Not saved for this scope: Full trust on Entire Agent covers only your own messages here, and anyone else's high-risk tools are denied." draw_text.color: mod.widgets.RINX_MUTED}
                         full_trust_note := Text {visible: false text: #(crate::i18n::tr("Full trust: the Agent runs commands, changes files and uses the network on this computer without asking you, and outside its work folder. Set on Entire Agent, it covers your own messages in every Room. Anyone else gets it only in a Room where you also save Full trust on that Room and on them. A Room or member with its own saved setting keeps that setting.")) i18n_text: "Full trust: the Agent runs commands, changes files and uses the network on this computer without asking you, and outside its work folder. Set on Entire Agent, it covers your own messages in every Room. Anyone else gets it only in a Room where you also save Full trust on that Room and on them. A Room or member with its own saved setting keeps that setting." draw_text.color: mod.widgets.RINX_WARNING_FG}
                         allowed_tools_holder := View {visible: false width: Fill height: Fit flow: Down spacing: 4 Text {text: #(crate::i18n::tr("Allowed tools")) i18n_text: "Allowed tools"}
  allowed_tools := Input {empty_text: #(crate::i18n::tr("Exact tool names, comma separated")) i18n_empty_text: "Exact tool names, comma separated"}}
@@ -2221,6 +2223,9 @@ impl HagencyPanel {
             .drop_down(cx, ids!(policy_layer))
             .selected_item()
             .min(2);
+        for id in [ids!(tool_risk_follows), ids!(tool_risk_owner_only)] {
+            self.view.label(cx, id).set_visible(cx, false);
+        }
         let p = &self.policy["policies"][layer]["policy"];
         if !p.is_object() {
             return;
@@ -2252,26 +2257,41 @@ impl HagencyPanel {
                 _ => 0,
             },
         );
+        // A Room or member the owner never saved (revision 0) follows the
+        // Agent's tool rule and shows it; a save here then starts from it.
+        // Full trust on the Agent is the exception: it covers only the owner's
+        // own messages, and anyone else meets this layer's own rule, a denial.
+        let agent_rule = &self.policy["policies"][0]["policy"]["high_risk"];
+        let unsaved = layer > 0
+            && self.policy["policies"][layer]["revision"].as_i64() == Some(0)
+            && !agent_rule.is_null();
+        let agent_full_trust = ::hagency::native_owner::is_full_trust_rule(agent_rule);
+        let follows = unsaved && !agent_full_trust;
+        let high_risk = if follows { agent_rule } else { &p["high_risk"] };
         self.view.drop_down(cx, ids!(tool_risk)).set_selected_item(
             cx,
-            if p["high_risk"] == "AskOwner" {
+            if *high_risk == "AskOwner" {
                 1
-            } else if ::hagency::native_owner::is_full_trust_rule(&p["high_risk"]) {
+            } else if ::hagency::native_owner::is_full_trust_rule(high_risk) {
                 3
-            } else if p["high_risk"].is_object() {
+            } else if high_risk.is_object() {
                 2
             } else {
                 0
             },
         );
+        self.view.label(cx, ids!(tool_risk_follows)).set_visible(cx, follows);
+        self.view
+            .label(cx, ids!(tool_risk_owner_only))
+            .set_visible(cx, unsaved && agent_full_trust);
         for (id, key) in [
             (ids!(allowed_tools), "tools"),
             (ids!(allowed_directories), "directories"),
         ] {
             // Full trust is not a list the owner wrote; the rule fields stay empty.
-            let values = p["high_risk"]["AllowWithRules"][key]
+            let values = high_risk["AllowWithRules"][key]
                 .as_array()
-                .filter(|_| !::hagency::native_owner::is_full_trust_rule(&p["high_risk"]))
+                .filter(|_| !::hagency::native_owner::is_full_trust_rule(high_risk))
                 .map(|v| {
                     v.iter()
                         .filter_map(Value::as_str)
@@ -4875,6 +4895,49 @@ mod tests {
         assert_eq!(panel.tool_risk(&mut cx),None);
         panel.view.text_input(&mut cx,ids!(allowed_directories)).set_text(&mut cx,"/work");
         assert_eq!(panel.tool_risk(&mut cx),Some(json!({"AllowWithRules":{"tools":["*"],"directories":["/work"]}})));
+    }
+    /// A Room or member the owner never saved shows the Agent's tool rule, with
+    /// a note that it follows the Agent, and a save there starts from that rule.
+    /// One the owner saved shows its own. Under full trust on the Agent an
+    /// unsaved one shows its own denial, with a note that only the owner's own
+    /// messages are covered.
+    #[test]
+    fn an_unsaved_room_shows_the_agent_tool_rule_it_follows() {
+        let mut cx=Cx::new(Box::new(|_,_| {}));let mut panel=cx.with_vm(|vm|{makepad_widgets::script_mod(vm);vm.bx.captured_errors=Some(Vec::new());crate::app::register_widgets(vm);let v=script_eval!(vm,{mod.widgets.HagencyPanel{}});let p=HagencyPanel::script_from_value(vm,v);assert!(vm.take_errors().is_empty());p});
+        let layer=|rule:Value,revision:i64| json!({"revision":revision,"policy":{"budget":{"limit":"Unlimited","period":"Lifetime"},"requests":"Allow","high_risk":rule}});
+        let notes=|panel:&HagencyPanel,cx:&mut Cx| (panel.view.label(cx,ids!(tool_risk_follows)).visible(),panel.view.label(cx,ids!(tool_risk_owner_only)).visible());
+        let exact=json!({"AllowWithRules":{"tools":["execute"],"directories":["/work"]}});
+        for (agent,choice) in [(json!("Deny"),0),(json!("AskOwner"),1),(exact.clone(),2)] {
+            panel.policy=json!({"policies":[layer(agent.clone(),3),layer(json!("Deny"),0),layer(json!("Deny"),0)]});
+            for selected in [1,2] {
+                panel.view.drop_down(&mut cx,ids!(policy_layer)).set_selected_item(&mut cx,selected);
+                panel.render_policy(&mut cx);
+                assert_eq!(panel.view.drop_down(&mut cx,ids!(tool_risk)).selected_item(),choice);
+                assert_eq!(notes(&panel,&mut cx),(true,false));
+                assert_eq!(panel.tool_risk(&mut cx),Some(agent.clone()));
+            }
+            // The whole Agent shows its own rule without a note.
+            panel.view.drop_down(&mut cx,ids!(policy_layer)).set_selected_item(&mut cx,0);
+            panel.render_policy(&mut cx);
+            assert_eq!(panel.view.drop_down(&mut cx,ids!(tool_risk)).selected_item(),choice);
+            assert_eq!(notes(&panel,&mut cx),(false,false));
+        }
+        // A Room the owner saved shows its own rule.
+        panel.policy=json!({"policies":[layer(json!("AskOwner"),3),layer(json!("Deny"),2),layer(json!("Deny"),0)]});
+        panel.view.drop_down(&mut cx,ids!(policy_layer)).set_selected_item(&mut cx,1);
+        panel.render_policy(&mut cx);
+        assert_eq!(panel.view.drop_down(&mut cx,ids!(tool_risk)).selected_item(),0);
+        assert_eq!(notes(&panel,&mut cx),(false,false));
+        // Full trust on the Agent: an unsaved Room shows its own denial.
+        panel.policy=json!({"policies":[layer(::hagency::native_owner::full_trust_rule(),3),layer(json!("Deny"),0),layer(json!("Deny"),0)]});
+        panel.render_policy(&mut cx);
+        assert_eq!(panel.view.drop_down(&mut cx,ids!(tool_risk)).selected_item(),0);
+        assert!(!panel.view.label(&mut cx,ids!(full_trust_note)).visible());
+        assert_eq!(notes(&panel,&mut cx),(false,true));
+        // Nothing loaded for the selected layer: no note is left over.
+        panel.policy=json!({"policies":[layer(json!("AskOwner"),3)]});
+        panel.render_policy(&mut cx);
+        assert_eq!(notes(&panel,&mut cx),(false,false));
     }
     #[test]
     fn agent_run_link_selects_only_its_exact_binding_without_starting() {

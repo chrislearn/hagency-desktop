@@ -1391,6 +1391,13 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                     }
                     Change::Reset(input) => {
                         let l = layer(&input.layer)?;
+                        // A Room or member goes back to following the Agent.
+                        if !matches!(l, Layer::Agent) {
+                            ledger
+                                .clear_policy(&reply.owner, &scope, l, input.expected_revision)
+                                .map_err(local_error)?;
+                            return view(&ledger, &scope);
+                        }
                         let policy = Policy {
                             budget: Budget {
                                 limit: Limit::Unlimited,

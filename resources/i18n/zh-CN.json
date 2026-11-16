@@ -1524,6 +1524,8 @@
   "Creation completed. Refresh Projects to see its Rooms.": "创建已完成。请刷新项目列表以查看房间。",
   "Denied Matrix user IDs, comma separated": "禁止的 Matrix 用户 ID，以逗号分隔",
   "Deny high-risk tools": "禁止高风险工具",
+  "Not saved for this scope: high-risk tools follow Entire Agent until you save here.": "当前范围尚未保存：高风险工具沿用“整个 Agent”的设置，直到你在这里保存。",
+  "Not saved for this scope: Full trust on Entire Agent covers only your own messages here, and anyone else's high-risk tools are denied.": "当前范围尚未保存：“整个 Agent”上的完全信任在这里只覆盖你自己的消息，其他人的高风险工具会被禁止。",
   "Deny requests": "拒绝请求",
   "Disable new Agent connections": "禁止新的 Agent 接入",
   "Discussion Room Agent permissions": "讨论房间 Agent 权限",

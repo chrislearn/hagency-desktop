@@ -1517,6 +1517,8 @@
   "Creation completed. Refresh Projects to see its Rooms.": "Creation completed. Refresh Projects to see its Rooms.",
   "Denied Matrix user IDs, comma separated": "Denied Matrix user IDs, comma separated",
   "Deny high-risk tools": "Deny high-risk tools",
+  "Not saved for this scope: high-risk tools follow Entire Agent until you save here.": "Not saved for this scope: high-risk tools follow Entire Agent until you save here.",
+  "Not saved for this scope: Full trust on Entire Agent covers only your own messages here, and anyone else's high-risk tools are denied.": "Not saved for this scope: Full trust on Entire Agent covers only your own messages here, and anyone else's high-risk tools are denied.",
   "Deny requests": "Deny requests",
   "Disable new Agent connections": "Disable new Agent connections",
   "Discussion Room Agent permissions": "Discussion Room Agent permissions",

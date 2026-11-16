@@ -174,14 +174,14 @@ impl ToolPolicy {
 /// admitted under and the rule saved now, each with whether the owner saved
 /// that layer at all.
 type ToolLayer<'a> = [(bool, &'a ToolPolicy); 2];
-/// Full trust on the Agent is the owner's trust in their own messages. For
-/// those, a Room or member layer the owner never saved adds no rule of its
-/// own; one the owner saved still applies. Anyone else, and the owner without
-/// it, meets every layer, and an unsaved layer keeps its default, which is to
-/// deny: another member is fully trusted only where the owner saved full trust
-/// on the Agent, on that Room and on that member.
+/// A Room or member layer the owner never saved adds no rule of its own: it
+/// follows the Agent's rule. One the owner saved still applies. The exception
+/// is full trust on the Agent, which is the owner's trust in their own
+/// messages only: anyone else meets every layer, and an unsaved layer keeps
+/// its default, which is to deny. Another member is fully trusted only where
+/// the owner saved full trust on the Agent, on that Room and on that member.
 fn applicable<'a>(layers: &[ToolLayer<'a>], from_owner: bool) -> Vec<&'a ToolPolicy> {
-    let agent_trusts = from_owner
+    let trust_kept_from_others = !from_owner
         && layers
             .first()
             .is_some_and(|agent| agent.iter().all(|(_, rule)| rule.is_full_trust()));
@@ -191,7 +191,7 @@ fn applicable<'a>(layers: &[ToolLayer<'a>], from_owner: bool) -> Vec<&'a ToolPol
         .flat_map(|(index, layer)| {
             layer
                 .iter()
-                .filter(move |(saved, _)| index == 0 || *saved || !agent_trusts)
+                .filter(move |(saved, _)| index == 0 || *saved || trust_kept_from_others)
                 .map(|(_, rule)| *rule)
         })
         .collect()
@@ -369,6 +369,9 @@ impl Ledger {
             db.execute_batch("ALTER TABLE model_profiles ADD COLUMN web_search INTEGER NOT NULL DEFAULT 1 CHECK(web_search IN (0,1))")?;
         }
         db.execute_batch("CREATE TABLE IF NOT EXISTS external_sessions (scope TEXT NOT NULL, profile TEXT NOT NULL, session TEXT NOT NULL, counters TEXT NOT NULL DEFAULT '', PRIMARY KEY(scope,profile))")?;
+        // The last revision of a layer the owner cleared, so a later save
+        // never reuses a revision (see `clear_policy`).
+        db.execute_batch("CREATE TABLE IF NOT EXISTS cleared_policies (scope TEXT PRIMARY KEY, revision INTEGER NOT NULL) STRICT")?;
         db.execute_batch("COMMIT")?;
         db.pragma_update(None, "foreign_keys", true)?;
         Ok(Self {
@@ -460,6 +463,49 @@ impl Ledger {
         };
         self.write_policy(&scope.layers()?[index], expected_revision, policy)
     }
+    /// Clears a Room or member layer: it adds no rule of its own again and
+    /// follows the Agent, as a layer the owner never saved does. Its revision
+    /// reads 0 again, which only ever means "not saved"; a later save goes on
+    /// above the cleared revision, so no saved revision is used twice and an
+    /// approval given under one never matches another.
+    pub fn clear_policy(
+        &mut self,
+        owner: &str,
+        scope: &Scope,
+        layer: Layer,
+        expected_revision: i64,
+    ) -> Result<()> {
+        self.owner(owner)?;
+        verify(&self.db, scope)?;
+        let index = match layer {
+            Layer::Agent => return Err(Error::Invalid("layer")),
+            Layer::Room => 1,
+            Layer::Requester => 2,
+        };
+        let layers = scope.layers()?;
+        let k = &layers[index];
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: i64 = tx
+            .query_row("SELECT revision FROM policies WHERE scope=?", [k], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .unwrap_or(0);
+        if current != expected_revision {
+            return Err(Error::Conflict);
+        }
+        if current != 0 {
+            tx.execute(
+                "INSERT INTO cleared_policies VALUES (?,?) ON CONFLICT(scope) DO UPDATE SET revision=max(revision,excluded.revision)",
+                (k, current),
+            )?;
+            tx.execute("DELETE FROM policies WHERE scope=?", [k])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
     /// The host must verify this agent against its authenticated owner API first.
     /// Uses the same key as runtime accounting, without inventing a Room binding.
     pub fn set_agent_policy(
@@ -492,9 +538,21 @@ impl Ledger {
         if current != expected_revision {
             return Err(Error::Conflict);
         }
-        tx.execute("INSERT INTO policies VALUES (?,?,?) ON CONFLICT(scope) DO UPDATE SET revision=excluded.revision,config=excluded.config",(&k,current+1,json(policy)?))?;
+        let cleared: i64 = tx
+            .query_row(
+                "SELECT revision FROM cleared_policies WHERE scope=?",
+                [&k],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let next = current
+            .max(cleared)
+            .checked_add(1)
+            .ok_or(Error::Invalid("revision"))?;
+        tx.execute("INSERT INTO policies VALUES (?,?,?) ON CONFLICT(scope) DO UPDATE SET revision=excluded.revision,config=excluded.config",(&k,next,json(policy)?))?;
         tx.commit()?;
-        Ok(current + 1)
+        Ok(next)
     }
     pub fn agent_policy(&self, owner: &str, agent: &str) -> Result<PolicyVersion> {
         self.owner(owner)?;

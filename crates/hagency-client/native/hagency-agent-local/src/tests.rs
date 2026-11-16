@@ -351,8 +351,8 @@ fn full_trust_on_the_agent_alone_gives_another_member_nothing() {
         ToolPolicy::AskOwner
     );
 }
-/// Without full trust on the Agent an unsaved layer keeps its default, which
-/// denies, and full trust on a Room or member alone opens nothing.
+/// Full trust on a Room or member alone opens nothing: the Agent's own rule
+/// still applies, and an Agent nobody saved denies.
 #[test]
 fn full_trust_below_the_agent_does_not_lift_the_agents_own_rule() {
     let temp = tempfile::tempdir().unwrap();
@@ -386,7 +386,7 @@ fn full_trust_below_the_agent_does_not_lift_the_agents_own_rule() {
         ledger.tool_disposition(&later, 13).unwrap(),
         ToolPolicy::AskOwner
     );
-    // An Agent that asks, with a Room nobody saved, still denies there.
+    // An Agent that asks, with a Room nobody saved: it asks there too.
     let mut other = s.clone();
     other.binding = "b2".into();
     other.room = "!other:example.org".into();
@@ -394,10 +394,119 @@ fn full_trust_below_the_agent_does_not_lift_the_agents_own_rule() {
     ledger.reserve(&other, "third", "elsewhere", 10, 14).unwrap();
     let mut elsewhere = tool(&other, [1, 0, 0], "high");
     elsewhere.dispatch = "elsewhere".into();
+    assert_eq!(
+        ledger.tool_disposition(&elsewhere, 15).unwrap(),
+        ToolPolicy::AskOwner
+    );
+}
+/// A Room or member layer the owner never saved follows the Agent's rule, for
+/// the owner's messages and for anyone else's. A saved layer still applies.
+#[test]
+fn an_unsaved_room_or_member_follows_the_agent() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    let member = scope();
+    assert_ne!(member.requester, OWNER);
+    let mut own = member.clone();
+    own.requester = OWNER.into();
+    ledger.register_binding(OWNER, &member).unwrap();
+    // Nothing saved anywhere: the Agent's default denies.
+    ledger.reserve(&member, "call 1", "nothing saved", 10, 10).unwrap();
+    let mut nothing = tool(&member, [0, 0, 0], "high");
+    nothing.dispatch = "nothing saved".into();
+    assert!(matches!(ledger.tool_disposition(&nothing, 11), Err(Error::Denied)));
+    // "Ask" saved on the Agent only: the owner is asked, whoever wrote.
+    ledger
+        .set_policy(OWNER, &member, Layer::Agent, 0, &config(1000, Period::Lifetime))
+        .unwrap();
+    for (n, s) in [(2, &member), (3, &own)] {
+        let dispatch = format!("ask {n}");
+        ledger.reserve(s, &format!("call {n}"), &dispatch, 10, 12).unwrap();
+        let mut ask = tool(s, [1, 0, 0], "high");
+        ask.dispatch = dispatch;
+        assert_eq!(ledger.tool_disposition(&ask, 13).unwrap(), ToolPolicy::AskOwner);
+    }
+    // Exact rules on the Agent: they decide there too.
+    let mut rules = config(1000, Period::Lifetime);
+    rules.high_risk = ToolPolicy::AllowWithRules {
+        tools: vec!["Bash".into()],
+        directories: vec!["/any/folder".into()],
+    };
+    ledger
+        .set_policy(OWNER, &member, Layer::Agent, 1, &rules)
+        .unwrap();
+    ledger.reserve(&member, "call 4", "rules", 10, 14).unwrap();
+    let mut allowed = tool(&member, [2, 0, 0], "high");
+    allowed.dispatch = "rules".into();
+    ledger.authorize_tool(&allowed, 15).unwrap();
+    let mut elsewhere = allowed.clone();
+    elsewhere.canonical_directory = "/another/folder".into();
+    assert!(matches!(ledger.tool_disposition(&elsewhere, 15), Err(Error::Denied)));
+    // A Room the owner saved as "deny" still denies under those rules.
+    let mut denied = config(1000, Period::Lifetime);
+    denied.high_risk = ToolPolicy::Deny;
+    ledger
+        .set_policy(OWNER, &member, Layer::Room, 0, &denied)
+        .unwrap();
+    ledger.reserve(&member, "call 5", "room denies", 10, 16).unwrap();
+    let mut blocked = tool(&member, [2, 1, 0], "high");
+    blocked.dispatch = "room denies".into();
+    assert!(matches!(ledger.tool_disposition(&blocked, 17), Err(Error::Denied)));
+}
+/// Clearing a Room or member makes it follow the Agent again. Its revision
+/// reads 0, which only means "not saved", and the next save goes on above the
+/// cleared one, so a request checked under the old rule is not admitted.
+#[test]
+fn a_cleared_room_follows_the_agent_and_never_reuses_a_revision() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    let s = scope();
+    ledger.register_binding(OWNER, &s).unwrap();
+    ledger
+        .set_policy(OWNER, &s, Layer::Agent, 0, &config(1000, Period::Lifetime))
+        .unwrap();
+    let mut denied = config(1000, Period::Lifetime);
+    denied.high_risk = ToolPolicy::Deny;
+    assert_eq!(ledger.set_policy(OWNER, &s, Layer::Room, 0, &denied).unwrap(), 1);
+    ledger.reserve(&s, "call 1", "saved", 10, 10).unwrap();
+    let mut saved = tool(&s, [1, 1, 0], "high");
+    saved.dispatch = "saved".into();
+    assert!(matches!(ledger.tool_disposition(&saved, 11), Err(Error::Denied)));
+    // Only the owner clears, against the revision shown, and never the Agent.
     assert!(matches!(
-        ledger.tool_disposition(&elsewhere, 15),
-        Err(Error::Denied)
+        ledger.clear_policy("@other:example.org", &s, Layer::Room, 1),
+        Err(Error::Unauthorized)
     ));
+    assert!(matches!(ledger.clear_policy(OWNER, &s, Layer::Room, 0), Err(Error::Conflict)));
+    assert!(matches!(ledger.clear_policy(OWNER, &s, Layer::Agent, 1), Err(Error::Invalid(_))));
+    ledger.clear_policy(OWNER, &s, Layer::Room, 1).unwrap();
+    assert_eq!(ledger.policy_snapshot(&s).unwrap()[1].revision, 0);
+    // Clearing a layer that is not saved changes nothing.
+    ledger.clear_policy(OWNER, &s, Layer::Room, 0).unwrap();
+    // The cleared Room follows the Agent, which asks.
+    ledger.reserve(&s, "call 2", "cleared", 10, 12).unwrap();
+    let mut cleared = tool(&s, [1, 0, 0], "high");
+    cleared.dispatch = "cleared".into();
+    assert_eq!(ledger.tool_disposition(&cleared, 13).unwrap(), ToolPolicy::AskOwner);
+    // A request checked against the saved Room is not answered under this one.
+    assert!(matches!(ledger.tool_disposition(&saved, 13), Err(Error::Denied)));
+    // The next save goes on above the cleared revision.
+    assert!(matches!(ledger.set_policy(OWNER, &s, Layer::Room, 1, &denied), Err(Error::Conflict)));
+    assert_eq!(ledger.set_policy(OWNER, &s, Layer::Room, 0, &denied).unwrap(), 2);
+    assert!(matches!(ledger.tool_disposition(&saved, 14), Err(Error::Denied)));
+    ledger.clear_policy(OWNER, &s, Layer::Room, 2).unwrap();
+    assert_eq!(
+        ledger
+            .set_policy(OWNER, &s, Layer::Room, 0, &config(1000, Period::Lifetime))
+            .unwrap(),
+        3
+    );
+    // The same holds after the ledger is opened again.
+    drop(ledger);
+    let mut ledger = Ledger::open(temp.path().join("local.db"), OWNER).unwrap();
+    ledger.clear_policy(OWNER, &s, Layer::Requester, 0).unwrap();
+    ledger.clear_policy(OWNER, &s, Layer::Room, 3).unwrap();
+    assert_eq!(ledger.set_policy(OWNER, &s, Layer::Room, 0, &denied).unwrap(), 4);
 }
 /// Only the one rule that names every tool in every directory is full trust;
 /// any other rule is matched exactly, as before.
