@@ -216,7 +216,7 @@ pub async fn run<H: Host, C: Capture>(
                 OctosWait::Host(()) => unreachable!(),
             }
         };
-        let observation = observation.ok_or(Error::Unknown)?;
+        let observation = observation.ok_or(Error::Protocol("Octos event without its observation"))?;
         capture.observe(&observation).await?;
         match event {
             Event::Approval { approval_id, params, .. } => {
@@ -243,7 +243,7 @@ pub async fn run<H: Host, C: Capture>(
                         OctosWait::Event(event) => {
                             let withdrawn = matches!(&event, Event::ApprovalSettled { approval_id: id } if id == &approval_id)
                                 || matches!(&event, Event::Idle(_));
-                            if buffered.len() >= 256 { return Err(Error::Unknown); }
+                            if buffered.len() >= 256 { return Err(Error::Protocol("Octos events overflowed during a host step")); }
                             buffered.push_back((event, wire.last_observation().cloned()));
                             if withdrawn { break None; }
                         }
@@ -259,7 +259,7 @@ pub async fn run<H: Host, C: Capture>(
                         .map_err(|_| Error::Protocol("Octos approval write"))? {
                         octos::session::PreparedUpdate::WriteAccepted(_) => break,
                         octos::session::PreparedUpdate::Event(event) => {
-                            if buffered.len() >= 256 { return Err(Error::Unknown); }
+                            if buffered.len() >= 256 { return Err(Error::Protocol("Octos events overflowed during a host step")); }
                             buffered.push_back((event, wire.last_observation().cloned()));
                         }
                     }
@@ -316,7 +316,7 @@ pub async fn run<H: Host, C: Capture>(
                                 || matches!(&event, Event::TurnEnded {turn_id:id,..} if id==&turn_id)
                                 || matches!(&event, Event::Idle(_));
                             if buffered.len() >= 256 {
-                                return Err(Error::Unknown);
+                                return Err(Error::Protocol("Octos events overflowed during a host step"));
                             }
                             buffered.push_back((event, wire.last_observation().cloned()));
                             if withdrawn {
@@ -390,7 +390,7 @@ pub async fn run<H: Host, C: Capture>(
                             OctosWait::Event(event) => {
                                 let ended = matches!(&event, Event::TurnEnded { .. } | Event::Idle(_))
                                     || matches!(&event, Event::ToolCancelled {call_id} if call_id == &call.call_id);
-                                if buffered.len() >= 256 { return Err(Error::Unknown); }
+                                if buffered.len() >= 256 { return Err(Error::Protocol("Octos events overflowed during a host step")); }
                                 buffered.push_back((event, wire.last_observation().cloned()));
                                 if ended { break None; }
                             }
@@ -433,7 +433,7 @@ pub async fn run<H: Host, C: Capture>(
                             OctosWait::Event(event) => {
                                 let ended = matches!(&event, Event::TurnEnded { .. } | Event::Idle(_))
                                     || matches!(&event, Event::ToolCancelled {call_id} if call_id == &call.call_id);
-                                if buffered.len() >= 256 { return Err(Error::Unknown); }
+                                if buffered.len() >= 256 { return Err(Error::Protocol("Octos events overflowed during a host step")); }
                                 buffered.push_back((event, wire.last_observation().cloned()));
                                 if ended { break None; }
                             }
@@ -481,7 +481,7 @@ pub async fn run<H: Host, C: Capture>(
                             let ended = matches!(&event, Event::TurnEnded { .. } | Event::Idle(_))
                                 || matches!(&event, Event::ToolCancelled {call_id} if call_id==&call.call_id);
                             if buffered.len() >= 256 {
-                                return Err(Error::Unknown);
+                                return Err(Error::Protocol("Octos events overflowed during a host step"));
                             }
                             buffered.push_back((event, wire.last_observation().cloned()));
                             if ended {
@@ -545,5 +545,5 @@ pub async fn run<H: Host, C: Capture>(
             _ => {}
         }
     }
-    Err(Error::Unknown)
+    Err(Error::Protocol("Octos turn exceeded its event limit"))
 }

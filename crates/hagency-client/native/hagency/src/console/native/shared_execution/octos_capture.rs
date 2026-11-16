@@ -173,22 +173,30 @@ impl octos_turn::Host for Host {
         Ok(result)
     }
 }
+/// The turn still ends as unknown; the local log keeps which record step
+/// refused it and the store's reason, which carries no message text.
+fn refused(step: &'static str) -> impl FnOnce(hagency_store::Error) -> codex::Error {
+    move |error| {
+        tracing::warn!(step, ?error, "Shared Octos call record refused the turn's evidence");
+        codex::Error::Unknown
+    }
+}
 impl octos_turn::Capture for Capture {
     async fn bind(&mut self, process: &OwnedOctosSession) -> codex::Result<()> {
         let custody = self.receive.take().ok_or(codex::Error::Unknown)?.await.map_err(|_| codex::Error::Unknown)?;
-        self.sink = Some(custody.bind_started_octos_turn(process).await.map_err(|_| codex::Error::Unknown)?);
+        self.sink = Some(custody.bind_started_octos_turn(process).await.map_err(refused("bind"))?);
         Ok(())
     }
     async fn observe(&mut self, observation: &Observation) -> codex::Result<()> {
         if let Some(receipt) = self.sink.as_mut().ok_or(codex::Error::Unknown)?
-            .observe_octos(observation).await.map_err(|_| codex::Error::Unknown)? {
+            .observe_octos(observation).await.map_err(refused("observe"))? {
             self.receipt = Some(receipt);
         }
         Ok(())
     }
     async fn complete(&mut self, process: &OwnedOctosSession, text: &str) -> codex::Result<()> {
         self.receipt = Some(self.sink.as_mut().ok_or(codex::Error::Unknown)?
-            .finish_octos(process, text).await.map_err(|_| codex::Error::Unknown)?);
+            .finish_octos(process, text).await.map_err(refused("complete"))?);
         Ok(())
     }
 }
