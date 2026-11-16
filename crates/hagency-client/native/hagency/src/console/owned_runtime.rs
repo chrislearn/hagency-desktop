@@ -2561,8 +2561,15 @@ async fn run_turn<T: Transport>(
     #[cfg(unix)]
     let space = space_project(transport, owner, config, &scope).await;
     #[cfg(unix)]
+    let owner_directory = if config.host_files || config.shared_workspace {
+        Some(e2ee::owner_directory(transport, lease, config)?)
+    } else {
+        None
+    };
+    #[cfg(unix)]
     let (mut profile, workspace) = working_directory::for_turn(
         &config.profile,
+        owner_directory.as_deref(),
         owner,
         &scope,
         config.host_files,
