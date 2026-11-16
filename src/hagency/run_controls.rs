@@ -240,6 +240,17 @@ pub fn for_event(room: &RoomId, event: &str, include_thread: bool) -> Vec<Entry>
     entries.truncate(3);
     entries
 }
+/// Whether this room's run for the message `event` ended because it was
+/// stopped, as its run card says. The Agent's record of such a run is
+/// `failed`, which must not read as a failure to the person who sent it.
+pub fn stopped(room: &str, event: &str) -> bool {
+    STORE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entries
+        .iter()
+        .any(|e| e.card.room_id == room && e.card.event_id == event && e.card.state == RunState::Interrupted)
+}
 pub fn draft(key: &str, value: String) {
     if value.len() > protocol::MAX_INPUT_BYTES {
         return;
@@ -587,6 +598,34 @@ mod tests {
             assert!(e.unconfirmed_text().is_none());
             assert_eq!(e.draft, "an unsent newer edit");
         }
+    }
+
+    /// A stopped run is found by its room and message; a failed or running
+    /// one, or another message's, is not.
+    #[test]
+    fn a_stopped_run_is_found_for_its_own_message_only() {
+        let _guard = super::super::pending_questions::test_serial();
+        let mut cards = Vec::new();
+        for (key, event, state) in [
+            ("$card-stopped", "$stopped", RunState::Interrupted),
+            ("$card-failed", "$failed", RunState::Failed),
+            ("$card-running", "$running", RunState::Running),
+        ] {
+            let mut e = entry();
+            (e.key, e.card.event_id, e.card.state) = (key.into(), event.into(), state);
+            cards.push(e);
+        }
+        STORE.lock().unwrap_or_else(|e| e.into_inner()).entries.extend(cards.iter().cloned());
+        let found = [
+            stopped("!room:test", "$stopped"),
+            stopped("!other:test", "$stopped"),
+            stopped("!room:test", "$failed"),
+            stopped("!room:test", "$running"),
+            stopped("!room:test", "$trigger"),
+        ];
+        STORE.lock().unwrap_or_else(|e| e.into_inner()).entries
+            .retain(|entry| cards.iter().all(|card| card.key != entry.key));
+        assert_eq!(found, [true, false, false, false, false]);
     }
 
     #[test]

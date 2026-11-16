@@ -177,7 +177,10 @@ impl Host {
                 &self.records,
             )?;
             let mut history = Reader::from_source(source.clone(), &dispatch.room_id, &dispatch.event_id);
-            if runtime::kind(&self.config.credential_ref) == runtime::Kind::Claude {
+            // Claude Code compacts, and Octos trims its messages to the
+            // model's window before each call; neither reports Codex's
+            // context samples that would refill a byte allowance.
+            if matches!(runtime::kind(&self.config.credential_ref), runtime::Kind::Claude | runtime::Kind::Octos) {
                 history.use_native_compaction();
             }
             self.state = Some(State {

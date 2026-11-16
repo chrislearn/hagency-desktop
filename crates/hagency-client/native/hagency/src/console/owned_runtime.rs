@@ -398,12 +398,27 @@ pub(super) struct ApprovalView {
     pub proposal_id: String,
     pub args_digest: String,
     pub proposal: hagency_agent_local::ToolProposal,
+    /// The message whose run asks, and that message's thread, so the app can
+    /// show the request on it. Neither is part of the approved request.
+    pub event_id: String,
+    pub thread_root: String,
 }
 type DevicePin = super::device_execution::DeviceIdentity;
 struct ApprovalSlot {
     view: ApprovalView,
     pending: codex::PendingApproval,
     device: DevicePin,
+}
+/// How long an expired request is held, unlisted, for a wait that has not
+/// ended yet. Every wait has its own bound, a second or so after the request
+/// expires; this only bounds a slot whose wait never ends.
+const EXPIRED_APPROVAL_HELD_SECS: i64 = 30;
+/// Whether to keep holding a request. Dropping it closes the Agent's wait,
+/// which then reads as a refusal: an expired request stays held until the wait
+/// ends by itself, so the Agent is told nobody answered.
+fn hold_approval(slot: &ApprovalSlot, at: i64) -> bool {
+    !slot.pending.is_closed()
+        && slot.view.proposal.expires.saturating_add(EXPIRED_APPROVAL_HELD_SECS) > at
 }
 struct BindingHandle {
     cancel: watch::Sender<bool>,
@@ -446,6 +461,25 @@ impl Entry {
         self.bindings
             .get(binding)
             .is_some_and(|b| !*b.cancel.borrow() && b.status.borrow().phase != "stopped")
+    }
+    /// The requests that still wait for the owner. Answered requests and those
+    /// of stopped Rooms are dropped; an expired one stays held, unlisted,
+    /// until its wait ends (`hold_approval`).
+    fn waiting_approvals(&mut self, at: i64) -> Vec<ApprovalView> {
+        self.approvals.retain(|_, slot| hold_approval(slot, at));
+        let active: BTreeSet<_> = self
+            .bindings
+            .iter()
+            .filter(|(_, b)| !*b.cancel.borrow() && b.status.borrow().phase != "stopped")
+            .map(|(id, _)| id.clone())
+            .collect();
+        self.approvals
+            .retain(|_, slot| active.contains(&slot.view.proposal.scope.binding));
+        self.approvals
+            .values()
+            .filter(|slot| slot.view.proposal.expires > at)
+            .map(|slot| slot.view.clone())
+            .collect()
     }
     fn take_approval(
         &mut self,
@@ -819,6 +853,8 @@ impl OwnedRuntime {
         console: &Console,
         expected: &DevicePin,
         pending: codex::PendingApproval,
+        event_id: &str,
+        thread_root: &str,
     ) -> Result<(), RuntimeError> {
         use sha2::{Digest, Sha256};
         let device = console.authorized_device().await.map_err(device_error)?;
@@ -831,9 +867,8 @@ impl OwnedRuntime {
         let entry = entries
             .get_mut(&identity(&device, agent))
             .ok_or(RuntimeError::Authorization)?;
-        entry
-            .approvals
-            .retain(|_, slot| slot.view.proposal.expires > now() && !slot.pending.is_closed());
+        let at = now();
+        entry.approvals.retain(|_, slot| hold_approval(slot, at));
         if *entry.cancel.borrow()
             || entry.task.is_finished()
             || entry.device != DevicePin::from(&device)
@@ -856,6 +891,8 @@ impl OwnedRuntime {
             proposal_id: proposal_id.clone(),
             args_digest,
             proposal: pending.proposal.clone(),
+            event_id: event_id.into(),
+            thread_root: thread_root.into(),
         };
         entry.approvals.insert(
             proposal_id,
@@ -884,22 +921,20 @@ impl OwnedRuntime {
         {
             return Err(RuntimeError::Authorization);
         }
-        entry
-            .approvals
-            .retain(|_, slot| slot.view.proposal.expires > now() && !slot.pending.is_closed());
-        let active: BTreeSet<_> = entry
-            .bindings
-            .iter()
-            .filter(|(_, b)| !*b.cancel.borrow() && b.status.borrow().phase != "stopped")
-            .map(|(id, _)| id.clone())
-            .collect();
-        entry
-            .approvals
-            .retain(|_, slot| active.contains(&slot.view.proposal.scope.binding));
-        Ok(entry
-            .approvals
-            .values()
-            .map(|slot| slot.view.clone())
+        Ok(entry.waiting_approvals(now()))
+    }
+    /// The requests of every local Agent that runs on this device for this
+    /// owner, for the app-wide reminder. An Agent that is stopping is skipped.
+    pub async fn pending_all(&self, console: &Console) -> Result<Vec<ApprovalView>, RuntimeError> {
+        let device = console.authorized_device().await.map_err(device_error)?;
+        device.bearer().map_err(|_| RuntimeError::Authorization)?;
+        let pin = DevicePin::from(&device);
+        let at = now();
+        let mut entries = self.entries_for(&device).await?;
+        Ok(entries
+            .values_mut()
+            .filter(|entry| entry.device == pin && !*entry.cancel.borrow() && !entry.task.is_finished())
+            .flat_map(|entry| entry.waiting_approvals(at))
             .collect())
     }
     #[allow(clippy::too_many_arguments)]
@@ -2561,8 +2596,15 @@ async fn run_turn<T: Transport>(
     #[cfg(unix)]
     let space = space_project(transport, owner, config, &scope).await;
     #[cfg(unix)]
+    let owner_directory = if config.host_files || config.shared_workspace {
+        Some(e2ee::owner_directory(transport, lease, config)?)
+    } else {
+        None
+    };
+    #[cfg(unix)]
     let (mut profile, workspace) = working_directory::for_turn(
         &config.profile,
+        owner_directory.as_deref(),
         owner,
         &scope,
         config.host_files,
@@ -2605,6 +2647,8 @@ async fn run_turn<T: Transport>(
             None
         };
     let has_approval_host = host.is_some();
+    // The message whose run this is: the app shows its requests on it.
+    let asking = (prepared.dispatch.event_id.clone(), prepared.dispatch.thread_root.clone());
     let bridge = host.clone().map(|console| {
         tokio::spawn(async move {
             while let Some(pending) = receiver.recv().await {
@@ -2612,7 +2656,7 @@ async fn run_turn<T: Transport>(
                     .console
                     .0
                     .owned_runtime
-                    .offer_approval(&console.console, &console.pin, pending)
+                    .offer_approval(&console.console, &console.pin, pending, &asking.0, &asking.1)
                     .await
                     .is_err()
                 {
@@ -4948,6 +4992,8 @@ for raw in sys.stdin:
                         proposal_id: "nonce".into(),
                         args_digest: "exact-proposal-digest".into(),
                         proposal,
+                        event_id: "$event-a".into(),
+                        thread_root: "$event-a".into(),
                     },
                     pending,
                     device: pin.clone(),
@@ -5063,6 +5109,98 @@ for raw in sys.stdin:
         assert_eq!(count, 1);
         assert!(decision.await.unwrap());
         entry.lock().await.task.abort();
+    }
+    /// An expired request leaves the list at once but stays held until the
+    /// Agent's own wait ends, so that wait reads "nobody answered", never the
+    /// refusal of a closed channel.
+    #[tokio::test]
+    async fn an_expired_request_is_unlisted_but_held_until_its_wait_ends() {
+        let pin = DevicePin {
+            origin: "https://server.test".into(),
+            issuer: "https://server.test/auth/".into(),
+            subject: "subject-a".into(),
+            owner: OWNER.into(),
+            user: "subject-a".into(),
+            id: "device-a".into(),
+            generation: 4,
+        };
+        let request = |id: &str, binding: &str, expires: i64| {
+            let mut scope = event().scope();
+            scope.binding = binding.into();
+            let proposal = hagency_agent_local::ToolProposal {
+                scope,
+                dispatch: "dispatch-a".into(),
+                tool: "octos.shell".into(),
+                arguments: serde_json::json!({"command":"ls"}),
+                canonical_directory: "/tmp/room".into(),
+                risk: "high".into(),
+                policy_revision: [1, 0, 0],
+                expires,
+            };
+            let (pending, decision) = codex::pending_approval(proposal.clone());
+            let slot = ApprovalSlot {
+                view: ApprovalView {
+                    proposal_id: id.into(),
+                    args_digest: "d".repeat(64),
+                    proposal,
+                    event_id: "$asked".into(),
+                    thread_root: "$asked".into(),
+                },
+                pending,
+                device: pin.clone(),
+            };
+            ((id.to_owned(), slot), decision)
+        };
+        let (open, mut open_wait) = request("open", "binding-a", 100);
+        let (expired, mut expired_wait) = request("expired", "binding-a", 50);
+        let (stale, mut stale_wait) = request("stale", "binding-a", 50 - EXPIRED_APPROVAL_HELD_SECS);
+        let (ended, ended_wait) = request("ended", "binding-a", 100);
+        let (stopped, mut stopped_wait) = request("stopped", "binding-b", 100);
+        drop(ended_wait);
+        let (cancel, _receiver) = watch::channel(false);
+        let (_status, status) = watch::channel(RuntimeStatus::new("agent-a", "test", None));
+        let (_stopped_status, stopped_status) =
+            watch::channel(RuntimeStatus::new("agent-a", "stopped", None));
+        let handle = |status: &watch::Receiver<RuntimeStatus>| BindingHandle {
+            cancel: watch::channel(false).0,
+            status: status.clone(),
+        };
+        let mut entry = Entry {
+            commands: mpsc::unbounded_channel().0,
+            bindings: BTreeMap::from([
+                ("binding-a".into(), handle(&status)),
+                ("binding-b".into(), handle(&stopped_status)),
+            ]),
+            cancel,
+            status,
+            task: TaskCustody::default().track(tokio::spawn(std::future::pending())),
+            device: pin.clone(),
+            approvals: BTreeMap::from([open, expired, stale, ended, stopped]),
+        };
+        let listed = entry.waiting_approvals(60);
+        assert_eq!(listed.iter().map(|v| v.proposal_id.as_str()).collect::<Vec<_>>(), ["open"]);
+        assert_eq!((listed[0].event_id.as_str(), listed[0].thread_root.as_str()), ("$asked", "$asked"));
+        // Still held, so its wait is still open: the Agent's own timeout ends it.
+        assert!(entry.approvals.contains_key("expired"));
+        assert!(expired_wait.try_recv().is_err_and(|e| e == tokio::sync::oneshot::error::TryRecvError::Empty));
+        // An expired request cannot be approved any more.
+        assert!(matches!(
+            entry.take_approval(&pin, "agent-a", "expired", &"d".repeat(64), &[], 60),
+            Err(RuntimeError::Approval)
+        ));
+        // Held past the bound, ended, or in a stopped Room: dropped.
+        for gone in ["stale", "ended", "stopped"] {
+            assert!(!entry.approvals.contains_key(gone), "{gone}");
+        }
+        use tokio::sync::oneshot::error::TryRecvError;
+        assert!(matches!(stale_wait.try_recv(), Err(TryRecvError::Closed)));
+        assert!(matches!(stopped_wait.try_recv(), Err(TryRecvError::Closed)));
+        assert!(matches!(open_wait.try_recv(), Err(TryRecvError::Empty)));
+        // Once the Agent stops waiting, the held request goes too.
+        drop(expired_wait);
+        assert!(entry.waiting_approvals(61).iter().all(|v| v.proposal_id == "open"));
+        assert!(!entry.approvals.contains_key("expired"));
+        entry.task.abort();
     }
     struct RequestFacts {
         expected: inbox::Dispatch,

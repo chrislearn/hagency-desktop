@@ -3,7 +3,7 @@
 //! the host starts the shell under its own stricter sandbox and tracks it.
 use super::super::SharedTextProcessSource;
 use crate::octos::profile_binding::RunningProfileGuard;
-use std::{path::PathBuf, sync::{Arc, atomic::AtomicUsize}, time::Duration};
+use std::{path::PathBuf, sync::{Arc, atomic::{AtomicBool, AtomicUsize}}, time::Duration};
 #[cfg(target_os = "macos")]
 use std::{collections::BTreeMap, path::Path, sync::atomic::Ordering, time::Instant};
 
@@ -48,6 +48,25 @@ mod toolchain_tests {
     }
 }
 
+/// What keeps a shell's commands allowed to run.
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+enum Liveness {
+    /// A pooled Octos process: its live activity under its running profile.
+    Shared { source: SharedTextProcessSource, profile: Arc<RunningProfileGuard> },
+    /// The owner's own Agent: the turn that was given the shell.
+    Turn(Arc<AtomicBool>),
+}
+#[cfg(target_os = "macos")]
+impl Liveness {
+    fn live(&self) -> bool {
+        match self {
+            Self::Shared { source, profile } => source.has_live_activity() && profile.check().is_ok(),
+            Self::Turn(live) => live.load(Ordering::Acquire),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SharedOctosShell {
     #[cfg(target_os = "macos")]
@@ -55,9 +74,7 @@ pub struct SharedOctosShell {
     #[cfg(target_os = "macos")]
     workspace: PathBuf,
     #[cfg(target_os = "macos")]
-    source: SharedTextProcessSource,
-    #[cfg(target_os = "macos")]
-    profile: Arc<RunningProfileGuard>,
+    liveness: Liveness,
     #[cfg(target_os = "macos")]
     pending: Arc<AtomicUsize>,
     #[cfg(target_os = "macos")]
@@ -91,8 +108,8 @@ impl SharedOctosShell {
         patch_supported: bool) -> Self {
         #[cfg(target_os = "macos")]
         {
-        Self { guardian, workspace, source, profile, pending, executable, patch_supported,
-            sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        Self { guardian, workspace, liveness: Liveness::Shared { source, profile }, pending, executable,
+            patch_supported, sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         }
         }
         #[cfg(not(target_os = "macos"))]
@@ -101,9 +118,26 @@ impl SharedOctosShell {
             Self {}
         }
     }
+    /// The same confined shell for the owner's own Octos Agent, in the folder
+    /// the owner gave it. Its commands may run only while `live` is set (the
+    /// turn that was given the shell); clearing it stops a running command.
+    /// `pending` counts this Agent's commands across turns: a command whose
+    /// stop was not proven keeps every later one refused.
+    pub fn for_turn(guardian: PathBuf, workspace: PathBuf, live: Arc<AtomicBool>, pending: Arc<AtomicUsize>) -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            Self { guardian, workspace, liveness: Liveness::Turn(live), pending, executable: PathBuf::new(),
+                patch_supported: false, sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())) }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (guardian, workspace, live, pending);
+            Self {}
+        }
+    }
     #[cfg(target_os = "macos")]
     fn active(&self) -> bool {
-        self.source.has_live_activity() && self.profile.check().is_ok()
+        self.liveness.live()
             && self.workspace.canonicalize().ok().as_deref() == Some(self.workspace.as_path())
     }
     /// Never admits a call: the host must first verify the work and the

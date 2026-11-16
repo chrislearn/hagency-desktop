@@ -180,6 +180,17 @@ pub(super) fn message_root<T: Transport>(transport: &T, lease: &LeaseRef, config
     let (directory, _) = namespace(transport, lease, config)?;
     agent_root(&directory, &config.agent_id)
 }
+/// The owner's private folder, which holds the file tools' workspace state.
+/// It is not the folder above the provider home: a local Claude or Octos
+/// sign-in has the person's own home folder there. Only the Unix turn setup
+/// asks for it.
+#[cfg(unix)]
+pub(super) fn owner_directory<T: Transport>(transport: &T, lease: &LeaseRef, config: &StartConfig)
+    -> Result<std::path::PathBuf, RuntimeError>
+{
+    let (directory, _) = namespace(transport, lease, config)?;
+    directory.canonicalize().map_err(|_| RuntimeError::Profile)
+}
 
 /// Addressing is checked before the server creates a dispatch or a local call
 /// hold. Missing room keys leave the original candidate available for retry.

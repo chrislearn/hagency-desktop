@@ -441,6 +441,9 @@ pub enum Command {
     PrepareAgentWorkspace {
         agent_id: String,
     },
+    /// The tool requests of every local Agent running here that wait for
+    /// this owner. A read; deciding one is `Local` with `Decision`.
+    LocalApprovals,
     Provider {
         action: ProviderAction,
     },
@@ -583,6 +586,7 @@ fn request(command: Command) -> Result<(&'static str, String, Option<Value>), Na
             ("POST", format!("{root}/owner-projects/{scope}/{suffix}"))
         }
         Command::Devices => ("GET", format!("{root}/owned-agents/devices")),
+        Command::LocalApprovals => ("GET", format!("{root}/owned-agents/pending-approvals")),
         Command::AgentDetails { agent_id } => {
             key(&agent_id)?;
             ("GET", format!("{root}/owned-agents/{agent_id}"))
@@ -1967,6 +1971,8 @@ mod owner_scope_command_tests {
             request(Command::Devices).unwrap().1,
             "/console/api/owned-agents/devices"
         );
+        let (method, path, body) = request(Command::LocalApprovals).unwrap();
+        assert_eq!((method, path.as_str(), body), ("GET", "/console/api/owned-agents/pending-approvals", None));
         let (method, path, body) = request(Command::AssignAgentToCurrentDevice {
             agent_id: "a".into(),
             expected_generation: 3,

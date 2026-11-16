@@ -6,8 +6,13 @@ use hagency_runtime::owned::SharedProject;
 /// `space` is the shared project folder of the Room's space, when it has one:
 /// without the owner's shared project or host file tools, the turn works
 /// there instead of the Room's own folder, with the same native tools.
+///
+/// `owner_directory` is the owner's private folder, which holds the state of
+/// the host file tools; only those need it.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn for_turn(
     configured: &Profile,
+    owner_directory: Option<&std::path::Path>,
     owner: &str,
     scope: &Scope,
     host_files: bool,
@@ -18,14 +23,14 @@ pub(super) fn for_turn(
     let mut profile = configured.clone();
     let workspace = if shared_workspace {
         let expected = shared_workspace_pin.ok_or(RuntimeError::Profile)?;
-        let directory = profile.home.parent().ok_or(RuntimeError::Profile)?;
+        let directory = owner_directory.ok_or(RuntimeError::Profile)?;
         let workspace = Workspace::open_shared(directory, &profile.cwd, owner, scope).map_err(|_| RuntimeError::Profile)?;
         if workspace.shared_pin().map_err(|_| RuntimeError::Profile)? != expected { return Err(RuntimeError::Profile); }
         profile.cwd = workspace.canonical_directory().to_path_buf();
         Some(workspace)
     } else if host_files {
         // Preserve the existing explicitly granted file-capability namespace.
-        let directory = profile.home.parent().ok_or(RuntimeError::Profile)?;
+        let directory = owner_directory.ok_or(RuntimeError::Profile)?;
         let workspace =
             Workspace::open(directory, owner, scope).map_err(|_| RuntimeError::Profile)?;
         profile.cwd = workspace.canonical_directory().to_path_buf();
@@ -88,19 +93,19 @@ mod tests {
             requester: "@owner:test".into(),
             thread: "!dm:test".into(),
         };
-        let (dm, files) = for_turn(&profile, "@owner:test", &scope, false, false, None, None).unwrap();
+        let (dm, files) = for_turn(&profile, None, "@owner:test", &scope, false, false, None, None).unwrap();
         assert!(files.is_none());
         assert!(dm.cwd.starts_with(&base));
         assert_ne!(dm.cwd, base);
         let mut group = scope.clone();
         group.binding = "group".into();
         group.room = "!group:test".into();
-        let (group, files) = for_turn(&profile, "@owner:test", &group, false, false, None, None).unwrap();
+        let (group, files) = for_turn(&profile, None, "@owner:test", &group, false, false, None, None).unwrap();
         assert!(files.is_none());
         assert_ne!(dm.cwd, group.cwd);
         assert_eq!(
             dm.cwd,
-            for_turn(&profile, "@owner:test", &scope, false, false, None, None)
+            for_turn(&profile, None, "@owner:test", &scope, false, false, None, None)
                 .unwrap()
                 .0
                 .cwd
@@ -123,20 +128,24 @@ mod tests {
         let project = temp.path().join("project");
         std::fs::create_dir(&project).unwrap();
         let project = project.canonicalize().unwrap();
+        // A local Claude or Octos sign-in: the provider home is the person's
+        // own home folder, outside the owner's folder.
         let profile = Profile {
-            executable: owner.join("provider"), home: owner.join("provider-home"),
-            codex_home: owner.join("codex-home"), cwd: project.clone(), model: "fixture".into(),
-            effort: "low".into(), shared_auth: false, web_search: false,
+            executable: owner.join("provider"), home: temp.path().join("person"),
+            codex_home: temp.path().join("person/.octos"), cwd: project.clone(), model: "fixture".into(),
+            effort: "low".into(), shared_auth: true, web_search: false,
         };
         let scope = Scope { agent:"agent".into(), binding:"room".into(), room:"!room:test".into(), requester:"@owner:test".into(), thread:"$thread".into() };
-        assert!(for_turn(&profile, "@owner:test", &scope, false, true, None, None).is_err());
+        assert!(for_turn(&profile, Some(owner.as_path()), "@owner:test", &scope, false, true, None, None).is_err());
         let pin = super::super::shared_workspace_pin(&project).unwrap();
-        let (selected, files) = for_turn(&profile, "@owner:test", &scope, false, true, Some(&pin), None).unwrap();
+        // Without the owner's folder there is nowhere to keep the workspace state.
+        assert!(for_turn(&profile, None, "@owner:test", &scope, false, true, Some(&pin), None).is_err());
+        let (selected, files) = for_turn(&profile, Some(owner.as_path()), "@owner:test", &scope, false, true, Some(&pin), None).unwrap();
         assert_eq!(selected.cwd, project);
         assert!(files.unwrap().is_shared());
         // Room files do not land in the project itself: they keep the folder
         // this Room has without the opt-in.
-        let (plain, _) = for_turn(&profile, "@owner:test", &scope, false, false, None, None).unwrap();
+        let (plain, _) = for_turn(&profile, None, "@owner:test", &scope, false, false, None, None).unwrap();
         let room_files = for_room_files(&profile, &selected, "@owner:test", &scope, true).unwrap();
         assert_eq!(room_files, plain.cwd);
         assert_ne!(room_files, project);
@@ -165,31 +174,31 @@ mod tests {
             effort: "low".into(), shared_auth: false, web_search: false,
         };
         let scope = Scope { agent:"agent".into(), binding:"room".into(), room:"!room:test".into(), requester:"@owner:test".into(), thread:"$thread".into() };
-        let (turn, files) = for_turn(&profile, "@owner:test", &scope, false, false, None, Some(&space)).unwrap();
+        let (turn, files) = for_turn(&profile, None, "@owner:test", &scope, false, false, None, Some(&space)).unwrap();
         assert_eq!(turn.cwd, folder);
         assert!(files.is_none());
         // Room files go where the Agent works.
         assert_eq!(for_room_files(&profile, &turn, "@owner:test", &scope, false).unwrap(), folder);
         // Another Agent in another Room of the space works in the same folder.
         let other = Scope { agent:"agent-b".into(), binding:"room-b".into(), room:"!room-b:test".into(), requester:"@guest:test".into(), thread:"$other".into() };
-        assert_eq!(for_turn(&profile, "@owner:test", &other, false, false, None, Some(&space)).unwrap().0.cwd, folder);
+        assert_eq!(for_turn(&profile, None, "@owner:test", &other, false, false, None, Some(&space)).unwrap().0.cwd, folder);
         // Without a space folder the Room keeps its own folder.
-        let (plain, _) = for_turn(&profile, "@owner:test", &scope, false, false, None, None).unwrap();
+        let (plain, _) = for_turn(&profile, None, "@owner:test", &scope, false, false, None, None).unwrap();
         assert!(plain.cwd.starts_with(work.join(".hagency-room-workspaces")));
         // Host file tools keep their own workspace.
-        let (hosted, files) = for_turn(&profile, "@owner:test", &scope, true, false, None, Some(&space)).unwrap();
+        let (hosted, files) = for_turn(&profile, Some(owner.as_path()), "@owner:test", &scope, true, false, None, Some(&space)).unwrap();
         assert!(hosted.cwd.starts_with(owner.join("room-workspaces")) && files.is_some());
         // That workspace holds the Room's lock until it is let go.
         drop(files);
         // The owner's shared project stays the owner's choice.
         let chosen = Profile { cwd: project.clone(), ..profile.clone() };
         let pin = super::super::shared_workspace_pin(&project).unwrap();
-        let (selected, files) = for_turn(&chosen, "@owner:test", &scope, false, true, Some(&pin), Some(&space)).unwrap();
+        let (selected, files) = for_turn(&chosen, Some(owner.as_path()), "@owner:test", &scope, false, true, Some(&pin), Some(&space)).unwrap();
         assert_eq!(selected.cwd, project);
         assert!(files.unwrap().is_shared());
         // A space folder replaced after it was chosen is not used.
         std::fs::remove_dir(&folder).unwrap();
-        let (fallback, _) = for_turn(&profile, "@owner:test", &scope, false, false, None, Some(&space)).unwrap();
+        let (fallback, _) = for_turn(&profile, None, "@owner:test", &scope, false, false, None, Some(&space)).unwrap();
         assert_eq!(fallback.cwd, plain.cwd);
     }
 }

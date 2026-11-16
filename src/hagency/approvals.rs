@@ -26,15 +26,16 @@ pub(super) struct Notices {
     seen: HashSet<String>,
 }
 impl Notices {
-    pub fn new_count(&mut self, rows: &[Value]) -> usize {
+    /// The requests in `rows` this page has not seen before.
+    pub fn new_ids(&mut self, rows: &[Value]) -> Vec<String> {
         // Only current live IDs are retained, bounding memory with the Host queue.
         let next: HashSet<String> = rows
             .iter()
             .filter_map(|r| r["proposalId"].as_str().map(str::to_owned))
             .collect();
-        let count = next.difference(&self.seen).count();
+        let new = next.difference(&self.seen).cloned().collect();
         self.seen = next;
-        count
+        new
     }
 }
 pub(super) fn details(row: &Value, at: i64) -> String {
@@ -111,10 +112,10 @@ mod tests {
     #[test]
     fn repeated_poll_does_not_repeat_notification_and_new_requests_do() {
         let mut notices = Notices::default();
-        assert_eq!(notices.new_count(&[row("one")]), 1);
-        assert_eq!(notices.new_count(&[row("one")]), 0);
-        assert_eq!(notices.new_count(&[row("one"), row("two")]), 1);
-        assert_eq!(notices.new_count(&[]), 0);
+        assert_eq!(notices.new_ids(&[row("one")]), ["one"]);
+        assert!(notices.new_ids(&[row("one")]).is_empty());
+        assert_eq!(notices.new_ids(&[row("one"), row("two")]), ["two"]);
+        assert!(notices.new_ids(&[]).is_empty());
     }
     #[test]
     fn readable_details_retain_exact_write_arguments() {

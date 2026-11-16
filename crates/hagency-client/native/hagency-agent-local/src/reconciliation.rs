@@ -270,8 +270,8 @@ fn collect(db: &mut Connection, authority: &PersonalAuditAuthority) -> Result<Pe
                 history.continuity_rows.add(&count);
                 continuity(&tx, table, authority, &mut history)?;
             }
-            "bindings" | "policies" | "approvals" | "contexts" | "model_profiles"
-            | "dispatches" => {
+            "bindings" | "policies" | "cleared_policies" | "approvals" | "contexts"
+            | "model_profiles" | "dispatches" => {
                 history.private_history_rows.add(&count);
             }
             _ => {

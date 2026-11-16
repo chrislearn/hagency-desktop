@@ -181,7 +181,26 @@ impl SharedCallSink {
         self.clean = false;
         self.persist(true).await
     }
+    /// The store's single writer answers each command within two seconds, and
+    /// another job can hold it longer (an admission while this turn runs).
+    /// That made a turn with intact evidence end as unknown. Each record is
+    /// keyed by its sequence and state, so a write whose answer was lost is
+    /// found again, and a write still queued when its wait ended never runs.
     async fn persist(&self, forced_unknown: bool) -> Result<SharedWorkReceipt, Error> {
+        let started = tokio::time::Instant::now();
+        let mut attempts = 0u32;
+        let result = patient(PERSIST_PATIENCE, || {
+            attempts += 1;
+            self.persist_once(forced_unknown)
+        })
+        .await;
+        if attempts > 1 {
+            tracing::info!(attempts, waited_ms = started.elapsed().as_millis() as u64, written = result.is_ok(),
+                "Shared call record write waited for the store writer");
+        }
+        result
+    }
+    async fn persist_once(&self, forced_unknown: bool) -> Result<SharedWorkReceipt, Error> {
         let c = &self.custody;
         let child = c.call.scope.child.clone();
         let call = c.call.scope.target.clone();
@@ -308,6 +327,24 @@ impl SharedCallSink {
             .await
     }
 }
+/// How long a call record write keeps retrying a busy or slow store writer.
+const PERSIST_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
+/// Repeat a store command only while the writer was busy or did not answer
+/// in time; every other refusal is final at once.
+async fn patient<T, F: std::future::Future<Output = Result<T, Error>>>(
+    patience: std::time::Duration,
+    mut attempt: impl FnMut() -> F,
+) -> Result<T, Error> {
+    let until = tokio::time::Instant::now() + patience;
+    loop {
+        match attempt().await {
+            Err(Error::OutcomeUnknown | Error::Busy) if tokio::time::Instant::now() < until => {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            result => return result,
+        }
+    }
+}
 fn text_digest(v: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(v.as_bytes()))
@@ -333,4 +370,50 @@ fn bounded_reply(text: &str, truncated: bool) -> String {
         end -= 1;
     }
     text[..end].to_owned() + TRUNCATED_REPLY
+}
+#[cfg(test)]
+mod patience_tests {
+    use super::*;
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+    #[tokio::test]
+    async fn a_write_waits_out_a_writer_held_longer_than_its_reply_bound() {
+        let root = tempfile::tempdir().unwrap();
+        let store = crate::DomainStore::start(
+            crate::DomainRepository::open(&root.path().join("state")).unwrap(), 8).unwrap();
+        let (held, release) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let store = store.clone();
+            tokio::spawn(async move {
+                // The writer stays inside this job for three seconds.
+                let _ = store.call(1, move |_| {
+                    let _ = release.recv_timeout(std::time::Duration::from_secs(3));
+                    Ok(())
+                }).await;
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let runs = Arc::new(AtomicUsize::new(0));
+        let write = || {
+            let runs = runs.clone();
+            store.call(1, move |_| Ok(runs.fetch_add(1, Ordering::SeqCst) + 1))
+        };
+        assert!(matches!(write().await, Err(Error::OutcomeUnknown)), "one wait ends first");
+        assert_eq!(patient(std::time::Duration::from_secs(10), write).await.unwrap(), 1,
+            "the write runs once: the attempts whose wait ended never ran");
+        drop(held);
+        holder.await.unwrap();
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        let refusals = AtomicUsize::new(0);
+        let refused = patient(std::time::Duration::from_secs(10), || {
+            refusals.fetch_add(1, Ordering::SeqCst);
+            async { Err::<(), _>(Error::LocalAuthority) }
+        }).await;
+        assert!(matches!(refused, Err(Error::LocalAuthority)));
+        assert_eq!(refusals.load(Ordering::SeqCst), 1, "a final refusal is not repeated");
+        let started = tokio::time::Instant::now();
+        let stuck = patient(std::time::Duration::from_millis(500), || async { Err::<(), _>(Error::OutcomeUnknown) }).await;
+        assert!(matches!(stuck, Err(Error::OutcomeUnknown)));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "patience is bounded");
+    }
 }

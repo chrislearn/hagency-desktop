@@ -44,6 +44,7 @@ pub(super) fn allows_local(command: &Command) -> bool {
             | Command::EnsureAgentOwnerDirect { .. }
             | Command::AgentOwnerDirect { .. }
             | Command::Local { .. }
+            | Command::LocalApprovals
             | Command::PrepareAgentWorkspace { .. }
             | Command::Provider { .. }
             | Command::RuntimeProvider { .. }

@@ -667,6 +667,17 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
         value["currentDeviceId"] = device.device_id().into();
         return Ok(value);
     }
+    // The tool requests of every local Agent running here that wait for this
+    // owner, for the app-wide reminder. Deciding one still takes the Agent's
+    // own decision route, with its owner check.
+    if parts.as_slice() == ["pending-approvals"] {
+        if method != Method::GET || req.uri().query().is_some() {
+            return Err(error(400, "invalid_arguments"));
+        }
+        let host = console(depot).map_err(|_| error(503, "local_state_unavailable"))?;
+        let approvals = host.0.owned_runtime.pending_all(host).await.map_err(runtime_error)?;
+        return Ok(json!({"approvals":approvals}));
+    }
     if parts.first() == Some(&"commands") {
         if req.uri().query().is_some() {
             return Err(error(400, "invalid_arguments"));
@@ -1391,6 +1402,13 @@ async fn call(req: &mut Request, depot: &Depot) -> Result<Value, OwnerError> {
                     }
                     Change::Reset(input) => {
                         let l = layer(&input.layer)?;
+                        // A Room or member goes back to following the Agent.
+                        if !matches!(l, Layer::Agent) {
+                            ledger
+                                .clear_policy(&reply.owner, &scope, l, input.expected_revision)
+                                .map_err(local_error)?;
+                            return view(&ledger, &scope);
+                        }
                         let policy = Policy {
                             budget: Budget {
                                 limit: Limit::Unlimited,
