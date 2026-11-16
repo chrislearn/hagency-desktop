@@ -60,7 +60,7 @@ pub(super) fn management_read(command: &Command) -> bool {
     matches!(command,
         Command::Projects | Command::ProjectRooms {..} | Command::SpaceCandidates {..}
         | Command::RoomRoster {..} | Command::Agents | Command::RoomAgents | Command::Bindings {..}
-        | Command::Devices | Command::AgentDetails {..} | Command::AgentConfigurationStatus {..}
+        | Command::Devices | Command::LocalApprovals | Command::AgentDetails {..} | Command::AgentConfigurationStatus {..}
         | Command::AgentOwnerDirectStatus {..} | Command::ScopeServiceState {..}
         | Command::LoginStatus | Command::AgentCommands | Command::Creations | Command::Creation {..}
         | Command::Binding {action: BindingAction::Status, ..}
@@ -720,6 +720,27 @@ impl Service {
         manager.retire();
         self.check()?;
         result
+    }
+    /// The tool requests of this owner's local Agents that wait for an answer,
+    /// for the app-wide reminder. Only an owner that already runs is asked
+    /// (the daemon that hosts this account, or this app's own owner): the
+    /// reminder never starts one. `None` when nothing runs here.
+    pub async fn local_approvals(&self) -> Result<Option<Value>, String> {
+        self.check()?;
+        use crate::hagency::hosting::Execution;
+        let running = match self.execution()? {
+            Execution::Daemon { .. } => true,
+            // Busy opening or closing: asked again on the next round.
+            Execution::InProcess => match self.0.native.try_lock() {
+                Ok(native) => native.is_some(),
+                Err(_) => return Err("native_owner_busy".into()),
+            },
+            Execution::Setup(_) => false,
+        };
+        if !running {
+            return Ok(None);
+        }
+        self.execute(Command::LocalApprovals).await.map(Some)
     }
     pub async fn shared_permissions(&self, command: ::hagency::native_owner::ManagementCommand) -> Result<Value,String> {
         use ::hagency::native_owner::{ManagementCommand,ManagementPackage,ManagementPermission};

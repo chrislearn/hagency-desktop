@@ -1126,6 +1126,8 @@ async fn permission_within(
                         .and_then(|_| ledger.authorize_tool(&proposal, now()))
                         .is_ok(),
                 ),
+                // Let go by the host once it expired: still nobody answered.
+                Ok(Err(_)) if now() >= proposal.expires => ToolAnswer::Unanswered,
                 Ok(_) => ToolAnswer::Deny,
             }
         }

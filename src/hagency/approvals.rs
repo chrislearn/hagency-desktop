@@ -27,14 +27,18 @@ pub(super) struct Notices {
 }
 impl Notices {
     pub fn new_count(&mut self, rows: &[Value]) -> usize {
+        self.new_ids(rows).len()
+    }
+    /// The requests in `rows` this page has not seen before.
+    pub fn new_ids(&mut self, rows: &[Value]) -> Vec<String> {
         // Only current live IDs are retained, bounding memory with the Host queue.
         let next: HashSet<String> = rows
             .iter()
             .filter_map(|r| r["proposalId"].as_str().map(str::to_owned))
             .collect();
-        let count = next.difference(&self.seen).count();
+        let new = next.difference(&self.seen).cloned().collect();
         self.seen = next;
-        count
+        new
     }
 }
 pub(super) fn details(row: &Value, at: i64) -> String {

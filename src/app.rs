@@ -409,6 +409,12 @@ impl MatchEvent for App {
                     self.ui.redraw(cx);
                 }
             }
+            if let Some(update) = action.downcast_ref::<crate::hagency::pending_approvals::LocalApprovalsUpdate>() {
+                if crate::hagency::pending_approvals::apply_local(cx, update) {
+                    cx.action(crate::hagency::pending_approvals::PendingApprovalsChanged);
+                    self.ui.redraw(cx);
+                }
+            }
             if let Some(update) = action.downcast_ref::<crate::hagency::pending_admissions::PendingAdmissionsUpdate>() {
                 if crate::hagency::pending_admissions::apply(cx, update) {
                     self.ui.redraw(cx);

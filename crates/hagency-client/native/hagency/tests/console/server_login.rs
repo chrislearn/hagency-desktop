@@ -1375,6 +1375,16 @@ async fn native_owned_agents_user_scope_local_policy_privacy_and_lifecycle() {
     let data = devices.take_json::<Value>().await.unwrap();
     assert_eq!(data["currentDeviceId"], "dev_fixture");
     assert!(!data.to_string().contains("sensitive"));
+    // No local Agent runs yet, so none waits for an answer. The list is read only.
+    let mut waiting = get("/console/api/owned-agents/pending-approvals", &cookie).send(&service).await;
+    assert_eq!(waiting.status_code, Some(StatusCode::OK));
+    assert_eq!(waiting.take_json::<Value>().await.unwrap(), json!({"approvals":[]}));
+    for refused in [
+        post("/console/api/owned-agents/pending-approvals", &cookie).json(&json!({})).send(&service).await,
+        get("/console/api/owned-agents/pending-approvals?agent=agt_fixture", &cookie).send(&service).await,
+    ] {
+        assert_eq!(refused.status_code, Some(StatusCode::BAD_REQUEST));
+    }
     let agent_path = "/console/api/owned-agents/agt_fixture";
     let mut initial = get(agent_path, &cookie).send(&service).await;
     assert_eq!(

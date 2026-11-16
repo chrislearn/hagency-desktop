@@ -154,6 +154,8 @@ pub(super) async fn handle(
     match decision {
         None => return Ok(()),
         Some(Ok(Ok(true))) => {}
+        // The owner never answered: nobody refused.
+        Some(Err(_)) => return reply(wire, &call.call_id, Err("host_file_unanswered".into())).await,
         _ => return reply(wire, &call.call_id, Err("host_file_denied".into())).await,
     }
 

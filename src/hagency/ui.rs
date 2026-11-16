@@ -850,11 +850,13 @@ script_mod! {
                         approvals := Select {labels: [#(crate::i18n::tr("Select a pending approval"))]}
                         approval_count := Text {draw_text.color: mod.widgets.RINX_MUTED}
                         approval_feedback := Text {}
-                        approval_details := Text {}
-                        View {width: Fill height: 40 spacing: 8
+                        // Before the request text: a long command must not push
+                        // the answer below the window.
+                        approval_actions := View {width: Fill height: 40 spacing: 8
                             approve := Action {text: #(crate::i18n::tr("Approve exact request once")) i18n_text: "Approve exact request once"}
                             reject := Danger {text: #(crate::i18n::tr("Reject request")) i18n_text: "Reject request"}
                         }
+                        approval_details := Text {}
                         }
                     }
                     room_controls := Section {width: Fill height: Fit flow: Down spacing: 8
@@ -1058,7 +1060,9 @@ impl HagencyPanel {
         let scope=self.approval_scope(cx);
         self.approvals=array(value,"approvals").into_iter().filter(|row|scope.as_ref().is_some_and(|(a,b,r)|super::approvals::matches(row,a,b,r,super::approvals::now()))).collect();
         self.approval_checked=true;
-        let new=self.approval_notices.new_count(&self.approvals);
+        // A request the app-wide reminder already announced is not announced again.
+        let new=self.approval_notices.new_ids(&self.approvals).into_iter()
+            .filter(|id|super::pending_approvals::first_notice(&self.identity,&super::pending_approvals::local_id(id))).count();
         if new>0 {
             crate::shared::popup_list::enqueue_popup_notification(
                 crate::i18n::format("{count} new approvals in this Room. Review them in Service.",&[("count",new.to_string())]),
@@ -4701,6 +4705,23 @@ mod tests {
         assert_eq!(panel.view.label(&mut cx,ids!(approval_feedback)).text(),crate::i18n::tr("Decision submitted. Execution is not yet confirmed. Check the Room reply and runtime status."));
         panel.apply(&mut cx,Target::ApprovalDecision,&Value::Null);
         assert_eq!(panel.view.label(&mut cx,ids!(approval_feedback)).text(),crate::i18n::tr("Decision delivery is unconfirmed. Refresh status; do not resubmit this request."));
+        // The answer comes before the request text, however long that is.
+        {
+            use makepad_widgets::makepad_draw::cx_draw::CxDraw;
+            panel.set_page(&mut cx,Page::Agents);
+            panel.view.view(&mut cx,ids!(agent_detail)).set_visible(&mut cx,true);
+            panel.section(&mut cx,ids!(runtime_section));
+            panel.view.label(&mut cx,ids!(approval_details)).set_text(&mut cx,&"Exact arguments: a long line of the request\n".repeat(80));
+            let height=760.0;
+            cx.redraw_all();let pass=DrawPass::new(&mut cx);pass.set_size(&mut cx,dvec2(980.0,height));let mut dl=DrawList2d::new(&mut cx);let overlay=Overlay{draw_list:DrawList::new(&mut cx)};let event=DrawEvent::default();let mut draw=CxDraw::new(&mut cx,&event);let mut cx2d=Cx2d::new(&mut draw);
+            cx2d.begin_pass(&pass,None);dl.begin_always(&mut cx2d);overlay.begin(&mut cx2d);cx2d.begin_root_turtle(dvec2(980.0,height),Layout::flow_overlay());
+            panel.draw_walk_all(&mut cx2d,&mut Scope::empty(),Walk::fixed(980.0,height));
+            overlay.end(&mut cx2d);cx2d.end_pass_sized_turtle();dl.end(&mut cx2d);cx2d.end_pass(&pass);
+        }
+        let answer=panel.view.view(&mut cx,ids!(approval_actions)).area().rect(&cx);
+        let details=panel.view.label(&mut cx,ids!(approval_details)).area().rect(&cx);
+        assert!(answer.size.y>0.0 && details.size.y>answer.size.y,"both are drawn: {answer:?} {details:?}");
+        assert!(answer.pos.y+answer.size.y<=details.pos.y,"the buttons come first: {answer:?} {details:?}");
     }
 
     use super::*;
