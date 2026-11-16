@@ -14,6 +14,8 @@ use claude_turn::OctosCounters;
 pub mod octos_turn;
 #[cfg(unix)]
 mod octos_files;
+#[cfg(target_os = "macos")]
+mod octos_shell;
 
 type Claude = hagency_runtime::owned::OwnedClaudeSession;
 type Octos = hagency_runtime::owned::OwnedOctosSession;
@@ -208,7 +210,31 @@ pub enum Session {
         context: String,
         room: Option<hagency_runtime::room_tools::RoomTools>,
         files: Option<OctosHostFiles>,
+        shell: OctosShellHost,
     },
+}
+
+/// What the owner's local Octos Agent needs to start its confined shell.
+pub struct OctosShellHost {
+    #[cfg(target_os = "macos")]
+    guardian: std::path::PathBuf,
+    /// This Agent's commands across its turns: one whose stop was not proven
+    /// keeps every later command refused.
+    #[cfg(target_os = "macos")]
+    pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl OctosShellHost {
+    fn new(guardian: &Path) -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            Self { guardian: guardian.to_path_buf(), pending: Default::default() }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = guardian;
+            Self {}
+        }
+    }
 }
 
 /// Owner-selected workspace capability, bound to this Octos process only.
@@ -517,6 +543,7 @@ async fn spawn_inner(
             context: context_profile(profile, reference)?,
             room: None,
             files: None,
+            shell: OctosShellHost::new(&guardian),
         },
         Kind::Codex => unreachable!(),
     };
@@ -808,7 +835,7 @@ impl Session {
                 .await
             }
             Self::Octos {
-                wire, profile, id, room, files, ..
+                wire, profile, id, room, files, shell, ..
             } => {
                 run_octos(
                     wire,
@@ -825,6 +852,7 @@ impl Session {
                     controls,
                     *room,
                     files.as_mut(),
+                    shell,
                 )
                 .await
             }
@@ -1050,6 +1078,22 @@ async fn permission(
     cwd: &Path,
     queue: &ApprovalQueue,
 ) -> claude_turn::ToolAnswer {
+    permission_within(ledger, owner, scope, dispatch, tool, arguments, cwd, queue, 280).await
+}
+/// The owner's policy for one tool request, asking the owner when the policy
+/// says so and waiting at most `wait_secs` for the answer.
+#[allow(clippy::too_many_arguments)]
+async fn permission_within(
+    ledger: &mut Ledger,
+    owner: &str,
+    scope: &Scope,
+    dispatch: &str,
+    tool: String,
+    arguments: Value,
+    cwd: &Path,
+    queue: &ApprovalQueue,
+    wait_secs: u64,
+) -> claude_turn::ToolAnswer {
     use claude_turn::ToolAnswer;
     let Ok(versions) = ledger.policy_snapshot(scope) else {
         return ToolAnswer::Deny;
@@ -1062,7 +1106,7 @@ async fn permission(
         canonical_directory: cwd.to_string_lossy().into(),
         risk: "high".into(),
         policy_revision: versions.map(|v| v.revision),
-        expires: now() + 280,
+        expires: now() + wait_secs as i64,
     };
     match ledger.tool_disposition(&proposal, now()) {
         Ok(ToolPolicy::AllowWithRules { .. }) => {
@@ -1073,7 +1117,7 @@ async fn permission(
             if !queue.offer(pending) {
                 return ToolAnswer::Deny;
             }
-            match tokio::time::timeout(Duration::from_secs(280), decision).await {
+            match tokio::time::timeout(Duration::from_secs(wait_secs), decision).await {
                 // The owner never answered: nobody refused.
                 Err(_) => ToolAnswer::Unanswered,
                 Ok(Ok(true)) => ToolAnswer::allowed(
@@ -1418,11 +1462,14 @@ async fn run_octos(
     mut controls: Option<crate::run_controls::Stream>,
     room_tools: Option<hagency_runtime::room_tools::RoomTools>,
     files: Option<&mut OctosHostFiles>,
+    shell: &OctosShellHost,
 ) -> Result<TurnResult> {
     #[cfg(unix)]
     let mut files = files;
     #[cfg(not(unix))]
     let _ = (execution, files);
+    #[cfg(not(target_os = "macos"))]
+    let _ = shell;
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|_| Error::Unknown)?;
     let hex = random
@@ -1464,6 +1511,14 @@ async fn run_octos(
     if let Some(files) = files.as_ref() {
         host_tools.extend(octos_files::definitions(files)?);
     }
+    // Commands run confined to the folder the owner gave this Agent, and only
+    // while this turn runs: the guard ends the shell when the turn returns.
+    #[cfg(target_os = "macos")]
+    let shell_turn = files.as_deref().map(|files| octos_shell::Turn::start(shell, files));
+    #[cfg(target_os = "macos")]
+    if shell_turn.is_some() {
+        host_tools.push(octos_shell::definition());
+    }
     if queue.live_text.as_ref().is_some_and(|output| output.has_messages()) {
         host_tools.push(octos_progress_tool());
     }
@@ -1492,6 +1547,10 @@ async fn run_octos(
         } else {
             hints.push("For this Room's authorized files, discover and use hagency_file_list, hagency_file_read and hagency_file_create via run_tool. File actions remain subject to owner policy and approval.");
         }
+    }
+    #[cfg(target_os = "macos")]
+    if shell_turn.is_some() {
+        hints.push("To run a command in this workspace, discover and use hagency_shell via run_tool. Commands have no network access and cannot read private configuration; each command remains subject to owner policy and approval.");
     }
     let prompt = if !hints.is_empty() && input.len() <= 48 * 1024 {
         format!("Hagency context: {}\n\nCurrent request:\n{input}", hints.join(" "))
@@ -1704,6 +1763,20 @@ async fn run_octos(
                     let reply = octos_progress(&call, queue.live_text.as_ref());
                     wire.host_tool_result(&call.call_id, reply).await
                         .map_err(|_| Error::Protocol("Octos progress response"))?;
+                    continue;
+                }
+                #[cfg(target_os = "macos")]
+                if call.name == octos_shell::TOOL {
+                    match shell_turn.as_ref().zip(files.as_deref()) {
+                        Some(((_, shell), files)) => {
+                            octos_shell::handle(wire, shell, files, ledger, owner, scope, execution, dispatch,
+                                &call, queue, &mut controls, &mut buffered, &mut stopping, &mut steers).await?;
+                        }
+                        None => {
+                            wire.host_tool_result(&call.call_id, Err("host_shell_disabled".into())).await
+                                .map_err(|_| Error::Protocol("Octos tool response"))?;
+                        }
+                    }
                     continue;
                 }
                 #[cfg(unix)]

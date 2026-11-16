@@ -185,15 +185,14 @@ pub(super) async fn start(shell: &SharedOctosShell, command: &str, workdir: Opti
     }
     tokio::spawn(read_output(stdout, shared.clone()));
     tokio::spawn(read_output(stderr, shared.clone()));
-    let source = shell.source.clone();
-    let profile = shell.profile.clone();
+    let liveness = shell.liveness.clone();
     let workspace = shell.workspace.clone();
     tokio::task::spawn_blocking(move || {
         let mut owner = owner;
         let until = Instant::now() + timeout;
         let result = loop {
-            if cancel.load(Ordering::Acquire) || Instant::now() >= until || !source.has_live_activity()
-                || profile.check().is_err() || workspace.canonicalize().ok().as_deref() != Some(workspace.as_path()) {
+            if cancel.load(Ordering::Acquire) || Instant::now() >= until || !liveness.live()
+                || workspace.canonicalize().ok().as_deref() != Some(workspace.as_path()) {
                 break owner.stop().and(Err("shell_interrupted"));
             }
             match owner.owner.wait(Duration::from_millis(100)) {

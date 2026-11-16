@@ -478,7 +478,7 @@ else:
         answer(request, {'session_id':session, 'tools':[{'name':tool['name'], 'model_name':tool['name'].replace('.', '_')} for tool in tools], 'generic_tools':request['params']['generic_tools'], 'applies':'next_turn'})
         request = read()
     turn = request['params']['turn_id']
-    if mode in ('octos_files', 'octos_files_revoke', 'octos_files_cancel', 'octos_files_traversal', 'octos_room', 'octos_progress'):
+    if mode in ('octos_files', 'octos_files_revoke', 'octos_files_cancel', 'octos_files_traversal', 'octos_room', 'octos_progress', 'octos_shell'):
         (root / 'turn-input').write_text(request['params']['input'][0]['text'])
     answer(request, {'accepted': True})
     seq = 0
@@ -554,6 +554,14 @@ else:
             assert request['method'] == 'peer/tool/result' and request['params']['call_id'] == 'file-1'
             (root / 'file-result').write_text(json.dumps(request['params']))
             answer(request, {'call_id':'file-1', 'accepted':True})
+    if mode == 'octos_shell':
+        assert any(tool['name'] == 'hagency.shell' for tool in tools)
+        notify('peer/tool/call', {'session_id':session, 'turn_id':turn, 'call_id':'shell-1',
+            'name':'hagency.shell', 'args':{'command':'pwd; echo made > made.txt', 'timeout_secs':10}})
+        request = read()
+        assert request['method'] == 'peer/tool/result' and request['params']['call_id'] == 'shell-1'
+        (root / 'shell-result').write_text(json.dumps(request['params']))
+        answer(request, {'call_id':'shell-1', 'accepted':True})
     if mode in ('approval', 'cancel', 'hold'):
         envelope('tool_start', {'tool_call_id': 'tool-1', 'name': 'shell'})
         notify('approval/requested', {'session_id': session, 'approval_id': 'approval-1', 'turn_id': turn, 'tool_name': 'shell', 'title': 'Run a command', 'body': 'offline', 'approval_kind': 'command', 'risk': 'high', 'typed_details': {'kind': 'command', 'command': {'command_line': 'offline', 'cwd': str(root / 'outside'), 'tool_call_id': 'tool-1'}}})
