@@ -226,7 +226,7 @@ mod tests {
             documents: Documents::default(),
             native_compaction: false,
             context_remaining: 0,
-            last_usage: None, child_budgets: HashMap::new(),
+            last_usage: None, child_budgets: HashMap::new(), later: None,
         };
         let mut record = record();
         reader.documents.describe(&mut record);

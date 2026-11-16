@@ -45,6 +45,37 @@ impl AgentDevice {
         Ok(context.prev_batch_token)
     }
 
+    /// The first messages after `anchor`, oldest first, read under the same
+    /// membership, visibility and decryption as the pages before it.
+    pub(in crate::console) async fn history_after(
+        &self,
+        room: &str,
+        anchor: &str,
+    ) -> Result<HistoryBatch, RuntimeError> {
+        let room_id = OwnedRoomId::try_from(room).map_err(|_| RuntimeError::Request)?;
+        let event_id = OwnedEventId::try_from(anchor).map_err(|_| RuntimeError::Request)?;
+        let room = self.client.get_room(&room_id).ok_or(RuntimeError::Transport)?;
+        let context = room
+            .event_with_context(&event_id, false, 0u32.into(), None)
+            .await
+            .map_err(|_| RuntimeError::Transport)?;
+        if context.event.as_ref().and_then(|e| e.kind.parse_event_id()).as_ref() != Some(&event_id) {
+            return Err(RuntimeError::Transport);
+        }
+        let Some(from) = context.next_batch_token else {
+            return Ok(HistoryBatch { events: Vec::new(), next: None });
+        };
+        let mut options = MessagesOptions::forward().from(from.as_str());
+        options.limit = 50u32.into();
+        let page = room.messages(options).await.map_err(|_| RuntimeError::Transport)?;
+        // A full page may have more after it; a shorter one reached the end.
+        let more = page.chunk.len() >= 50;
+        Ok(HistoryBatch {
+            events: page.chunk.iter().filter_map(history_event).collect(),
+            next: more.then_some(page.end).flatten(),
+        })
+    }
+
     pub(in crate::console) async fn history_page(
         &self,
         room: &str,

@@ -193,8 +193,12 @@ async fn work(
     // Octos trims its messages to the model's window before each call and
     // reports no context samples, so a fixed byte allowance would never refill
     // and would strand earlier history: bound each page instead, as for Claude.
+    // Each request also starts a fresh Octos session. One sent while the
+    // request before it was being answered comes before that answer in the
+    // room, so also read what was sent after it.
     if let Some(reader) = &mut history {
         reader.use_native_compaction();
+        reader.include_later();
     }
     let input = active.wait(cancel, async {
         let (b, _, _) = live.proof().await?;
