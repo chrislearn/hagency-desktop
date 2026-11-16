@@ -187,7 +187,18 @@ impl SharedCallSink {
     /// keyed by its sequence and state, so a write whose answer was lost is
     /// found again, and a write still queued when its wait ended never runs.
     async fn persist(&self, forced_unknown: bool) -> Result<SharedWorkReceipt, Error> {
-        patient(PERSIST_PATIENCE, || self.persist_once(forced_unknown)).await
+        let started = tokio::time::Instant::now();
+        let mut attempts = 0u32;
+        let result = patient(PERSIST_PATIENCE, || {
+            attempts += 1;
+            self.persist_once(forced_unknown)
+        })
+        .await;
+        if attempts > 1 {
+            tracing::info!(attempts, waited_ms = started.elapsed().as_millis() as u64, written = result.is_ok(),
+                "Shared call record write waited for the store writer");
+        }
+        result
     }
     async fn persist_once(&self, forced_unknown: bool) -> Result<SharedWorkReceipt, Error> {
         let c = &self.custody;
