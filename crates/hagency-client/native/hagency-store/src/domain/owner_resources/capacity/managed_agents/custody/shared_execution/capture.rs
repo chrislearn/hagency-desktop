@@ -345,6 +345,32 @@ async fn patient<T, F: std::future::Future<Output = Result<T, Error>>>(
         }
     }
 }
+fn text_digest(v: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(v.as_bytes()))
+}
+fn original_call_changed(
+    db: &Connection,
+    child: &str,
+    binding: &str,
+    issued: u64,
+    call: &str,
+) -> Result<bool, Error> {
+    let stored:Option<(String,u64)>=db.query_row("SELECT p.assignment_digest,p.issue_revision FROM owner_managed_call_pins p JOIN owner_managed_calls c ON c.id=p.call_id WHERE p.call_id=?1 AND c.child_id=?2",params![call,child],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    Ok(stored.is_none_or(|(b, i)| b != binding || i != issued))
+}
+
+const TRUNCATED_REPLY: &str = "\n\n[答复超过单条消息长度限制，以上内容已截断。]";
+fn bounded_reply(text: &str, truncated: bool) -> String {
+    if !truncated {
+        return text.to_owned();
+    }
+    let mut end = text.len().min(MAX_SHARED_REPLY - TRUNCATED_REPLY.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned() + TRUNCATED_REPLY
+}
 #[cfg(test)]
 mod patience_tests {
     use super::*;
@@ -390,30 +416,4 @@ mod patience_tests {
         assert!(matches!(stuck, Err(Error::OutcomeUnknown)));
         assert!(started.elapsed() < std::time::Duration::from_secs(2), "patience is bounded");
     }
-}
-fn text_digest(v: &str) -> String {
-    use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(v.as_bytes()))
-}
-fn original_call_changed(
-    db: &Connection,
-    child: &str,
-    binding: &str,
-    issued: u64,
-    call: &str,
-) -> Result<bool, Error> {
-    let stored:Option<(String,u64)>=db.query_row("SELECT p.assignment_digest,p.issue_revision FROM owner_managed_call_pins p JOIN owner_managed_calls c ON c.id=p.call_id WHERE p.call_id=?1 AND c.child_id=?2",params![call,child],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-    Ok(stored.is_none_or(|(b, i)| b != binding || i != issued))
-}
-
-const TRUNCATED_REPLY: &str = "\n\n[答复超过单条消息长度限制，以上内容已截断。]";
-fn bounded_reply(text: &str, truncated: bool) -> String {
-    if !truncated {
-        return text.to_owned();
-    }
-    let mut end = text.len().min(MAX_SHARED_REPLY - TRUNCATED_REPLY.len());
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text[..end].to_owned() + TRUNCATED_REPLY
 }
