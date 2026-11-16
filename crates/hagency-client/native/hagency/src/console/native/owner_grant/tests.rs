@@ -276,6 +276,56 @@ impl Fixture {
         reasoning: Option<String>,
         runtime: &str,
     ) -> Self {
+        let model = model.to_owned();
+        Self::with_prepared(runtime, move |registry, profile| async move {
+            registry
+                .prepare_enrollment(
+                    profile,
+                    "intent_resource".into(),
+                    provider,
+                    model,
+                    reasoning,
+                    1000,
+                    Instant::now() + Duration::from_secs(30),
+                )
+                .unwrap()
+                .approve()
+                .await
+                .unwrap()
+                .resource_id
+        })
+        .await
+    }
+    /// The same fixture around an Octos pool on profile `coding` in `home`,
+    /// for its model `test-model`.
+    #[cfg(target_os = "macos")]
+    async fn new_octos(home: PathBuf) -> Self {
+        Self::with_prepared("octos", move |registry, profile| async move {
+            let expiry = Instant::now() + Duration::from_secs(30);
+            let observed = registry
+                .observe_octos_profile(
+                    hagency_runtime::octos::profile_binding::ProfileBinding::observe_model(
+                        &home, "coding", "test-model", expiry,
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            registry
+                .prepare_octos_enrollment(profile, "intent_resource".into(), observed, 1000, expiry)
+                .unwrap()
+                .approve()
+                .await
+                .unwrap()
+                .resource_id
+        })
+        .await
+    }
+    async fn with_prepared<F, Fut>(runtime: &str, prepare: F) -> Self
+    where
+        F: FnOnce(OwnerResourceRegistry, hagency_store::owner_resources::ProfileAuthority) -> Fut,
+        Fut: std::future::Future<Output = String>,
+    {
         let root = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
         let (origin, task, admission, publications) = server().await;
         let source = Arc::new(AtomicBool::new(true));
@@ -295,21 +345,7 @@ impl Fixture {
             .io(&cookie, Permission::ConsentGrants)
             .await
             .unwrap();
-        let resource = registry
-            .prepare_enrollment(
-                io.profile.clone(),
-                "intent_resource".into(),
-                provider,
-                model.into(),
-                reasoning,
-                1000,
-                Instant::now() + Duration::from_secs(30),
-            )
-            .unwrap()
-            .approve()
-            .await
-            .unwrap()
-            .resource_id;
+        let resource = prepare(registry.clone(), io.profile.clone()).await;
         let revision = registry
             .resource(&io.profile, resource.clone())
             .await

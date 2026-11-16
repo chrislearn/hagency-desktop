@@ -508,15 +508,19 @@ const REGRANT_UNKNOWN_STATUS: &str = "Last month’s Agent usage is not settled.
 const UNKNOWN_CAPACITY_STATUS: &str = "Available capacity could not be verified. Refresh to read the pool again. Nothing has been published.";
 
 fn capacity_problem(s: &GrantState) -> String {
+    capacity_problem_in(s.context(), s.regrant)
+}
+/// The reason from one budget snapshot: a refused review names its own, not
+/// the reason the form had before the owner pressed Publish.
+fn capacity_problem_in(context: Option<&::hagency::native_owner::OwnerGrantReviewContext>, regrant: bool) -> String {
     let tr = crate::i18n::tr;
-    let context = s.context();
     tr(match context.and_then(|c| c.capacity_blocker.as_deref()) {
         Some("pool_limit_missing") => "Set a monthly maximum for this pool before publishing.",
         Some("usage_unsettled") => "Final usage is still unsettled for calls covered by this pool’s budget. Check the Agent execution records, then refresh after settlement.",
         Some("account_period_mismatch") => "A shared account limit requires all its pools to use UTC and the same period. Review the account limit or use a compatible pool.",
         Some("account_limit_reached") => "The explicitly declared shared account limit is fully allocated. Review its existing allocations before publishing more capacity.",
         Some("pool_limit_reached") => "This pool has no capacity left to publish. Review its existing allocations or change its monthly maximum.",
-        _ if s.regrant => REGRANT_UNKNOWN_STATUS,
+        _ if regrant => REGRANT_UNKNOWN_STATUS,
         _ if context.is_some_and(|c| c.remaining_tokens == Some(0)) => "This pool has no capacity left to publish. Review its existing allocations or change its monthly maximum.",
         _ => UNKNOWN_CAPACITY_STATUS,
     }).into()
@@ -1422,7 +1426,7 @@ fn grant_view(s: &GrantState, now: u64) -> GrantView {
             } else {
                 v.tone = SheetTone::Failed;
                 v.title = tr("Cannot Publish").into();
-                v.problem = capacity_problem(s);
+                v.problem = capacity_problem_in(Some(review.context()), s.regrant);
                 v.status = tr("Nothing has been published or changed.").into();
             }
             if kind == GrantKind::Renew { primary = "Publish Ahead"; }

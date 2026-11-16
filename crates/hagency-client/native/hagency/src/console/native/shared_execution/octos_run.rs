@@ -260,7 +260,11 @@ async fn work(
             let mut start_seen = false;
             loop { tokio::select! { biased;
                 value=&mut began, if !start_seen => { start_seen=true; if value.is_ok() { turn.started(); } },
-                result=&mut native => return result.map_err(|_| failure(409, "shared_execution_event_unknown")),
+                result=&mut native => return result.map_err(|error| {
+                    // The cause is a protocol label or an I/O error; it carries no message text.
+                    tracing::warn!(%error, "Shared Octos turn ended with an error");
+                    failure(409, "shared_execution_event_unknown")
+                }),
             }}
         };
         tokio::pin!(native);

@@ -110,9 +110,8 @@ fn validate_details(a: &Value, request: &Value, nonce: &str) -> Result<()> {
             && (a["sessionScope"] != if request["method"] == "octos/can_use_tool" { "current_octos_session" } else { "current_claude_session" }
                 || request["sessionAllowed"] != false
                 // The sandboxed native tool is delegated exactly when the
-                // person who sent the message decides it; never for Octos.
+                // person who sent the message decides it.
                 || request["managerCanDecide"] != requester_decides(a)
-                || request["method"] == "octos/can_use_tool" && requester_decides(a)
                 || request.as_object().is_none_or(|v| {
                     v.len() != 5
                         || v.keys().any(|k| {
@@ -546,6 +545,34 @@ mod tests {
         nameless["approval"]["deciderMxid"] = json!("");
         nameless["digest"] = json!(hash(&nameless["approval"]).unwrap());
         assert!(payload(&nameless).is_err());
+    }
+    #[test]
+    fn a_pooled_octos_request_the_sender_decides_is_answered_only_by_that_sender() {
+        let (mut row, _, salt) = fixture();
+        let request = json!({"id":"approval-1","method":"octos/can_use_tool",
+            "params":{"sessionId":"session-1","toolName":"shell","input":{"command":"private command"}},
+            "sessionAllowed":false,"managerCanDecide":true});
+        row["approval"]["request"] = metadata(&request, &salt, "HAGE2EEAGENT").unwrap();
+        row["approval"]["sessionScope"] = json!("current_octos_session");
+        row["approval"]["deciderMxid"] = json!("@sender:test.local");
+        row["digest"] = json!(hash(&row["approval"]).unwrap());
+        let a = payload(&row).unwrap();
+        validate_details(a, &request, &salt).unwrap();
+        assert!(may_decide(a, "@sender:test.local", "approve_once"));
+        assert!(may_decide(a, "@sender:test.local", "deny"));
+        assert!(!may_decide(a, "@sender:test.local", "approve_session"));
+        for other in ["@owner:test.local", "@manager:test.local", "@stranger:test.local"] {
+            assert!(!may_decide(a, other, "approve_once"), "{other}");
+        }
+        // A delegated request must say so, and its scope stays the Octos session.
+        let mut closed = request.clone();
+        closed["managerCanDecide"] = json!(false);
+        let mut approval = a.clone();
+        approval["request"] = metadata(&closed, &salt, "HAGE2EEAGENT").unwrap();
+        assert!(validate_details(&approval, &closed, &salt).is_err());
+        let mut wrong = a.clone();
+        wrong["sessionScope"] = json!("current_claude_session");
+        assert!(validate_details(&wrong, &request, &salt).is_err());
     }
     async fn inbox() -> Inbox {
         Inbox::attach(

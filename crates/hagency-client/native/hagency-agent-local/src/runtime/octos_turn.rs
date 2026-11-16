@@ -539,6 +539,7 @@ pub async fn run<H: Host, C: Capture>(
                     returns: returns.len(),
                     cumulative: false,
                     late_failure: None,
+                    octos: None,
                 });
             }
             _ => {}

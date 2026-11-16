@@ -9,9 +9,10 @@ use std::{
 
 /// The kernel's continuation turn in `background` (a fixed UUID).
 const CONTINUATION: &str = "0192f0c1-0000-7000-8000-00000000c0de";
-const MODES: [&str; 17] = [
+const MODES: [&str; 18] = [
     "normal",
     "host-tools",
+    "host-tool-burst",
     "quiet",
     "duplicate",
     "error",
@@ -37,6 +38,15 @@ fn emit(value: Value) -> io::Result<()> {
 }
 fn notify(method: &str, params: Value) -> io::Result<()> {
     emit(json!({"jsonrpc":"2.0","method":method,"params":params}))
+}
+/// Several notifications in one write, so the host reads them together.
+fn notify_all(frames: &[(&str, Value)]) -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    for (method, params) in frames {
+        serde_json::to_writer(&mut stdout, &json!({"jsonrpc":"2.0","method":method,"params":params}))?;
+        stdout.write_all(b"\n")?;
+    }
+    stdout.flush()
 }
 fn answer(request: &Value, result: Value) -> io::Result<()> {
     emit(json!({"jsonrpc":"2.0","id":request["id"],"result":result}))
@@ -303,6 +313,24 @@ pub(super) fn run(mode: &str, marker: &Path) -> io::Result<()> {
             record(marker, &result)?;
             answer(&result, json!({"call_id":call,"accepted":true}))?;
         }
+    }
+    // A host tool call with a burst of notifications the host does not read
+    // right behind it, as Octos main sends while a model call streams.
+    if mode == "host-tool-burst" {
+        let mut frames = vec![(
+            "peer/tool/call",
+            json!({"peer":null,"session_id":stream.session,"turn_id":turn,"call_id":"ptc-burst",
+                "tool_call_id":"ptc-burst","name":"hagency.get_task","app":"hagency",
+                "args":{"task_id":"offline-task"},"risk":"read","confirm_required":false,
+                "timeout_ms":60000,"tools_version":1}),
+        )];
+        for sequence in 0..64 {
+            frames.push(("session/activity", json!({"session_id":stream.session,"sequence":sequence})));
+        }
+        notify_all(&frames)?;
+        let result = expect(&mut stdin, "peer/tool/result")?;
+        record(marker, &result)?;
+        answer(&result, json!({"call_id":"ptc-burst","accepted":true}))?;
     }
     stream.envelope(
         "main",

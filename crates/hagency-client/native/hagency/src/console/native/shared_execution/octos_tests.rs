@@ -299,7 +299,8 @@ async fn coding_successor(yolo: bool, owner_allowed: bool) {
         assert_eq!(requests[0]["method"], "octos/can_use_tool");
         assert_eq!(requests[0]["params"]["input"]["command"], "printf shell-ran > shell-result.txt");
         assert_eq!(requests[0]["sessionAllowed"], false);
-        assert_eq!(requests[0]["managerCanDecide"], false);
+        // The person who sent the message decides, as for Claude.
+        assert_eq!(requests[0]["managerCanDecide"], true);
         assert!(requests[1]["params"]["input"]["cmd"].as_str().unwrap().contains("PTY_READY"));
     }
     assert!(sent.lock().unwrap().iter().any(|(_, text)| text == "Offline integration complete."));

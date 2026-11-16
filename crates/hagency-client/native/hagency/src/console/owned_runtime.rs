@@ -1399,6 +1399,27 @@ fn device_error(error: super::Error) -> RuntimeError {
         RuntimeError::Authorization
     }
 }
+/// Sets the profile's program to the coding tool as it is found now, and
+/// returns the path it replaces, if any. Updates move the resolved file:
+/// Homebrew keeps each version in its own folder, Claude Code's updater points
+/// its launcher at a new version, and a newer build may be installed earlier
+/// on the search path. A path saved when a service started made `start` refuse
+/// every later retry, and a deleted one failed every new process.
+fn current_program(
+    profile: &mut Profile,
+    reference: &str,
+) -> Result<Option<PathBuf>, RuntimeError> {
+    let kind = runtime::kind(reference);
+    // Unit tests name their fake program directly and never look for an
+    // installed one; a child test that needs the lookup sets its variable.
+    #[cfg(test)]
+    if std::env::var_os(format!("HAGENCY_{}_BINARY", kind.name().to_ascii_uppercase())).is_none() {
+        return Ok(None);
+    }
+    let program = super::owner_provider::external::executable(kind)
+        .map_err(|error| RuntimeError::Execution(error.code))?;
+    Ok((program != profile.executable).then(|| std::mem::replace(&mut profile.executable, program)))
+}
 fn failure_code(result: &Result<(), RuntimeError>) -> Option<&'static str> {
     match result {
         Ok(()) | Err(RuntimeError::Stopped) => None,
@@ -2536,11 +2557,11 @@ async fn run_turn<T: Transport>(
         },
     };
     #[cfg(not(unix))]
-    let profile = config.profile.clone();
+    let mut profile = config.profile.clone();
     #[cfg(unix)]
     let space = space_project(transport, owner, config, &scope).await;
     #[cfg(unix)]
-    let (profile, workspace) = working_directory::for_turn(
+    let (mut profile, workspace) = working_directory::for_turn(
         &config.profile,
         owner,
         &scope,
@@ -2662,7 +2683,23 @@ async fn run_turn<T: Transport>(
         .approval_host()
         .map(|host| host.console.0.owned_runtime.tasks.clone())
         .unwrap_or_default();
+    // An update may have deleted the program this Room started with. A new
+    // process then runs the coding tool as it is found now (`current_program`);
+    // an idle one started from the deleted file is stopped instead of reused,
+    // and the conversation resumes from disk. If nothing is found, the start
+    // below reports the missing program as before.
+    let replaced = if profile.executable.is_file() {
+        None
+    } else {
+        current_program(&mut profile, &config.credential_ref).unwrap_or(None)
+    };
     let session_key = provider_custody::SessionKey::new(owner, &prepared.dispatch, &profile, config);
+    if let Some(executable) = replaced {
+        let stale = Profile { executable, ..profile.clone() };
+        if let Some(mut provider) = sessions.take(&provider_custody::SessionKey::new(owner, &prepared.dispatch, &stale, config)) {
+            provider.stop().await.map_err(|_| RuntimeError::Provider)?;
+        }
+    }
     let cached = if let Some(mut provider) = sessions.take(&session_key) {
         let prepared = tokio::select! { biased;
             _ = canceled(cancel) => return Err(RuntimeError::Stopped),

@@ -187,12 +187,29 @@ fn capacity_blocker(budget: &hagency_core::allocation::Budget) -> Option<String>
     Some(code.into())
 }
 
+/// A declared shared account limit accepts only the fixed UTC calendar of its
+/// own period (the store's `shared_account_calendars_match`), so a form for
+/// such a resource opens on that calendar instead of offering one review must
+/// refuse. Octos resources always declare one, shared by the profile's models.
+fn shared_limit_calendar(
+    budget: &hagency_core::allocation::Budget,
+) -> Option<hagency_core::recurring_quota::Calendar> {
+    if budget.seat.quota.is_none() {
+        return None;
+    }
+    let period = budget.seat.period.clone()?;
+    let cadence = serde_json::from_value(serde_json::Value::String(period)).ok()?;
+    Some(hagency_core::recurring_quota::Calendar { cadence, time_zone: "UTC".into() })
+}
+
 /// Read-only facts for a native publication form. Opening the form creates no
 /// reservation, grant intent, provider login or server publication.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OwnerGrantForm {
     #[serde(default)]
     pub awaiting_admission: bool,
+    /// The calendar this publication must use, which the form shows fixed:
+    /// the resource's bound calendar, else the one its shared limit requires.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar: Option<hagency_core::recurring_quota::Calendar>,
     pub contribution_id: String,

@@ -125,11 +125,40 @@ async fn publication_form_reads_budget_without_grants_or_publication() {
         assert_eq!(form.context.resource_total_tokens, Some(1000));
         assert!(form.context.shared_account_total_tokens.is_none(), "a pool maximum is not an account limit");
         assert!(form.context.capacity_blocker.is_none());
+        assert!(form.calendar.is_none(), "without a shared limit the owner chooses the calendar");
         assert_eq!(form.context.server_origin, f.origin);
     }
     assert!(f.history().await.data.records.is_empty());
     assert_eq!(f.count("owner_capacity_grants"), 0);
     assert_eq!(f.publications.lock().unwrap().posts, 0);
+}
+
+/// An Octos resource declares its profile's shared limit, which accepts only
+/// the UTC calendar of its period, so the form opens on that calendar: a
+/// calendar the owner picked in their own time zone could never be published.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn octos_publication_form_opens_on_the_shared_limit_calendar() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap();
+    std::fs::create_dir(home.join("profiles")).unwrap();
+    write_octos_profile(&home, "http://127.0.0.1:9/v1", &["test-model"]);
+    let mut f = Fixture::new_octos(home).await;
+    f.enable_publication().await;
+    let form = f.service.publication_form(&f.registry, "fixture_contribution".into()).await.unwrap();
+    assert_eq!(form.context.framework, "octos");
+    assert_eq!(form.context.shared_account_total_tokens, Some(1000));
+    assert!(form.context.capacity_blocker.is_none());
+    assert_eq!(
+        form.calendar,
+        Some(hagency_core::recurring_quota::Calendar {
+            cadence: hagency_core::recurring_quota::Cadence::Monthly,
+            time_zone: "UTC".into(),
+        })
+    );
+    assert!(f.history().await.data.records.is_empty());
+    assert_eq!(f.count("owner_capacity_grants"), 0);
+    f.stop().await;
 }
 
 #[tokio::test]

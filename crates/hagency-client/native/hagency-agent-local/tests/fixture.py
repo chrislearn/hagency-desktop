@@ -573,14 +573,18 @@ else:
         envelope('assistant_delta', {'text':'offline ', 'assistant_segment_id':'segment-1'})
         envelope('assistant_delta', {'text':'reply', 'assistant_segment_id':'segment-1'})
     envelope('assistant_persisted', {'text': 'offline reply', 'assistant_segment_id':'segment-1'})
-    tokens = {} if mode in ('unknown', 'octos_missing_with_totals') else {'token_usage': {'input_tokens': 10, 'output_tokens': 7, 'cache_read_tokens': 3, 'cache_write_tokens': 4, 'reasoning_tokens': 2}}
-    envelope('turn_terminal', {'outcome': 'interrupted' if interrupted else ('errored' if mode == 'failed' else 'completed'), **tokens})
+    count_file = root / 'count'
+    # Octos as it handles a stop: the stopped turn ends without a report and
+    # its session record leaves the turn out.
+    stopped = mode == 'octos_stop_then_next' and (int(count_file.read_text()) if count_file.exists() else 0) == 1
+    tokens = {} if mode in ('unknown', 'octos_missing_with_totals') or stopped else {'token_usage': {'input_tokens': 10, 'output_tokens': 7, 'cache_read_tokens': 3, 'cache_write_tokens': 4, 'reasoning_tokens': 2}}
+    envelope('turn_terminal', {'outcome': 'interrupted' if interrupted or stopped else ('errored' if mode == 'failed' else 'completed'), **tokens})
     notify('session/orchestration', {'session_id': session, 'active': False})
     request = read()
-    count_file = root / 'count'
     count = int(count_file.read_text()) + 1 if count_file.exists() else 1
     count_file.write_text(str(count))
-    totals = {} if mode == 'unknown' or (mode == 'mixed_usage' and count == 1) else {'input_tokens': 10 * count, 'output_tokens': 7 * count, 'cached_input_tokens': 3 * count, 'cache_write_input_tokens': 4 * count}
+    recorded = count - 1 if mode == 'octos_stop_then_next' and count > 1 else count
+    totals = {} if mode == 'unknown' or (mode == 'mixed_usage' and count == 1) else {'input_tokens': 10 * recorded, 'output_tokens': 7 * recorded, 'cached_input_tokens': 3 * recorded, 'cache_write_input_tokens': 4 * recorded}
     answer(request, {'usage': totals})
 # Keep the pipe alive until the host drops/stops the original child.
 sys.stdin.read()

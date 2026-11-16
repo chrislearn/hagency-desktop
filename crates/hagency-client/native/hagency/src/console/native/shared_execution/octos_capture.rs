@@ -7,6 +7,15 @@ use super::claude_run::{authority::Live, bridge};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
+/// How long a shell request waits for the person who sent the message, as long
+/// as Octos's own tool requests wait (`permission`).
+const SHELL_APPROVAL_SECS: u64 = 100;
+/// The longest a `shell` command may run.
+const MAX_SHELL_SECS: u64 = 90;
+// A shell call answered at the last moment still runs its longest command
+// inside Octos's deadline for the host tool call, with time to send the result.
+const _: () = assert!((SHELL_APPROVAL_SECS + MAX_SHELL_SECS + 10) * 1000
+    <= hagency_runtime::octos::session::HOST_TOOL_TIMEOUT_MS);
 pub(super) struct Host {
     pending: Option<SharedCallCustody>,
     send: Option<oneshot::Sender<SharedCallCustody>>,
@@ -33,11 +42,13 @@ impl Host {
         let allowed = match self.policy {
             SharedOctosPolicy::Yolo { .. } => true,
             SharedOctosPolicy::Standard { .. } => {
+                // As for Claude, the person who sent the message decides; the
+                // owner is not asked. The command runs in the workspace-only
+                // sandbox without network (`SharedOctosShell`).
                 let request = json!({"id":id,"method":"octos/can_use_tool",
                     "params":{"sessionId":session,"toolName":"shell","input":args},
-                    "sessionAllowed":false,"managerCanDecide":false});
-                // Leave time to send the result and recheck the live lease.
-                tokio::time::timeout(Duration::from_secs(45), bridge::permission(&self.live, &self.work, request))
+                    "sessionAllowed":false,"managerCanDecide":true});
+                tokio::time::timeout(Duration::from_secs(SHELL_APPROVAL_SECS), bridge::permission(&self.live, &self.work, request))
                     .await.is_ok_and(|result| result.unwrap_or(false))
             }
             _ => false,
@@ -85,7 +96,7 @@ impl octos_turn::Host for Host {
             SharedOctosPolicy::Standard { .. } => {
                 let request = json!({"id":id,"method":"octos/can_use_tool",
                     "params":{"sessionId":session,"toolName":tool,"input":params},
-                    "sessionAllowed":false,"managerCanDecide":false});
+                    "sessionAllowed":false,"managerCanDecide":true});
                 tokio::time::timeout(Duration::from_secs(100), bridge::permission(&self.live, &self.work, request))
                     .await.is_ok_and(|result| result.unwrap_or(false))
             }
@@ -102,7 +113,7 @@ impl octos_turn::Host for Host {
         struct Input { command: String, timeout_secs: Option<u64> }
         let input: Input = serde_json::from_value(args.clone()).map_err(|_| "invalid_shell_request")?;
         let timeout = input.timeout_secs.unwrap_or(30);
-        if input.command.is_empty() || input.command.len() > 16_000 || !(1..=90).contains(&timeout)
+        if input.command.is_empty() || input.command.len() > 16_000 || !(1..=MAX_SHELL_SECS).contains(&timeout)
             || self.live.proof().await.is_err() { return Err("shell_request_refused".into()); }
         if !self.approve_shell(id, session, args).await { return Err("shell_owner_denied".into()); }
         let shell = self.shell.as_ref().ok_or("shell_unavailable")?;

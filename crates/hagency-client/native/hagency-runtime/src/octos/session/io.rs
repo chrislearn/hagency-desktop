@@ -9,7 +9,11 @@ use tokio::{
 };
 
 const READ_BYTES: usize = 16 * 1024;
-const MAX_QUEUED: usize = 16;
+// Frames decoded ahead while a request is still being written. Octos sends
+// bursts of small notifications (one 16 KiB read can hold dozens), so the
+// byte bound below is what limits memory; the count only stops a flood of
+// tiny frames.
+const MAX_QUEUED: usize = 4096;
 const MAX_QUEUED_BYTES: usize = 2 * 1024 * 1024;
 const MAX_DURATION_MS: u64 = 1_200_000;
 const STDERR_BYTES: usize = 16 * 1024;

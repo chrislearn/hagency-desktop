@@ -2,6 +2,7 @@
 use super::super::{
     ManagementRuntime,
     allocation_transport::{AllocationTransport, ConnectionReply, Operation},
+    provider_identity::ResourceWitness,
 };
 use super::*;
 
@@ -161,6 +162,9 @@ pub(super) fn validate_admission(
     match c.runtime.as_str() {
         "codex" => Ok(ManagementRuntime::Codex),
         "claude" => Ok(ManagementRuntime::Claude),
+        // Only macOS runs a pooled Octos launch.
+        "octos" if cfg!(target_os = "macos") => Ok(ManagementRuntime::Octos),
+        "octos" => Err(failure(409, "octos_pool_platform_unsupported")),
         _ => Err(failure(409, "provider_identity_unavailable")),
     }
 }
@@ -233,7 +237,8 @@ impl OwnerGrantIntents {
         if resource.revision != c.resource_revision || resource.framework != c.runtime {
             return Err(failure(409, "management_enrollment_changed"));
         }
-        let calendar = registry.resource_calendar(io.profile.clone(), c.resource_id.clone()).await.map_err(storage)?;
+        let calendar = registry.resource_calendar(io.profile.clone(), c.resource_id.clone()).await.map_err(storage)?
+            .or_else(|| shared_limit_calendar(&resource.budget));
         io.check().await?;
         Ok(OwnerGrantForm {
             awaiting_admission: c.state != "admitted",
@@ -312,7 +317,7 @@ impl OwnerGrantIntents {
         contribution_id: String,
     ) -> Result<VerifiedManagementEnrollment, NativeError> {
         self.verified_enrollment_observe(registry, contribution_id, |runtime,profile,resource,revision| {
-            self.manager.verified_resource_provider_account(registry,profile,runtime,resource,revision)
+            self.manager.verified_resource_witness(registry,profile,runtime,resource,revision)
         })
         .await
     }
@@ -322,6 +327,18 @@ impl OwnerGrantIntents {
     )->Result<VerifiedManagementEnrollment,NativeError>
     where F:FnOnce(ManagementRuntime)->Fut,
           Fut:std::future::Future<Output=Result<VerifiedProviderAccount,NativeError>>,
+    {
+        self.verified_enrollment_observe(registry,contribution_id,|runtime,_,_,_| {
+            let account = observe(runtime);
+            async move { account.await.map(ResourceWitness::Account) }
+        }).await
+    }
+    #[cfg(test)]
+    pub(super) async fn verified_enrollment_witness_with<F,Fut>(
+        &self, registry:&OwnerResourceRegistry, contribution_id:String, observe:F,
+    )->Result<VerifiedManagementEnrollment,NativeError>
+    where F:FnOnce(ManagementRuntime)->Fut,
+          Fut:std::future::Future<Output=Result<ResourceWitness,NativeError>>,
     {
         self.verified_enrollment_observe(registry,contribution_id,|runtime,_,_,_|observe(runtime)).await
     }
@@ -333,7 +350,7 @@ impl OwnerGrantIntents {
     ) -> Result<VerifiedManagementEnrollment, NativeError>
     where
         F: FnOnce(ManagementRuntime, ProfileAuthority, String, String) -> Fut,
-        Fut: std::future::Future<Output = Result<VerifiedProviderAccount, NativeError>>,
+        Fut: std::future::Future<Output = Result<ResourceWitness, NativeError>>,
     {
         super::super::key(&contribution_id)?;
         let cookie = self.cookie().await?;
@@ -374,14 +391,35 @@ impl OwnerGrantIntents {
         // capacity must not require the account the pool was created with;
         // the binding keeps that recorded identity, so the enrollment still
         // matches the earlier grants. Codex resources keep the exact check.
-        let resource = if local.framework == "claude" {
-            registry
-                .verify_claude_launch_resource(io.profile.clone(), resource_id, provider)
-                .await
-        } else {
-            registry
-                .verify_provider_resource(io.profile.clone(), resource_id, provider)
-                .await
+        // An Octos resource is bound to the owner's profile and model, as its
+        // pooled launches are.
+        let resource = match (local.framework.as_str(), provider) {
+            ("claude", ResourceWitness::Account(provider)) => {
+                registry
+                    .verify_claude_launch_resource(io.profile.clone(), resource_id, provider)
+                    .await
+            }
+            ("codex", ResourceWitness::Account(provider)) => {
+                registry
+                    .verify_provider_resource(io.profile.clone(), resource_id, provider)
+                    .await
+            }
+            ("octos", ResourceWitness::Octos(profile)) => {
+                match registry
+                    .verify_octos_resource(io.profile.clone(), resource_id, profile)
+                    .await
+                {
+                    // With the session still valid, a refused binding means
+                    // the profile, its model or its settings are no longer
+                    // the ones the pool was created with.
+                    Err(hagency_store::Error::LocalAuthority) => {
+                        io.check().await?;
+                        return Err(failure(409, "octos_profile_changed"));
+                    }
+                    result => result,
+                }
+            }
+            _ => return Err(failure(409, "management_enrollment_changed")),
         }
         .map_err(storage)?;
         io.check().await?;

@@ -4,7 +4,7 @@
 use hagency_platform::Launch;
 use hagency_runtime::{
     octos::{
-        Outcome,
+        Outcome, Usage,
         session::{
             Error, Event, Idle, Limits, ObservationKind, Permissions, Phase, QUIET_MS,
             UsageCoverage, UsageEvidence,
@@ -160,6 +160,33 @@ fn cleanup(value: Cleanup) {
 }
 
 #[tokio::test]
+async fn native_octos_owned_session_answers_a_host_tool_call_behind_a_burst_of_notifications() {
+    // Octos main sends dozens of small notifications the host does not read
+    // right behind a host tool call; writing the answer decodes them ahead.
+    let mut run = spawn("host-tool-burst");
+    run.start().await;
+    let mut answered = false;
+    let idle = loop {
+        match next_event(&mut run.runner).await {
+            Event::ToolCall { params } => {
+                let call = run.runner.host_tool_call(&params).unwrap();
+                assert_eq!(call.name, "hagency.get_task");
+                assert!(run.runner.host_tool_result(&call.call_id, Ok(json!({"task":"offline"}))).await.unwrap());
+                answered = true;
+            }
+            Event::Idle(idle) => break idle,
+            _ => {}
+        }
+    };
+    assert!(answered);
+    assert_eq!(idle.outcome, Outcome::Completed);
+    assert_eq!(idle.reply.as_deref(), Some("octos fixture reply"));
+    let result = run.requests().into_iter().find(|r| r["method"] == "peer/tool/result").unwrap();
+    assert_eq!(result["params"]["call_id"], "ptc-burst");
+    assert_eq!(result["params"]["data"], json!({"task":"offline"}));
+}
+
+#[tokio::test]
 async fn native_octos_owned_session_sends_the_fixed_handshake() {
     let mut run = spawn("normal");
     run.start().await;
@@ -244,6 +271,10 @@ async fn native_octos_owned_session_reports_usage_per_turn_and_at_idle() {
     // reasoning breakdown.
     assert!(idle.coverage() == UsageCoverage::Session);
     assert_eq!(counts(idle), [Some(10), Some(7), None, Some(20), Some(30)]);
+    // Both records stay available to the host whatever the coverage.
+    assert_eq!(idle.turn_sums(), Some(Usage { input: 10, output: 7, reasoning: 2, cache_read: 20, cache_write: 30 }));
+    assert_eq!(idle.session_totals(), Some(Usage { input: 10, output: 7, reasoning: 0, cache_read: 20, cache_write: 30 }));
+    assert_eq!(turn.session_totals(), None);
     let last = run.runner.last_observation().unwrap();
     assert!(last.source() == &source);
     // The turn's tool start, its terminal's usage, then the idle usage.
@@ -344,6 +375,8 @@ async fn native_octos_owned_absent_usage_stays_unknown() {
     assert_eq!(counts(turn), [None; 5]);
     assert!(idle.coverage() == UsageCoverage::Turns);
     assert_eq!(counts(idle), [None; 5]);
+    assert_eq!(idle.turn_sums(), None);
+    assert_eq!(idle.session_totals(), None);
     cleanup(run.runner.stop());
 }
 
@@ -360,6 +393,10 @@ async fn native_octos_owned_missing_turn_usage_cannot_be_closed_by_partial_sessi
     assert_eq!(counts(turn), [None; 5]);
     assert!(idle.coverage() == UsageCoverage::Turns);
     assert_eq!(counts(idle), [None; 5]);
+    // As after a stop: no turn report, but the session's record is still
+    // given, so the host can keep it as the next dispatch's baseline.
+    assert_eq!(idle.turn_sums(), None);
+    assert_eq!(idle.session_totals(), Some(Usage { input: 10, output: 7, reasoning: 0, cache_read: 20, cache_write: 30 }));
     cleanup(run.runner.stop());
 }
 
@@ -376,6 +413,7 @@ async fn native_octos_owned_lagging_totals_keep_the_turn_sums() {
         counts(idle),
         [Some(10), Some(7), Some(2), Some(20), Some(30)]
     );
+    assert_eq!(idle.session_totals(), Some(Usage { input: 1, output: 1, reasoning: 0, cache_read: 0, cache_write: 0 }));
     cleanup(run.runner.stop());
 }
 
