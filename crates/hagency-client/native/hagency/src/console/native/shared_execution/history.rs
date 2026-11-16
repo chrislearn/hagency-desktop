@@ -143,13 +143,20 @@ struct Later {
     unavailable: usize,
     // Pages returned so far; the first is part of the first history page.
     pages: usize,
+    // Edits and redactions sent after the request, for the earlier messages.
+    edits: HashMap<(String, String), Value>,
+    redacted: HashSet<String>,
 }
 impl Later {
     fn fill(&mut self, anchor: &str, fetched: Result<HistoryBatch, NativeError>) {
         self.fetched = true;
         let batch = match fetched {
             Ok(batch) => batch,
-            Err(_) => { self.failed = true; return; }
+            Err(error) => {
+                tracing::warn!(code=%error.code, "Shared room messages after the request unavailable");
+                self.failed = true;
+                return;
+            }
         };
         self.more = batch.next.is_some();
         // Edits and redactions follow their targets. Read newest first, as
@@ -159,6 +166,8 @@ impl Later {
             records.accept(anchor, record);
         }
         self.unavailable = records.unavailable;
+        self.edits = std::mem::take(&mut records.edits);
+        self.redacted = std::mem::take(&mut records.redacted);
         let mut messages: Vec<Vec<Value>> = Vec::new();
         for part in records.buffer {
             match messages.last_mut() {
@@ -398,6 +407,17 @@ impl<S: HistoryIo> Reader<S> {
             self.next = self.device.start(&self.room, &self.anchor).await?;
             self.started = true;
         }
+        // Read what was sent after the request before any earlier message: an
+        // edit or redaction sent since (a run card's final state, a correction)
+        // still changes the earlier message it targets. Later edits are newer,
+        // so they win over any edit found before the request.
+        if index == 0 && let Some(later) = self.later.as_mut() && !later.fetched {
+            later.fill(&self.anchor, self.device.later(&self.room, &self.anchor).await);
+            for (key, edit) in later.edits.drain() {
+                self.records.edits.entry(key).or_insert(edit);
+            }
+            self.records.redacted.extend(later.redacted.drain());
+        }
         // Bound each tool operation even for rooms containing only state events.
         // An empty page with a next cursor is not the end of the history.
         if self.records.buffer.is_empty()
@@ -423,9 +443,6 @@ impl<S: HistoryIo> Reader<S> {
         let mut after = None;
         let mut after_records = 0;
         if index == 0 && let Some(later) = self.later.as_mut() {
-            if !later.fetched {
-                later.fill(&self.anchor, self.device.later(&self.room, &self.anchor).await);
-            }
             let (messages, bytes) = take_page(&mut later.buffer, &mut self.documents, PAGE_BYTES / 2, &mut later.unavailable);
             later.pages = 1;
             limit -= bytes;
@@ -944,6 +961,26 @@ mod tests {
         let again: Value = serde_json::from_str(&reader.read(None).await.unwrap()).unwrap();
         assert_eq!(again["alreadyRead"], true);
         assert_eq!(reader.device.asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_edit_or_redaction_sent_after_the_request_changes_the_earlier_message() {
+        let mut reader = queued(Some(vec![
+            json!({"eventId":"$card","sender":"@alice","status":"edit","target":"$first","body":"write a poem"}),
+            json!({"eventId":"$forged","sender":"@bob","status":"edit","target":"$first","body":"forged"}),
+            json!({"eventId":"$redact","sender":"@bob","status":"redaction","target":"$older"}),
+        ]), false);
+        reader.include_later();
+        let first: Value = serde_json::from_str(&reader.read(None).await.unwrap()).unwrap();
+        let earlier = first["messages"].as_array().unwrap();
+        assert_eq!(earlier[0]["eventId"], "$first");
+        assert_eq!(earlier[0]["body"], "write a poem");
+        assert_eq!(earlier[0]["editedByEventId"], "$card");
+        assert_eq!(earlier[1]["eventId"], "$older");
+        assert_eq!(earlier[1]["status"], "redacted");
+        assert!(earlier[1].get("body").is_none());
+        assert!(first["afterRequest"]["messages"].as_array().unwrap().is_empty());
+        assert_eq!(first["afterRequest"]["complete"], true);
     }
 
     #[tokio::test]
