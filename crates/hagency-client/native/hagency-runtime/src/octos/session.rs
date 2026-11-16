@@ -152,8 +152,10 @@ pub enum Event {
 }
 /// The most host tools one registration may carry (Octos's own bound).
 pub const MAX_HOST_TOOLS: usize = 64;
-/// How long Octos waits for one host tool's result before it gives up.
-pub const HOST_TOOL_TIMEOUT_MS: u64 = 180_000;
+/// How long Octos waits for one host tool's result before it gives up. This is
+/// Octos's longest, so a pooled shell request can wait for the answer of the
+/// person who sent the message and still run its command.
+pub const HOST_TOOL_TIMEOUT_MS: u64 = 300_000;
 /// One host tool as Octos registers it: `<app>.<tool>`, shown to the model as
 /// `<app>_<tool>`.
 pub struct HostTool {
