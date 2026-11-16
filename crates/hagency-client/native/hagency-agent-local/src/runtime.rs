@@ -1276,11 +1276,28 @@ async fn octos_wait<F: std::future::Future + ?Sized>(
         }
     };
     tokio::pin!(selected);
-    match wire.next_or_control(selected.as_mut()).await
-        .map_err(|_| Error::Protocol("Octos event wait"))? {
+    match wire.next_or_control(selected.as_mut()).await.map_err(|error| octos_wait_failure(&error))? {
         octos::session::ControlUpdate::Event(event) => Ok(OctosWait::Event(event)),
         octos::session::ControlUpdate::Control(value) => Ok(value),
     }
+}
+
+/// Why waiting on Octos failed, as a fixed label: the cause carries no private
+/// text, and the owner's log needs it to tell a stall from an exit.
+fn octos_wait_failure(error: &octos::session::Error) -> Error {
+    use octos::session::Error as E;
+    Error::Protocol(match error {
+        E::Timeout => "Octos event wait: deadline",
+        E::Capacity => "Octos event wait: capacity",
+        E::PeerEof => "Octos event wait: Octos exited",
+        E::Io(_) => "Octos event wait: I/O",
+        E::Protocol(_) => "Octos event wait: protocol",
+        E::Identity => "Octos event wait: identity",
+        E::Cancelled => "Octos event wait: cancelled",
+        E::State => "Octos event wait: state",
+        E::Closed | E::HostClosed => "Octos event wait: closed",
+        E::Configuration | E::Refused(_) | E::PermissionUnavailable => "Octos event wait",
+    })
 }
 
 /// Keep processing the original turn while a host tool waits on an owner or
