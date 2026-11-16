@@ -669,6 +669,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                         return Err(Error::Identity);
                     }
                 }
+                // A notification Hagency does not read would only be dropped
+                // by `apply`; keeping it would let a burst of them use up the
+                // slots the ones that matter need.
+                Frame::Notification(Notification::Other) => {}
                 Frame::Notification(notification) => {
                     if self.pending.len() >= MAX_PENDING {
                         return Err(Error::Capacity);

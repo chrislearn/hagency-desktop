@@ -160,6 +160,33 @@ fn cleanup(value: Cleanup) {
 }
 
 #[tokio::test]
+async fn native_octos_owned_session_answers_a_host_tool_call_behind_a_burst_of_notifications() {
+    // Octos main sends dozens of small notifications the host does not read
+    // right behind a host tool call; writing the answer decodes them ahead.
+    let mut run = spawn("host-tool-burst");
+    run.start().await;
+    let mut answered = false;
+    let idle = loop {
+        match next_event(&mut run.runner).await {
+            Event::ToolCall { params } => {
+                let call = run.runner.host_tool_call(&params).unwrap();
+                assert_eq!(call.name, "hagency.get_task");
+                assert!(run.runner.host_tool_result(&call.call_id, Ok(json!({"task":"offline"}))).await.unwrap());
+                answered = true;
+            }
+            Event::Idle(idle) => break idle,
+            _ => {}
+        }
+    };
+    assert!(answered);
+    assert_eq!(idle.outcome, Outcome::Completed);
+    assert_eq!(idle.reply.as_deref(), Some("octos fixture reply"));
+    let result = run.requests().into_iter().find(|r| r["method"] == "peer/tool/result").unwrap();
+    assert_eq!(result["params"]["call_id"], "ptc-burst");
+    assert_eq!(result["params"]["data"], json!({"task":"offline"}));
+}
+
+#[tokio::test]
 async fn native_octos_owned_session_sends_the_fixed_handshake() {
     let mut run = spawn("normal");
     run.start().await;
