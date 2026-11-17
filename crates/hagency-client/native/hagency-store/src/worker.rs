@@ -63,11 +63,14 @@ impl Store {
                             now,
                             submitted,
                             reply,
-                            _bytes,
+                            _bytes: bytes,
                         } => {
                             if !reply.is_closed() {
                                 let result = execution_time(now, submitted)
                                     .and_then(|now| repository.outbound(command, now));
+                                // Free the reservation before answering, so the
+                                // caller's next command never finds it held.
+                                drop(bytes);
                                 let _ = reply.send(result);
                             }
                             continue;
@@ -98,7 +101,17 @@ impl Store {
                     // reconciled via the immutable idempotency key. Never replay an external action.
                     if !job.reply.is_closed() {
                         let result = repository.receive(&job.delivery, job.now);
-                        let _ = job.reply.send(result);
+                        // The delivery and its reservation go before the
+                        // answer, so the caller's next delivery never finds
+                        // this one's bytes still held.
+                        let Receive {
+                            delivery,
+                            reply,
+                            _bytes: bytes,
+                            ..
+                        } = job;
+                        drop((delivery, bytes));
+                        let _ = reply.send(result);
                     }
                 }
             })?;
@@ -368,6 +381,36 @@ mod tests {
         };
         assert!(reply.is_closed());
         assert_eq!(store.bytes.available_permits(), 4096);
+    }
+
+    /// The writer frees a command's reservation before it answers, so a
+    /// caller that sends its next command the moment one answers finds the
+    /// budget free again.
+    #[tokio::test]
+    async fn native_store_budget_is_free_when_a_command_answers() {
+        use crate::outbound::{Activation, Command, RegistrationIdentity};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::start(Repository::open(&dir.path().join("state")).unwrap(), 16).unwrap();
+        let full = store.bytes.available_permits();
+        let command = Command::Activate(Activation {
+            registration: RegistrationIdentity {
+                binding: "worker-fixture".into(),
+                registration_generation: 1,
+                side_id: "matrix.example.test".into(),
+                fleet_id: "fleet-fixture".into(),
+                registration_fingerprint: "a".repeat(64),
+            },
+            machine_generation: 1,
+            credential_fingerprint: "b".repeat(64),
+        });
+        for n in 0..50 {
+            store.receive(delivery(), n).await.unwrap();
+            assert_eq!(store.bytes.available_permits(), full);
+            // Its result does not matter here, only that it answered.
+            let _ = store.outbound(command.clone(), 1).await;
+            assert_eq!(store.bytes.available_permits(), full);
+        }
+        store.shutdown().await.unwrap();
     }
 }
 
