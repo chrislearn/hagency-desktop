@@ -194,10 +194,17 @@ if kind == 'claude':
             send({'type':'command_lifecycle','command_uuid':'fixture-command','state':'started','session_id':session})
         send({'type': 'system', 'subtype': 'init', 'session_id': session, 'user_message_uuids':[prompt.get('uuid')]})
         aborted = False
-        if mode == 'spontaneous_messages':
-            send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
-                'message':{'id':'progress-a','content':[{'type':'text','text':'First finding'},
-                    {'type':'tool_use','id':'progress-tool-a','name':'Read','input':{}}]}})
+        if mode in ('spontaneous_messages', 'spontaneous_split'):
+            text = {'type':'text','text':'First finding'}
+            tool = {'type':'tool_use','id':'progress-tool-a','name':'Read','input':{}}
+            if mode == 'spontaneous_split':
+                send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
+                    'message':{'id':'progress-a','content':[text]}})
+                send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
+                    'message':{'id':'progress-a','content':[tool]}})
+            else:
+                send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
+                    'message':{'id':'progress-a','content':[text, tool]}})
             deadline = time.monotonic() + 5
             while not (root / 'progress-observed').exists() and time.monotonic() < deadline:
                 time.sleep(.01)

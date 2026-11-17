@@ -255,7 +255,16 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
                             .map_err(|_| Error::Protocol("message delivery custody"))?;
                     }
                 } else if completed.is_empty() {
-                    self.pending_message = Some((previous_id, previous_text, previous_delivered));
+                    // Claude can emit the text and tool blocks as separate
+                    // assistant frames with the same API message ID. A tool
+                    // frame proves the preceding text is intermediate even
+                    // when the tool is waiting for a user response.
+                    let mut delivered = previous_delivered;
+                    if !delivered && blocks.iter().any(|block| block["type"] == "tool_use") {
+                        delivered = output.message(&format!("claude:assistant:{previous_id}"), &previous_text)
+                            .map_err(|_| Error::Protocol("message delivery custody"))?;
+                    }
+                    self.pending_message = Some((previous_id, previous_text, delivered));
                     return Ok(());
                 } else if previous_delivered {
                     if previous_text != completed { return Err(Error::Protocol("Claude message changed")); }
