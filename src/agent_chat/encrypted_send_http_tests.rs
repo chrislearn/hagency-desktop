@@ -1,7 +1,7 @@
 //! Exercise the real SDK device store and signature verification over HTTP.
 use super::*;
 use matrix_sdk::{
-    SessionMeta, SessionTokens,
+    Client, SessionMeta, SessionTokens,
     authentication::matrix::MatrixSession,
     encryption::LocalTrust,
     ruma::{api::MatrixVersion, device_id, user_id},
@@ -166,7 +166,7 @@ async fn encrypted_agent_first_send_queries_again_after_empty_device_list() {
     let client = server.client().await;
     tokio::time::timeout(
         Duration::from_secs(5),
-        wait_for_device(&client, user_id!("@_hagency_agt_one:test")),
+        wait_for_sendable_device(&client, user_id!("@_hagency_agt_one:test")),
     )
     .await
     .expect("must discover newly published device")
@@ -186,7 +186,7 @@ async fn encrypted_agent_first_send_queries_again_after_empty_device_list() {
         .unwrap();
     let result = tokio::time::timeout(
         Duration::from_millis(700),
-        wait_for_device(&client, user_id!("@_hagency_agt_one:test")),
+        wait_for_sendable_device(&client, user_id!("@_hagency_agt_one:test")),
     )
     .await;
     assert!(
@@ -203,7 +203,7 @@ async fn encrypted_agent_first_send_rejects_invalid_device_signature() {
     let client = server.client().await;
     let result = tokio::time::timeout(
         Duration::from_millis(700),
-        wait_for_device(&client, user_id!("@_hagency_agt_one:test")),
+        wait_for_sendable_device(&client, user_id!("@_hagency_agt_one:test")),
     )
     .await;
     assert!(
