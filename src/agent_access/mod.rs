@@ -31,6 +31,18 @@ pub fn current() -> AgentAccessSettings {
     }
 }
 
+/// Account-scoped explicit identity registration. A registration affects
+/// presentation only; it does not confer execution or room permissions.
+pub fn is_registered_agent(user: &UserId) -> bool {
+    let epoch = crate::account_session::epoch();
+    if crate::sliding_sync::account_changing() { return false; }
+    let current = crate::sliding_sync::current_user_id();
+    let state = SETTINGS.read().unwrap();
+    state.0.is_some() && state.0 == current
+        && epoch == crate::account_session::epoch() && !crate::sliding_sync::account_changing()
+        && state.1.agent_registry.contains(user)
+}
+
 pub fn framework_label(user: &UserId) -> Option<&'static str> {
     let settings = current();
     settings

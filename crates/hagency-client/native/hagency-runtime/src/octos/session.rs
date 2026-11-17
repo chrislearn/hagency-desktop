@@ -208,6 +208,9 @@ pub struct SessionDriver<R, W, E> {
     turns: BTreeMap<String, Turn>,
     last_ended: Option<String>,
     seen: BTreeSet<(String, u64)>,
+    /// Accepted reports are keyed by provider identity, not their text.
+    /// Keep a digest to reject a replay which changes an existing message.
+    seen_reports: BTreeMap<String, [u8; 32]>,
     background_closed: BTreeSet<String>,
     /// Octos's last report of the session's whole job.
     active: bool,
@@ -225,6 +228,7 @@ pub struct SessionDriver<R, W, E> {
     live_text: Option<crate::live_text::LiveText>,
     delta_sequences: BTreeMap<String, u64>,
     active_only_steer: bool,
+    durable_agent_report: bool,
     host_scoped_profile: bool,
     host_scoped_workspace_io: bool,
     host_scoped_search: bool,
@@ -246,6 +250,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             turns: BTreeMap::new(),
             last_ended: None,
             seen: BTreeSet::new(),
+            seen_reports: BTreeMap::new(),
             background_closed: BTreeSet::new(),
             active: false,
             reported_idle: false,
@@ -259,6 +264,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
             live_text: None,
             delta_sequences: BTreeMap::new(),
             active_only_steer: false,
+            durable_agent_report: false,
             host_scoped_profile: false,
             host_scoped_workspace_io: false,
             host_scoped_search: false,
@@ -404,6 +410,29 @@ impl<R, W, E> SessionDriver<R, W, E> {
                 self.quiet_from = None;
                 self.reported_idle = false;
                 Some(Event::TurnStarted { turn_id })
+            }
+            Notification::AgentReport { session_id, turn_id, message_id, origin_id, text }
+                if self.durable_agent_report
+                    && self.ours(&session_id)
+                    && origin_id == "main"
+                    && self.turns.contains_key(&turn_id) =>
+            {
+                use sha2::{Digest, Sha256};
+                let key = crate::live_text::native_message_id(
+                    "octos", &session_id, Some(&turn_id), &message_id,
+                ).map_err(|_| Error::Identity)?;
+                let digest: [u8; 32] = Sha256::digest(text.as_bytes()).into();
+                if let Some(previous) = self.seen_reports.get(&key) {
+                    if previous != &digest { return Err(Error::Identity); }
+                    return Ok(None);
+                }
+                if self.seen_reports.len() >= MAX_SEEN { return Err(Error::Capacity); }
+                if let Some(output) = &self.live_text
+                    && output.message(&key, &text).map_err(|_| Error::Capacity)?
+                {
+                    self.seen_reports.insert(key, digest);
+                }
+                None
             }
             Notification::Envelope(envelope)
                 if self.ours(&envelope.session_id)
@@ -707,6 +736,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
         self.active_only_steer = answer["capabilities"]["supported_features"]
             .as_array().is_some_and(|features| ["turn.steer_active_only.v1", "event.turn_steer_dropped.v1"]
                 .iter().all(|wanted| features.iter().any(|feature| feature.as_str() == Some(*wanted))));
+        // Do not request provider-led reports until the host can recover the
+        // provider ledger after a crash. The existing host report tool commits
+        // directly to Hagency's outbox before it acknowledges a report.
+        self.durable_agent_report = super::FEATURES.contains(&"event.agent_report.durable.v1")
+            && answer["capabilities"]["supported_features"]
+            .as_array().is_some_and(|features| features.iter().any(|feature|
+                feature.as_str() == Some("event.agent_report.durable.v1")));
         self.host_scoped_profile = answer["capabilities"]["supported_features"]
             .as_array().is_some_and(|features| features.iter().any(|feature|
                 feature.as_str() == Some("runtime.host_scoped_profile.v1")));
@@ -1167,6 +1203,35 @@ mod plan_tests {
             self.0.lock().unwrap().push((id.into(), text.into()));
             Ok(())
         }
+    }
+
+    #[test]
+    fn durable_reports_keep_message_identity_and_reject_foreign_scope() {
+        let messages = Arc::new(Messages::default());
+        let mut session = SessionDriver::new(tokio::io::empty(), tokio::io::sink(), tokio::io::empty(), Limits::default()).unwrap();
+        session.session_id = Some("coding:local:one".into());
+        session.turns.insert("parent".into(), Turn::default());
+        session.live_text = Some(crate::live_text::LiveText::with_messages(messages.clone()));
+        let report = |session_id: &str, turn_id: &str, origin_id: &str, message_id: &str, text: &str|
+            Notification::AgentReport { session_id: session_id.into(), turn_id: turn_id.into(),
+                message_id: message_id.into(), origin_id: origin_id.into(), text: text.into() };
+        session.apply(report("coding:local:one", "parent", "main", "one", "same"), Instant::now()).unwrap();
+        assert!(messages.0.lock().unwrap().is_empty(), "unnegotiated reports are ignored");
+        session.durable_agent_report = true;
+        session.apply(report("coding:local:other", "parent", "main", "foreign", "private"), Instant::now()).unwrap();
+        session.apply(report("coding:local:one", "other", "main", "foreign", "private"), Instant::now()).unwrap();
+        session.apply(report("coding:local:one", "parent", "peer-other", "foreign", "private"), Instant::now()).unwrap();
+        session.apply(report("coding:local:one", "parent", "main", "one", "same"), Instant::now()).unwrap();
+        session.apply(report("coding:local:one", "parent", "main", "one", "same"), Instant::now()).unwrap();
+        session.turns.get_mut("parent").unwrap().terminal = Some((Outcome::Completed, None));
+        session.apply(report("coding:local:one", "parent", "main", "two", "same"), Instant::now()).unwrap();
+        assert!(matches!(session.apply(report("coding:local:one", "parent", "main", "one", "changed"), Instant::now()), Err(Error::Identity)));
+        let rows = messages.0.lock().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].0.starts_with("octos:report:") && rows[1].0.starts_with("octos:report:"));
+        assert_ne!(rows[0].0, rows[1].0);
+        assert_eq!(rows[0].1, "same");
+        assert_eq!(rows[1].1, "same");
     }
 
     #[test]

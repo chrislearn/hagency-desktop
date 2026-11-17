@@ -48,6 +48,40 @@ async fn claude_background_followup_preserves_the_original_answer_as_a_separate_
 }
 
 #[tokio::test]
+async fn claude_distinct_background_results_with_equal_text_remain_distinct() {
+    let mut f = Fixture::new(Kind::Claude, "background_native_equal", ToolPolicy::Deny);
+    let mut process = f.process().await;
+    process.session.open_context(&mut f.ledger, &f.scope, &f.profile).await.unwrap();
+    let (queue, _) = codex::approval_queue(1).unwrap();
+    let messages = Arc::new(Messages::default());
+    let queue = queue.with_live_text(LiveText::with_messages(messages.clone()));
+    let done = process.session.run_with_started(&mut f.ledger, "@owner:test", &f.scope,
+        "call", "call", "start background work", BudgetMode::Postpaid, &queue, None).await.unwrap();
+    assert_eq!(done.text, "offline reply");
+    let records = messages.0.lock().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].1, "offline reply");
+    assert!(records[0].0.starts_with("claude:result:"));
+    drop(records);
+    process.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn claude_reused_result_identity_with_changed_text_fails_closed() {
+    let mut f = Fixture::new(Kind::Claude, "background_native_reused_id", ToolPolicy::Deny);
+    let mut process = f.process().await;
+    process.session.open_context(&mut f.ledger, &f.scope, &f.profile).await.unwrap();
+    let (queue, _) = codex::approval_queue(1).unwrap();
+    let messages = Arc::new(Messages::default());
+    let queue = queue.with_live_text(LiveText::with_messages(messages.clone()));
+    let result = process.session.run_with_started(&mut f.ledger, "@owner:test", &f.scope,
+        "call", "call", "start background work", BudgetMode::Postpaid, &queue, None).await;
+    assert!(result.is_err());
+    assert!(messages.0.lock().unwrap().is_empty());
+    let _ = process.stop().await;
+}
+
+#[tokio::test]
 async fn octos_can_report_twice_during_one_turn_and_keep_its_final_answer() {
     let mut f = Fixture::new(Kind::Octos, "octos_progress", ToolPolicy::Deny);
     let mut process = f.process().await;

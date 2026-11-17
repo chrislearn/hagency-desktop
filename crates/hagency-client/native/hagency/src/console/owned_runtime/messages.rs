@@ -23,6 +23,16 @@ static KEY_LOCK: LazyLock<Mutex<()>> = LazyLock::new(Default::default);
 fn hash(value: impl AsRef<[u8]>) -> String {
     format!("{:x}", Sha256::digest(value.as_ref()))
 }
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+fn report_content(room: &str, thread: &str, text: &str, report_id: &str) -> Result<serde_json::Value, ()> {
+    if !valid_digest(report_id) { return Err(()); }
+    let mut content = super::e2ee::native_message_content(room, thread, text).map_err(|_| ())?;
+    content.as_object_mut().ok_or(())?
+        .insert("org.hagency.report_id".into(), report_id.into());
+    Ok(content)
+}
 fn read(path: &Path, limit: u64) -> Result<Vec<u8>, ()> {
     let mut bytes = Vec::new();
     hagency_store::private::open(path, false)
@@ -104,6 +114,19 @@ struct Record {
     digest: String,
     text: Option<String>,
     event: Option<String>,
+    /// Added only to v2. Older binaries reject, rather than resend, v2 rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    report_id: Option<String>,
+    /// The Matrix account, device and encryption endpoint used for the first
+    /// attempted send. An uncertain send cannot be retried from another device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attempt: Option<Attempt>,
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Attempt {
+    device: String,
+    encrypted: bool,
 }
 struct State {
     records: BTreeMap<u64, Record>,
@@ -167,11 +190,13 @@ pub(in crate::console) struct Outbox {
     directory: PathBuf,
     cipher: StoreCipher,
     state: Mutex<State>,
+    lock_path: PathBuf,
 }
 pub(in crate::console) struct Pending {
     pub sequence: u64,
     pub txn: String,
     pub text: String,
+    report_id: Option<String>,
 }
 impl Outbox {
     pub fn exists(device_root: &Path, card: &Card) -> bool {
@@ -197,6 +222,9 @@ impl Outbox {
         let cipher = cipher(&root)?;
         let directory = root.join(&route.id);
         hagency_store::private::directory(&directory).map_err(|_| ())?;
+        let lock_directory = root.join("delivery-locks");
+        hagency_store::private::directory(&lock_directory).map_err(|_| ())?;
+        let lock_path = lock_directory.join(format!("{}.lock", hash(&route.id)));
         let mut state = State {
             records: BTreeMap::new(),
             ids: BTreeMap::new(),
@@ -210,13 +238,18 @@ impl Outbox {
             let record: Record = cipher
                 .decrypt_value(&read(&path, MAX_FILE_BYTES)?)
                 .map_err(|_| ())?;
-            if record.version != 1
+            if !match record.version {
+                1 => record.report_id.is_none() && record.attempt.is_none(),
+                2 => record.report_id.as_deref().is_some_and(valid_digest)
+                    && record.attempt.as_ref().is_none_or(|attempt| valid_digest(&attempt.device)),
+                _ => false,
+            }
                 || record.run != route.id
                 || record.sequence == 0
                 || record.id.is_empty()
                 || record.id.len() > 2048
                 || record.id.chars().any(char::is_control)
-                || record.digest.len() != 64
+                || !valid_digest(&record.digest)
                 || record
                     .text
                     .as_ref()
@@ -254,6 +287,7 @@ impl Outbox {
             directory,
             cipher,
             state: Mutex::new(state),
+            lock_path,
         })
     }
     fn path(&self, sequence: u64) -> PathBuf {
@@ -283,8 +317,64 @@ impl Outbox {
                     )
                 ),
                 text: text.clone(),
+                report_id: record.report_id.clone(),
             })
         }))
+    }
+    /// Serialize attempt identity across processes as well as across Outbox
+    /// handles. A caller that cannot acquire the lock retries later.
+    fn delivery_lock(&self) -> Result<std::fs::File, ()> {
+        let file = match hagency_store::private::open(&self.lock_path, true) {
+            Ok(file) => file,
+            Err(hagency_store::Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists =>
+                hagency_store::private::open(&self.lock_path, false).map_err(|_| ())?,
+            Err(_) => return Err(()),
+        };
+        file.try_lock().map_err(|_| ())?;
+        Ok(file)
+    }
+    /// Persist the exact sender device and encryption endpoint before the
+    /// request can leave this host. Only new report records use this path;
+    /// existing run-bound v1 rows retain their original delivery behavior.
+    fn begin_send(&self, sequence: u64, user: &str, device: &str, encrypted: bool) -> Result<Option<String>, ()> {
+        if user.is_empty() || device.is_empty() || user.len() > 1024 || device.len() > 1024
+            || user.chars().any(char::is_control) || device.chars().any(char::is_control)
+        {
+            return Err(());
+        }
+        let _lock = self.delivery_lock()?;
+        let mut state = self.state.lock().map_err(|_| ())?;
+        let path = self.path(sequence);
+        let mut current: Record = self.cipher.decrypt_value(&read(&path, MAX_FILE_BYTES)?).map_err(|_| ())?;
+        let previous = state.records.get(&sequence).ok_or(())?;
+        if current.run != self.route.id || current.sequence != sequence
+            || current.id != previous.id || current.digest != previous.digest
+            || current.version != 2 || previous.version != 2
+            || current.report_id != previous.report_id
+            || current.text.as_ref().is_some_and(|text| hash(text) != current.digest)
+            || (current.text.is_some() == current.event.is_some())
+        {
+            return Err(());
+        }
+        if current.event.is_some() {
+            let old_bytes = previous.text.as_ref().map_or(0, String::len);
+            state.bytes = state.bytes.checked_sub(old_bytes).ok_or(())?;
+            state.records.insert(sequence, current);
+            return Ok(None);
+        }
+        let report_id = current.report_id.clone().filter(|id| valid_digest(id)).ok_or(())?;
+        let attempt = Attempt {
+            device: hash(serde_json::to_vec(&(user, device)).map_err(|_| ())?),
+            encrypted,
+        };
+        if let Some(previous) = &current.attempt {
+            if previous != &attempt { return Err(()); }
+        } else {
+            current.attempt = Some(attempt);
+            self.save(&current, false)?;
+        }
+        state.records.insert(sequence, current);
+        Ok(Some(report_id))
     }
     /// The caller must recheck the originating work's current send authority
     /// immediately before each call. A timeout leaves the same immutable
@@ -300,15 +390,38 @@ impl Outbox {
         if device.is_revoked() {
             return Err(());
         }
-        let content = super::e2ee::native_message_content(
+        // Old run messages predate report IDs and attempt fencing. Preserve
+        // their original transaction and send path across the upgrade.
+        if pending.report_id.is_none() {
+            let content = super::e2ee::native_message_content(
+                &self.route.room_id, &self.route.thread_root, &pending.text,
+            ).map_err(|_| ())?;
+            let event = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                device.send_room_message_checked(&self.route.room_id, &pending.txn, content, encrypted),
+            ).await.map_err(|_| ())?.map_err(|_| ())?;
+            self.sent(pending.sequence, &event)?;
+            return Ok(true);
+        }
+        let client = device.approval_client();
+        let user = client.user_id().ok_or(())?;
+        let device_id = client.device_id().ok_or(())?;
+        let actual_encrypted = device.room_encrypted(&self.route.room_id).await.map_err(|_| ())?;
+        if encrypted && !actual_encrypted { return Err(()); }
+        let Some(report_id) = self.begin_send(
+            pending.sequence, user.as_str(), device_id.as_str(), actual_encrypted,
+        )? else { return Ok(true); };
+        if pending.report_id.as_deref() != Some(report_id.as_str()) { return Err(()); }
+        let content = report_content(
             &self.route.room_id,
             &self.route.thread_root,
             &pending.text,
+            &report_id,
         )
-        .map_err(|_| ())?;
+        ?;
         let event = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            device.send_room_message_checked(&self.route.room_id, &pending.txn, content, encrypted),
+            device.send_room_message_exact(&self.route.room_id, &pending.txn, content, actual_encrypted),
         )
         .await
         .map_err(|_| ())?
@@ -320,22 +433,37 @@ impl Outbox {
         if !event.starts_with('$') || event.len() > 1024 {
             return Err(());
         }
+        let _lock = self.delivery_lock()?;
         let mut state = self.state.lock().map_err(|_| ())?;
-        let record = state.records.get(&sequence).ok_or(())?;
-        if let Some(previous) = &record.event {
-            return (previous == event).then_some(()).ok_or(());
+        let record: Record = self.cipher.decrypt_value(&read(&self.path(sequence), MAX_FILE_BYTES)?)
+            .map_err(|_| ())?;
+        let previous = state.records.get(&sequence).ok_or(())?;
+        if record.run != self.route.id || record.sequence != sequence
+            || record.id != previous.id || record.digest != previous.digest
+        { return Err(()); }
+        if let Some(sent_event) = &record.event {
+            if sent_event != event { return Err(()); }
+            let old_bytes = previous.text.as_ref().map_or(0, String::len);
+            state.bytes = state.bytes.checked_sub(old_bytes).ok_or(())?;
+            state.records.insert(sequence, record);
+            return Ok(());
         }
-        let mut saved = record.clone();
+        let mut saved = record;
         let bytes = saved.text.take().ok_or(())?.len();
         saved.event = Some(event.into());
+        let old_bytes = previous.text.as_ref().map_or(0, String::len);
+        if old_bytes != bytes { return Err(()); }
         self.save(&saved, false)?;
-        state.bytes -= bytes;
+        state.bytes = state.bytes.checked_sub(old_bytes).ok_or(())?;
         state.records.insert(sequence, saved);
         Ok(())
     }
 }
 impl MessageSink for Outbox {
     fn record(&self, id: &str, text: &str) -> Result<(), MessageError> {
+        if id.is_empty() || id.len() > 2048 || id.chars().any(char::is_control)
+            || text.is_empty() || text.len() > 1024 * 1024
+        { return Err(MessageError); }
         let mut state = self.state.lock().map_err(|_| MessageError)?;
         let digest = hash(text);
         if let Some(sequence) = state.ids.get(id) {
@@ -362,14 +490,27 @@ impl MessageSink for Outbox {
             .unwrap_or(0)
             .checked_add(1)
             .ok_or(MessageError)?;
+        // Ordinary run replies keep their v1 format and recovery behavior.
+        // Only host-constructed, explicitly attributed Octos report IDs opt
+        // into the new durable-message contract.
+        let is_report = id.starts_with("octos:report:");
+        let report_id = if is_report {
+            let mut random = [0u8; 32];
+            getrandom::fill(&mut random).map_err(|_| MessageError)?;
+            Some(hash(random))
+        } else {
+            None
+        };
         let record = Record {
-            version: 1,
+            version: if is_report { 2 } else { 1 },
             run: self.route.id.clone(),
             sequence,
             id: id.into(),
             digest,
             text: Some(text.into()),
             event: None,
+            report_id,
+            attempt: None,
         };
         self.save(&record, true).map_err(|_| MessageError)?;
         state.bytes += text.len();
@@ -460,6 +601,68 @@ mod tests {
         let recovered = Outbox::open(directory.path(), card).unwrap();
         assert!(recovered.record("first", "changed").is_err());
         assert_eq!(recovered.next().unwrap().unwrap().text, "next");
+    }
+
+    #[test]
+    fn report_attempt_is_durable_and_fenced_to_the_original_matrix_device() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = crate::agent_run_controls::tests::card();
+        let outbox = Outbox::open(directory.path(), card.clone()).unwrap();
+        outbox.record("octos:report:first", "same text").unwrap();
+        outbox.record("octos:report:second", "same text").unwrap();
+        let first = outbox.next().unwrap().unwrap();
+        let marker = outbox.begin_send(first.sequence, "@agent:test", "DEVICE-A", true).unwrap().unwrap();
+        let content = report_content("!room:test", "$root:test", &first.text, &marker).unwrap();
+        assert_eq!(content["msgtype"], "m.text");
+        assert_eq!(content["body"], "same text");
+        assert_eq!(content["org.hagency.report_id"], marker);
+        assert_eq!(content["m.relates_to"]["event_id"], "$root:test");
+        let bytes = std::fs::read(outbox.path(first.sequence)).unwrap();
+        assert!(!bytes.windows(b"DEVICE-A".len()).any(|part| part == b"DEVICE-A"));
+        drop(outbox);
+
+        let recovered = Outbox::open(directory.path(), card.clone()).unwrap();
+        let retry = recovered.next().unwrap().unwrap();
+        assert_eq!(retry.txn, first.txn);
+        assert_eq!(recovered.begin_send(retry.sequence, "@agent:test", "DEVICE-A", true).unwrap(), Some(marker));
+        assert!(recovered.begin_send(retry.sequence, "@agent:test", "DEVICE-B", true).is_err());
+        assert!(recovered.begin_send(retry.sequence, "@agent:test", "DEVICE-A", false).is_err());
+        assert!(recovered.begin_send(retry.sequence, "@other:test", "DEVICE-A", true).is_err());
+        recovered.sent(retry.sequence, "$event:test").unwrap();
+        let second = recovered.next().unwrap().unwrap();
+        assert_eq!(second.text, first.text);
+        assert_ne!(second.report_id, first.report_id);
+    }
+
+    #[test]
+    fn legacy_pending_messages_preserve_their_original_transaction() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = crate::agent_run_controls::tests::card();
+        let outbox = Outbox::open(directory.path(), card.clone()).unwrap();
+        outbox.record("old", "retained").unwrap();
+        let pending = outbox.next().unwrap().unwrap();
+        assert!(pending.report_id.is_none());
+        drop(outbox);
+        let recovered = Outbox::open(directory.path(), card).unwrap();
+        let retry = recovered.next().unwrap().unwrap();
+        assert_eq!(retry.text, "retained");
+        assert_eq!(retry.txn, pending.txn);
+        assert!(retry.report_id.is_none());
+    }
+
+    #[test]
+    fn concurrent_outbox_handles_observe_the_same_sent_record() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = crate::agent_run_controls::tests::card();
+        let first = Outbox::open(directory.path(), card.clone()).unwrap();
+        first.record("octos:report:one", "one").unwrap();
+        let second = Outbox::open(directory.path(), card).unwrap();
+        let sequence = first.next().unwrap().unwrap().sequence;
+        first.begin_send(sequence, "@agent:test", "DEVICE", true).unwrap();
+        second.begin_send(sequence, "@agent:test", "DEVICE", true).unwrap();
+        first.sent(sequence, "$event:test").unwrap();
+        second.sent(sequence, "$event:test").unwrap();
+        assert!(second.next().unwrap().is_none());
     }
 
     #[test]
