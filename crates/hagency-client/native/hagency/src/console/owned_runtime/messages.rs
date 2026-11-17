@@ -128,6 +128,86 @@ struct Record {
 struct Attempt {
     device: String,
     encrypted: bool,
+    /// The Matrix account that made the attempt, so another device can
+    /// recognize its event. Absent from attempts recorded before that check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sender: Option<String>,
+    /// Local wall-clock milliseconds when this record's first attempt began
+    /// (0 if unknown), and when the latest one began.
+    #[serde(default)]
+    first_ms: u64,
+    #[serde(default)]
+    last_ms: u64,
+}
+/// The local clock may run this far ahead of the homeserver's: the history
+/// check looks back this much before the first attempt.
+const CLOCK_MARGIN_MS: u64 = 60 * 60 * 1000;
+/// A request from the earlier device may land until this long after its
+/// latest attempt began; a send gives up after 30 s.
+const SETTLE_MS: u64 = 5 * 60 * 1000;
+fn attempt_now() -> Result<u64, ()> {
+    // `wall_ms` answers i64::MAX when the clock cannot be read.
+    u64::try_from(super::wall_ms()).ok().filter(|ms| *ms > 0 && *ms < i64::MAX as u64).ok_or(())
+}
+
+/// What `begin_send` found for a report record.
+enum Begin {
+    /// Another handle has recorded the room event.
+    Sent,
+    /// Send the record's own transaction from this device.
+    Send(String),
+    /// The latest attempt came from another device, or under another room
+    /// encryption state (another endpoint). Its transaction would not
+    /// deduplicate here, so only the room's history can settle it.
+    Reconcile(Unsettled),
+}
+struct Unsettled {
+    sequence: u64,
+    report_id: String,
+    digest: String,
+    attempt: Attempt,
+}
+impl Unsettled {
+    /// The sender to look for, and the time the history check goes back to.
+    fn scan(&self) -> Option<(&str, u64)> {
+        let sender = self.attempt.sender.as_deref()?;
+        Some((sender, self.attempt.first_ms.saturating_sub(CLOCK_MARGIN_MS)))
+    }
+}
+#[derive(Debug, PartialEq)]
+enum Settled {
+    /// The original event was found and recorded.
+    Sent,
+    /// The history shows the earlier attempt never landed: send the same
+    /// transaction from this device.
+    Send(String),
+    /// Leave the record pending; nothing is sent.
+    Unknown(&'static str),
+}
+#[derive(Debug, PartialEq)]
+enum Verdict<'a> {
+    Sent(&'a str),
+    Absent,
+    Unknown(&'static str),
+}
+/// What the room's history says about an earlier send of this report
+/// (ADR 0013): only a readable event from the expected sender with this
+/// report ID and content digest proves delivery. Another copy with the same
+/// report ID, an event that may be the report but cannot be read, or history
+/// that does not reach back far enough leaves the outcome unknown.
+fn verdict<'a>(scan: &'a super::e2ee::ReportScan, report_id: &str, digest: &str) -> Verdict<'a> {
+    let mut sent = None;
+    for trace in &scan.events {
+        let Some(content) = &trace.readable else { continue };
+        if content.report_id.as_deref() != Some(report_id) { continue; }
+        if content.body_digest.as_deref() != Some(digest) { return Verdict::Unknown("conflicting_report"); }
+        // Newest first: the last match is the original.
+        sent = Some(trace.event_id.as_str());
+    }
+    if let Some(event) = sent { return Verdict::Sent(event); }
+    if !scan.complete { return Verdict::Unknown("history_incomplete"); }
+    if scan.events.iter().any(|trace| trace.readable.is_none()) { return Verdict::Unknown("history_unreadable"); }
+    Verdict::Absent
 }
 struct State {
     records: BTreeMap<u64, Record>,
@@ -280,7 +360,9 @@ impl Outbox {
             if !match record.version {
                 1 => record.report_id.is_none() && record.attempt.is_none(),
                 2 => record.report_id.as_deref().is_some_and(valid_digest)
-                    && record.attempt.as_ref().is_none_or(|attempt| valid_digest(&attempt.device)),
+                    && record.attempt.as_ref().is_none_or(|attempt| valid_digest(&attempt.device)
+                        && attempt.sender.as_deref().is_none_or(|sender| sender.len() <= 255
+                            && matrix_sdk::ruma::OwnedUserId::try_from(sender).is_ok())),
                 _ => false,
             }
                 || record.run != route.id
@@ -376,7 +458,7 @@ impl Outbox {
     /// request can leave this host. The SDK rechecks encryption during send,
     /// so an unknown result still requires history reconciliation. Only new
     /// report records use this path; v1 rows retain their delivery behavior.
-    fn begin_send(&self, sequence: u64, user: &str, device: &str, encrypted: bool) -> Result<Option<String>, ()> {
+    fn begin_send(&self, sequence: u64, user: &str, device: &str, encrypted: bool, now_ms: u64) -> Result<Begin, ()> {
         if user.is_empty() || device.is_empty() || user.len() > 1024 || device.len() > 1024
             || user.chars().any(char::is_control) || device.chars().any(char::is_control)
         {
@@ -400,21 +482,97 @@ impl Outbox {
             let old_bytes = previous.text.as_ref().map_or(0, String::len);
             state.bytes = state.bytes.checked_sub(old_bytes).ok_or(())?;
             state.records.insert(sequence, current);
-            return Ok(None);
+            return Ok(Begin::Sent);
         }
         let report_id = current.report_id.clone().filter(|id| valid_digest(id)).ok_or(())?;
-        let attempt = Attempt {
+        let device = hash(serde_json::to_vec(&(user, device)).map_err(|_| ())?);
+        match &mut current.attempt {
+            Some(attempt) if attempt.device != device || attempt.encrypted != encrypted => {
+                let unsettled = Unsettled {
+                    sequence,
+                    report_id,
+                    digest: current.digest.clone(),
+                    attempt: attempt.clone(),
+                };
+                state.records.insert(sequence, current);
+                return Ok(Begin::Reconcile(unsettled));
+            }
+            Some(attempt) => {
+                // The same account and device: fill in what an older attempt lacks.
+                attempt.sender.get_or_insert_with(|| user.to_owned());
+                attempt.last_ms = now_ms;
+            }
+            None => {
+                current.attempt = Some(Attempt {
+                    device,
+                    encrypted,
+                    sender: Some(user.to_owned()),
+                    first_ms: now_ms,
+                    last_ms: now_ms,
+                });
+            }
+        }
+        self.save(&current, false)?;
+        state.records.insert(sequence, current);
+        Ok(Begin::Send(report_id))
+    }
+    /// Act on the room history read for an unsettled attempt: record the
+    /// original event, or, when the history shows the attempt never landed,
+    /// move the attempt to this device and encryption state.
+    fn settle(
+        &self,
+        unsettled: &Unsettled,
+        scan: &super::e2ee::ReportScan,
+        user: &str,
+        device: &str,
+        encrypted: bool,
+        now_ms: u64,
+    ) -> Result<Settled, ()> {
+        let Some((sender, _)) = unsettled.scan() else { return Ok(Settled::Unknown("attempt_without_sender")) };
+        match verdict(scan, &unsettled.report_id, &unsettled.digest) {
+            Verdict::Sent(event) => {
+                self.sent(unsettled.sequence, event)?;
+                Ok(Settled::Sent)
+            }
+            Verdict::Unknown(reason) => Ok(Settled::Unknown(reason)),
+            Verdict::Absent if sender != user => Ok(Settled::Unknown("sender_changed")),
+            // Never resend in plaintext what was attempted encrypted.
+            Verdict::Absent if unsettled.attempt.encrypted && !encrypted => Ok(Settled::Unknown("encryption_lost")),
+            // The earlier device may still be retrying, or its request may still land.
+            Verdict::Absent if now_ms < unsettled.attempt.last_ms.saturating_add(SETTLE_MS) =>
+                Ok(Settled::Unknown("attempt_recent")),
+            Verdict::Absent => {
+                self.restart_attempt(unsettled, user, device, encrypted, now_ms)?;
+                Ok(Settled::Send(unsettled.report_id.clone()))
+            }
+        }
+    }
+    /// Compare-and-swap: fails if any handle changed the attempt since it was read.
+    fn restart_attempt(&self, unsettled: &Unsettled, user: &str, device: &str, encrypted: bool, now_ms: u64) -> Result<(), ()> {
+        let _lock = self.delivery_lock()?;
+        let mut state = self.state.lock().map_err(|_| ())?;
+        let sequence = unsettled.sequence;
+        let mut current: Record = self.cipher.decrypt_value(&read(&self.path(sequence), MAX_FILE_BYTES)?).map_err(|_| ())?;
+        let previous = state.records.get(&sequence).ok_or(())?;
+        if current.run != self.route.id || current.sequence != sequence || current.version != 2
+            || current.id != previous.id || current.digest != unsettled.digest
+            || current.report_id.as_deref() != Some(unsettled.report_id.as_str())
+            || current.event.is_some() || current.text.is_none()
+            || current.attempt.as_ref() != Some(&unsettled.attempt)
+        {
+            return Err(());
+        }
+        current.attempt = Some(Attempt {
             device: hash(serde_json::to_vec(&(user, device)).map_err(|_| ())?),
             encrypted,
-        };
-        if let Some(previous) = &current.attempt {
-            if previous != &attempt { return Err(()); }
-        } else {
-            current.attempt = Some(attempt);
-            self.save(&current, false)?;
-        }
+            sender: Some(user.to_owned()),
+            // Later checks still look back to the first attempt.
+            first_ms: unsettled.attempt.first_ms,
+            last_ms: now_ms,
+        });
+        self.save(&current, false)?;
         state.records.insert(sequence, current);
-        Ok(Some(report_id))
+        Ok(())
     }
     /// The caller must recheck the originating work's current send authority
     /// immediately before each call. A timeout leaves the same immutable
@@ -456,9 +614,35 @@ impl Outbox {
         let actual_encrypted = device.room_encrypted(&self.route.room_id).await.map_err(|_| ())?;
         if (encrypted || permit.encrypted) && !actual_encrypted { return Err(()); }
         if !permit.allows(&self.route, user.as_str(), super::wall_ms()) { return Err(()); }
-        let Some(report_id) = self.begin_send(
-            pending.sequence, user.as_str(), device_id.as_str(), actual_encrypted,
-        )? else { return Ok(true); };
+        let begin = self.begin_send(
+            pending.sequence, user.as_str(), device_id.as_str(), actual_encrypted, attempt_now()?,
+        )?;
+        let report_id = match begin {
+            Begin::Sent => return Ok(true),
+            Begin::Send(report_id) => report_id,
+            Begin::Reconcile(unsettled) => {
+                let settled = match unsettled.scan() {
+                    None => Settled::Unknown("attempt_without_sender"),
+                    Some((sender, since_ms)) => {
+                        let scan = device.report_scan(&self.route.room_id, sender, since_ms).await.map_err(|_| ())?;
+                        self.settle(&unsettled, &scan, user.as_str(), device_id.as_str(), actual_encrypted, attempt_now()?)?
+                    }
+                };
+                match settled {
+                    Settled::Sent => {
+                        tracing::info!(code = "agent_report_reconciled", sequence = pending.sequence,
+                            "The room already holds this report from an earlier device");
+                        return Ok(true);
+                    }
+                    Settled::Send(report_id) => report_id,
+                    Settled::Unknown(reason) => {
+                        tracing::warn!(code = "agent_report_delivery_unknown", reason, sequence = pending.sequence,
+                            "An earlier send of this report has an unknown outcome; it stays pending");
+                        return Err(());
+                    }
+                }
+            }
+        };
         if pending.report_id.as_deref() != Some(report_id.as_str()) { return Err(()); }
         let content = report_content(
             &self.route.room_id,
@@ -697,7 +881,7 @@ mod tests {
         outbox.record("octos:report:first", "same text").unwrap();
         outbox.record("octos:report:second", "same text").unwrap();
         let first = outbox.next().unwrap().unwrap();
-        let marker = outbox.begin_send(first.sequence, "@agent:test", "DEVICE-A", true).unwrap().unwrap();
+        let marker = send(outbox.begin_send(first.sequence, "@agent:test", "DEVICE-A", true, 1_000).unwrap());
         let content = report_content("!room:test", "$root:test", &first.text, &marker).unwrap();
         assert_eq!(content["msgtype"], "m.text");
         assert_eq!(content["body"], "same text");
@@ -710,10 +894,14 @@ mod tests {
         let recovered = Outbox::open(directory.path(), card.clone()).unwrap();
         let retry = recovered.next().unwrap().unwrap();
         assert_eq!(retry.txn, first.txn);
-        assert_eq!(recovered.begin_send(retry.sequence, "@agent:test", "DEVICE-A", true).unwrap(), Some(marker));
-        assert!(recovered.begin_send(retry.sequence, "@agent:test", "DEVICE-B", true).is_err());
-        assert!(recovered.begin_send(retry.sequence, "@agent:test", "DEVICE-A", false).is_err());
-        assert!(recovered.begin_send(retry.sequence, "@other:test", "DEVICE-A", true).is_err());
+        assert_eq!(send(recovered.begin_send(retry.sequence, "@agent:test", "DEVICE-A", true, 2_000).unwrap()), marker);
+        // Another device, account or endpoint must settle it from the room's history.
+        for (user, device, encrypted) in [
+            ("@agent:test", "DEVICE-B", true), ("@agent:test", "DEVICE-A", false), ("@other:test", "DEVICE-A", true),
+        ] {
+            let open = unsettled(&recovered, retry.sequence, user, device, encrypted, 3_000);
+            assert_eq!((open.attempt.first_ms, open.attempt.last_ms), (1_000, 2_000));
+        }
         recovered.sent(retry.sequence, "$event:test").unwrap();
         let second = recovered.next().unwrap().unwrap();
         assert_eq!(second.text, first.text);
@@ -744,11 +932,157 @@ mod tests {
         first.record("octos:report:one", "one").unwrap();
         let second = Outbox::open(directory.path(), card).unwrap();
         let sequence = first.next().unwrap().unwrap().sequence;
-        first.begin_send(sequence, "@agent:test", "DEVICE", true).unwrap();
-        second.begin_send(sequence, "@agent:test", "DEVICE", true).unwrap();
+        send(first.begin_send(sequence, "@agent:test", "DEVICE", true, 1_000).unwrap());
+        send(second.begin_send(sequence, "@agent:test", "DEVICE", true, 1_000).unwrap());
         first.sent(sequence, "$event:test").unwrap();
         second.sent(sequence, "$event:test").unwrap();
         assert!(second.next().unwrap().is_none());
+    }
+
+    fn send(begin: Begin) -> String {
+        match begin {
+            Begin::Send(report_id) => report_id,
+            _ => panic!("expected a send from this device"),
+        }
+    }
+    fn unsettled(outbox: &Outbox, sequence: u64, user: &str, device: &str, encrypted: bool, now: u64) -> Unsettled {
+        match outbox.begin_send(sequence, user, device, encrypted, now).unwrap() {
+            Begin::Reconcile(unsettled) => unsettled,
+            _ => panic!("expected an unsettled attempt"),
+        }
+    }
+    fn trace(event: &str, report_id: &str, text: &str) -> super::super::e2ee::ReportTrace {
+        super::super::e2ee::ReportTrace {
+            event_id: event.into(),
+            readable: Some(super::super::e2ee::ReportContent {
+                report_id: Some(report_id.into()),
+                body_digest: Some(hash(text)),
+            }),
+        }
+    }
+    fn sealed(event: &str) -> super::super::e2ee::ReportTrace {
+        super::super::e2ee::ReportTrace { event_id: event.into(), readable: None }
+    }
+    fn scan(events: Vec<super::super::e2ee::ReportTrace>, complete: bool) -> super::super::e2ee::ReportScan {
+        super::super::e2ee::ReportScan { events, complete }
+    }
+
+    #[test]
+    fn replacement_device_records_only_a_verified_original_event() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = crate::agent_run_controls::tests::card();
+        let outbox = Outbox::open(directory.path(), card.clone()).unwrap();
+        outbox.record("octos:report:first", "report text").unwrap();
+        outbox.record("octos:report:second", "next").unwrap();
+        let first = outbox.next().unwrap().unwrap();
+        let t0 = 1_800_000_000_000;
+        let report_id = send(outbox.begin_send(first.sequence, "@agent:test", "DEVICE-A", true, t0).unwrap());
+        let later = t0 + SETTLE_MS;
+        let open = unsettled(&outbox, first.sequence, "@agent:test", "DEVICE-B", true, later);
+        assert_eq!(open.scan(), Some(("@agent:test", t0 - CLOCK_MARGIN_MS)));
+        let settle = |events, complete| {
+            outbox.settle(&open, &scan(events, complete), "@agent:test", "DEVICE-B", true, later).unwrap()
+        };
+        // An event this device cannot read may be the report.
+        assert_eq!(settle(vec![sealed("$sealed")], true), Settled::Unknown("history_unreadable"));
+        assert_eq!(settle(vec![], false), Settled::Unknown("history_incomplete"));
+        // The same report ID with other content is a protocol error, never a delivery.
+        assert_eq!(
+            settle(vec![trace("$changed", &report_id, "changed"), trace("$original", &report_id, "report text")], true),
+            Settled::Unknown("conflicting_report"),
+        );
+        // Another report is not this one: complete, readable history without
+        // it moves the attempt to this device.
+        assert_eq!(settle(vec![trace("$another", &hash("another"), "report text")], true), Settled::Send(report_id.clone()));
+        drop(outbox);
+
+        let outbox = Outbox::open(directory.path(), card.clone()).unwrap();
+        let open = unsettled(&outbox, first.sequence, "@agent:test", "DEVICE-A", true, later);
+        // The original is found among a later duplicate and an unreadable event,
+        // even where the history ends early.
+        let found = scan(vec![
+            trace("$copy", &report_id, "report text"), sealed("$sealed"), trace("$original", &report_id, "report text"),
+        ], false);
+        assert_eq!(outbox.settle(&open, &found, "@agent:test", "DEVICE-A", true, later).unwrap(), Settled::Sent);
+        assert_eq!(outbox.next().unwrap().unwrap().text, "next");
+        drop(outbox);
+        let recovered = Outbox::open(directory.path(), card).unwrap();
+        assert!(matches!(recovered.begin_send(first.sequence, "@agent:test", "DEVICE-C", true, later).unwrap(), Begin::Sent));
+        recovered.sent(first.sequence, "$original").unwrap();
+        assert!(recovered.sent(first.sequence, "$copy").is_err());
+    }
+
+    #[test]
+    fn replacement_device_resends_only_when_history_shows_the_attempt_never_landed() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = crate::agent_run_controls::tests::card();
+        let outbox = Outbox::open(directory.path(), card.clone()).unwrap();
+        outbox.record("octos:report:first", "report text").unwrap();
+        let first = outbox.next().unwrap().unwrap();
+        let t0 = 1_800_000_000_000;
+        let report_id = send(outbox.begin_send(first.sequence, "@agent:test", "DEVICE-A", true, t0).unwrap());
+        let absent = scan(vec![trace("$another", &hash("another"), "other text")], true);
+        // The earlier device may still be retrying, or its request may still land.
+        let soon = t0 + SETTLE_MS - 1;
+        let open = unsettled(&outbox, first.sequence, "@agent:test", "DEVICE-B", true, soon);
+        assert_eq!(outbox.settle(&open, &absent, "@agent:test", "DEVICE-B", true, soon).unwrap(),
+            Settled::Unknown("attempt_recent"));
+        let later = t0 + SETTLE_MS;
+        // Never in plaintext what was attempted encrypted, nor from another account.
+        let plain = unsettled(&outbox, first.sequence, "@agent:test", "DEVICE-B", false, later);
+        assert_eq!(outbox.settle(&plain, &absent, "@agent:test", "DEVICE-B", false, later).unwrap(),
+            Settled::Unknown("encryption_lost"));
+        let other = unsettled(&outbox, first.sequence, "@other:test", "DEVICE-B", true, later);
+        assert_eq!(outbox.settle(&other, &absent, "@other:test", "DEVICE-B", true, later).unwrap(),
+            Settled::Unknown("sender_changed"));
+        // Two handles read the same attempt; only the first may move it.
+        let racing = unsettled(&outbox, first.sequence, "@agent:test", "DEVICE-B", true, later);
+        assert_eq!(outbox.settle(&open, &absent, "@agent:test", "DEVICE-B", true, later).unwrap(),
+            Settled::Send(report_id.clone()));
+        assert!(outbox.settle(&racing, &absent, "@agent:test", "DEVICE-B", true, later).is_err());
+        drop(outbox);
+
+        // The move is durable: device B retries the same transaction, and the
+        // first device now has to settle it in turn.
+        let recovered = Outbox::open(directory.path(), card).unwrap();
+        let retry = recovered.next().unwrap().unwrap();
+        assert_eq!(retry.txn, first.txn);
+        assert_eq!(send(recovered.begin_send(retry.sequence, "@agent:test", "DEVICE-B", true, later + 1).unwrap()), report_id);
+        let back = unsettled(&recovered, retry.sequence, "@agent:test", "DEVICE-A", true, later + 2);
+        // Later checks still look back to the first attempt.
+        assert_eq!(back.scan(), Some(("@agent:test", t0 - CLOCK_MARGIN_MS)));
+        assert_eq!(back.attempt.last_ms, later + 1);
+    }
+
+    #[test]
+    fn attempts_saved_before_senders_were_recorded_stay_unknown_on_another_device() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = crate::agent_run_controls::tests::card();
+        let outbox = Outbox::open(directory.path(), card.clone()).unwrap();
+        outbox.record("octos:report:first", "report text").unwrap();
+        let sequence = outbox.next().unwrap().unwrap().sequence;
+        send(outbox.begin_send(sequence, "@agent:test", "DEVICE-A", true, 1_000).unwrap());
+        // Rewrite the attempt in the format saved before this change.
+        let path = outbox.path(sequence);
+        let mut raw: serde_json::Value = outbox.cipher.decrypt_value(&std::fs::read(&path).unwrap()).unwrap();
+        let attempt = raw["attempt"].as_object_mut().unwrap();
+        for field in ["sender", "first_ms", "last_ms"] {
+            assert!(attempt.remove(field).is_some());
+        }
+        hagency_store::private::replace(&path, &outbox.cipher.encrypt_value(&raw).unwrap()).unwrap();
+        drop(outbox);
+
+        let recovered = Outbox::open(directory.path(), card).unwrap();
+        let later = 1_800_000_000_000;
+        let open = unsettled(&recovered, sequence, "@agent:test", "DEVICE-B", true, later);
+        assert_eq!(open.scan(), None);
+        assert_eq!(recovered.settle(&open, &scan(vec![], true), "@agent:test", "DEVICE-B", true, later).unwrap(),
+            Settled::Unknown("attempt_without_sender"));
+        // Its own device fills in the sender and keeps retrying the same transaction;
+        // with no first time, a later check goes back to the start of the room.
+        send(recovered.begin_send(sequence, "@agent:test", "DEVICE-A", true, later).unwrap());
+        let open = unsettled(&recovered, sequence, "@agent:test", "DEVICE-B", true, later);
+        assert_eq!(open.scan(), Some(("@agent:test", 0)));
     }
 
     #[test]

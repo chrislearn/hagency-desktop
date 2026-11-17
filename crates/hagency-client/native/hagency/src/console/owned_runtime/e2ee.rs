@@ -28,7 +28,9 @@ mod history;
 mod documents;
 mod files;
 pub(in crate::console) use documents::RoomFile;
-pub(in crate::console) use history::HistoryBatch;
+pub(in crate::console) use history::{HistoryBatch, ReportScan};
+#[cfg(test)]
+pub(in crate::console) use history::{ReportContent, ReportTrace};
 use std::{
     collections::HashMap,
     path::Path,
