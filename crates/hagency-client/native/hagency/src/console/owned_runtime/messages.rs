@@ -117,8 +117,9 @@ struct Record {
     /// Added only to v2. Older binaries reject, rather than resend, v2 rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     report_id: Option<String>,
-    /// The Matrix account, device and encryption endpoint used for the first
-    /// attempted send. An uncertain send cannot be retried from another device.
+    /// The Matrix account, device and room encryption state observed before
+    /// the first attempt. An uncertain send cannot be retried from another
+    /// device or after a change in the observed room encryption state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     attempt: Option<Attempt>,
 }
@@ -333,9 +334,10 @@ impl Outbox {
         file.try_lock().map_err(|_| ())?;
         Ok(file)
     }
-    /// Persist the exact sender device and encryption endpoint before the
-    /// request can leave this host. Only new report records use this path;
-    /// existing run-bound v1 rows retain their original delivery behavior.
+    /// Persist the sender device and observed encryption state before the
+    /// request can leave this host. The SDK rechecks encryption during send,
+    /// so an unknown result still requires history reconciliation. Only new
+    /// report records use this path; v1 rows retain their delivery behavior.
     fn begin_send(&self, sequence: u64, user: &str, device: &str, encrypted: bool) -> Result<Option<String>, ()> {
         if user.is_empty() || device.is_empty() || user.len() > 1024 || device.len() > 1024
             || user.chars().any(char::is_control) || device.chars().any(char::is_control)
@@ -421,7 +423,7 @@ impl Outbox {
         ?;
         let event = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            device.send_room_message_exact(&self.route.room_id, &pending.txn, content, actual_encrypted),
+            device.send_room_message_if_state_matches(&self.route.room_id, &pending.txn, content, actual_encrypted),
         )
         .await
         .map_err(|_| ())?

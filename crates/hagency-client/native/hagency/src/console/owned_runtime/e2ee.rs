@@ -573,7 +573,9 @@ impl AgentDevice {
         self.send_room_message_guarded(room, txn, content, require_encrypted, None).await
     }
 
-    /// Capture the endpoint selected for a message before recording an attempt.
+    /// Observe room encryption before recording a message attempt. The SDK
+    /// checks it again when sending, so this observation alone cannot pin the
+    /// event type if the room enables encryption concurrently.
     pub(in crate::console) async fn room_encrypted(&self, room: &str) -> Result<bool, RuntimeError> {
         let room_id = OwnedRoomId::try_from(room).map_err(|_| RuntimeError::Request)?;
         let room = self.client.get_room(&room_id).ok_or(RuntimeError::Transport)?;
@@ -582,7 +584,7 @@ impl AgentDevice {
         Ok(security.is_encrypted())
     }
 
-    pub(in crate::console) async fn send_room_message_exact(
+    pub(in crate::console) async fn send_room_message_if_state_matches(
         &self, room: &str, txn: &str, content: serde_json::Value, encrypted: bool,
     ) -> Result<String, RuntimeError> {
         self.send_room_message_guarded(room, txn, content, encrypted, Some(encrypted)).await
