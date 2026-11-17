@@ -690,6 +690,14 @@ async fn real_daemon_encrypted_child() {
         panic!("Agent encryption keys were not uploaded; actual service status: {status:?}");
     }
     let original_keys = keys["device_keys"][puppet].clone();
+    // Server visibility alone does not refresh either sender's crypto cache.
+    // Use the production Desktop guard before encrypting the first request.
+    let recipient = OwnedUserId::try_from(puppet).unwrap();
+    for sender in [&human, &member] {
+        hagency::agent_encryption::wait_for_sendable_device(sender, &recipient)
+            .await
+            .expect("sender SDK must discover a valid Agent device before encrypting");
+    }
     let mut expected_replies = Vec::new();
     let event = send_expected(
         &human,

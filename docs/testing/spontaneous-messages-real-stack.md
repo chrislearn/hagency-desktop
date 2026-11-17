@@ -13,25 +13,42 @@ database, daemon, process guardian, SDK encryption, and native UI are real.
 It does not establish completion of ADR 0013 or enable the disabled native
 Octos report experiment.
 
-## JIT rerun status
+## JIT rerun and readiness correction
 
-After the instruction to use JIT for development testing, the actual hidden
-Desktop JIT completed real Pasion DCR/PKCE and its SDK sync reached `Running`
-in the log. The GPU capture was taken during the connecting overlay; it does
-not verify the signed-in home or Agent message rendering. Existing runner,
-helper, Server, PostgreSQL, native
-dependency artifacts, and orchestration driver were reused without compilation.
+The first two JIT attempts timed out on the first encrypted DM with no model
+turns. Subsequent investigation verified the Agent's device signature with an
+independent Ed25519 implementation. SDK debug logs then showed successful Olm
+key delivery and Megolm room-key import. Three full JIT daemon runs passed, with
+fresh device grants, once with SDK debug logging and twice at the normal level.
+Each delivered 10 distinct reports and 5 final answers through real Palpo,
+including two humans, encrypted groups, and process restart. No native build
+was used for these reruns.
 
-The full daemon check did **not** pass under JIT. Two independent disposable
-Server fixtures reached a running JIT daemon and uploaded Agent device keys,
-but the first encrypted DM request timed out waiting for a room key. Neither
-run executed a model turn or delivered an Agent reply. The second run also
-disabled optional management capabilities and selected only isolated writer
-custody. The underlying cause remains undetermined; do not attribute the
-failure to the compiler or mark the PR ready based on historical native results.
+The old acceptance sender used a standalone HTTP `/keys/query` as its only
+readiness check. That observes the server but does not refresh the sender's
+SDK crypto cache. The production Desktop send path already guarded this case.
+Its signature-checked device-discovery helper now lives in
+`hagency::agent_encryption::wait_for_sendable_device`, and both Desktop and the
+source integration fixture use it. The helper has a 30-second bound and
+preserves device trust, encryption, and history-sharing policy.
 
-Existing user JIT processes were preserved; this rerun used an idle host with
-a separate profile and daemon home. No Element verification was performed.
+All three readiness tests passed under JIT: discover keys after an empty
+response, reject invalid signatures, and preserve blacklist policy. The
+runner logged a nonfatal `ruma_macros` documentation-body compiler diagnostic;
+the selected tests completed with exit status 0. Full daemon reruns used the
+existing precompiled orchestration driver, so they exercised its older HTTP
+readiness check; they do not establish that the initial transient failure is
+fully explained by the fixture difference. The changed shared helper was
+executed by the JIT tests.
+
+A hidden Desktop JIT also completed real Pasion DCR/PKCE and reached its signed-in
+home. Its device keys were published before testing offline delivery. After offline delivery and daemon restart, the same UI profile restored
+and rendered six independently actionable Agent rows: four equal-text reports
+and two final answers. The selected room, semantic actions, and actual GPU
+frame were checked. A separate SDK client drove the input requests; the model
+boundary remained a deterministic protocol subprocess. Existing user JIT processes were preserved; each run used an idle
+host, private state, and existing native dependency/helper artifacts. No
+Element verification was performed.
 
 ## Historical native acceptance (before the JIT-only instruction)
 
