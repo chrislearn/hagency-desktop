@@ -64,6 +64,65 @@ async fn installed_claude_delivers_progress_before_waiting_for_a_question() {
     model.kill().await.unwrap();
 }
 
+/// ADR 0013's "message after the foreground answer" on the installed CLI: the
+/// answer given while a background command runs is its own message, and the
+/// result of the CLI's own task-notification turn is the final answer.
+#[tokio::test]
+#[ignore = "requires explicit installed Claude; localhost model, no provider account or paid request"]
+async fn installed_claude_answers_first_and_reports_its_background_result_separately() {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let executable = PathBuf::from(std::env::var_os("HAGENCY_TEST_CLAUDE_EXECUTABLE")
+        .expect("explicit Claude executable")).canonicalize().unwrap();
+    let mut f = Fixture::new(Kind::Claude, "questions", ToolPolicy::AskOwner);
+    f.profile.model = "sonnet".into();
+    let model_file = f.path("model.py");
+    fs::write(&model_file, include_str!("../claude_background_fixture.py")).unwrap();
+    let mut model = tokio::process::Command::new("python3")
+        .arg(model_file).arg(f.path(""))
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
+        .kill_on_drop(true).spawn().unwrap();
+    let mut port = String::new();
+    tokio::time::timeout(std::time::Duration::from_secs(5),
+        BufReader::new(model.stdout.take().unwrap()).read_line(&mut port)).await.unwrap().unwrap();
+    let port: u16 = port.trim().parse().unwrap();
+    let binary = serde_json::to_string(&executable).unwrap();
+    fs::write(&f.profile.executable, format!("#!/usr/bin/env python3\nimport os,sys\nos.environ['ANTHROPIC_API_KEY']='offline-contract'\nos.environ['ANTHROPIC_BASE_URL']='http://127.0.0.1:{port}'\nos.environ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1'\nos.execv({binary}, [{binary}]+sys.argv[1:])\n")).unwrap();
+    let guardian = std::path::Path::new(env!("CARGO_BIN_EXE_hagency-local-probe"));
+    let mut process = spawn_for_scope_with_guardian(
+        &f.profile, &f.reference, &mut f.ledger, &f.scope, Some(guardian),
+    ).await.unwrap();
+    process.session.initialize().await.unwrap();
+    process.session.open_context(&mut f.ledger, &f.scope, &f.profile).await.unwrap();
+    let messages = Arc::new(Messages::default());
+    let (queue, mut owner) = codex::approval_queue(1).unwrap();
+    let queue = queue.with_live_text(LiveText::with_messages(messages.clone()));
+    let run = process.session.run_with_started(&mut f.ledger, "@owner:test", &f.scope,
+        "call", "dispatch", "Start the background check", BudgetMode::Postpaid, &queue, None);
+    let approve = async {
+        let pending = tokio::time::timeout(std::time::Duration::from_secs(20), owner.recv())
+            .await.unwrap().unwrap();
+        assert_eq!(pending.proposal.tool, "claude.Bash");
+        pending.decide(true);
+    };
+    let (done, ()) = tokio::time::timeout(std::time::Duration::from_secs(90), async {
+        tokio::join!(run, approve)
+    }).await.unwrap();
+    let stages = fs::read_to_string(f.path("stages.jsonl")).unwrap_or_default();
+    let done = done.unwrap_or_else(|error| panic!("turn failed: {error:?}; model stages: {stages}"));
+    assert_eq!(done.text, "Background result", "model stages: {stages}");
+    let records = messages.0.lock().unwrap().clone();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].1, "Foreground answer");
+    assert!(records[0].0.starts_with("claude:result:"));
+    for expected in ["\"start\"", "\"foreground\"", "\"notification\""] {
+        assert!(stages.contains(expected), "model stages: {stages}");
+    }
+    process.stop().await.unwrap();
+    model.kill().await.unwrap();
+}
+
 #[tokio::test]
 async fn claude_background_followup_preserves_the_original_answer_as_a_separate_message() {
     let mut f = Fixture::new(Kind::Claude, "background_native_followup", ToolPolicy::Deny);
