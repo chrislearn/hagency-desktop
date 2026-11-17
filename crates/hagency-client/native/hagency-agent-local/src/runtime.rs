@@ -565,6 +565,27 @@ const SELF_TIMER_TOOLS: [&str; 4] = [
 /// Added to the CLI's own instructions for a local Agent. Without it a model
 /// asked to do something later waits inside the turn (a `sleep` command):
 /// that asks the owner for a command and keeps the Agent busy meanwhile.
+/// The risk named on a tool request of a turn that holds a peer session's
+/// message; see `claude_turn::Host::outside_input`.
+pub const PEER_SESSION_RISK: &str = "peer_session";
+/// The CLI may offer its timer tools by name only; the model then loads one
+/// with `ToolSearch` before it can set a timer (seen live on 2.1.323,
+/// 2026-11-17: the owner was asked for `select:ScheduleWakeup`). Loading the
+/// description of a timer tool does nothing; any other lookup is asked for
+/// like every tool.
+fn timer_tool_lookup(tool: &str, arguments: &Value) -> bool {
+    tool == "claude.ToolSearch"
+        && arguments["query"]
+            .as_str()
+            .and_then(|query| query.strip_prefix("select:"))
+            .is_some_and(|names| {
+                names.split(',').all(|name| {
+                    SELF_TIMER_TOOLS
+                        .iter()
+                        .any(|timer| timer.strip_prefix("claude.") == Some(name.trim()))
+                })
+            })
+}
 const CLAUDE_ROOM_NOTE: &str = "You answer in a chat room through Hagency. To do something later, or to report on a schedule, set a timer with the ScheduleWakeup tool and end your answer. When the timer fires you run again, and what you answer then is posted to the same chat by itself. Do not pass time with sleep or another waiting command.";
 /// How long the confirmation recorded for a self-started turn lasts: the
 /// longest a confirmation may last, which is also the longest a turn may run.
@@ -1205,7 +1226,9 @@ async fn permission_within(
         tool,
         arguments,
         canonical_directory: cwd.to_string_lossy().into(),
-        risk: "high".into(),
+        // The owner is shown where the request comes from: a card that
+        // looks like their own conversation's request gets approved.
+        risk: if ask_where_allowed { PEER_SESSION_RISK } else { "high" }.into(),
         policy_revision: versions.map(|v| v.revision),
         expires: now() + wait_secs as i64,
     };
@@ -1330,7 +1353,10 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
         // The owner's tool rules decide what a tool may do on this computer.
         // A timer for the session's own later turn does nothing here and
         // reaches nobody, so nobody is asked for it.
-        if !self.outside && SELF_TIMER_TOOLS.iter().any(|timer| *timer == tool) {
+        if !self.outside
+            && (SELF_TIMER_TOOLS.iter().any(|timer| *timer == tool)
+                || timer_tool_lookup(&tool, &arguments))
+        {
             return claude_turn::ToolAnswer::Allow;
         }
         // A turn that holds a peer session's message acts on text from

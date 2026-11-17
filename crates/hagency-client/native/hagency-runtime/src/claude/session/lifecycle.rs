@@ -36,6 +36,14 @@ pub(super) struct Completion {
     /// The CLI took a message into this turn that this host did not write
     /// and no timer of the session produced; see `note_command`.
     outside_input: bool,
+    /// The turn began while the session was parked and its first init has
+    /// not been read: nothing says yet whose turn it is.
+    unproven_start: bool,
+    /// A timer of the session was reported started and no result followed
+    /// it yet: the cycle that opens next is that timer's.
+    timer_cycle: bool,
+    /// The commands of the session's own timers in this turn.
+    timers: BTreeSet<String>,
 }
 impl Completion {
     /// A turn that has its result and native idle and still stays open waits
@@ -100,20 +108,49 @@ impl Completion {
     /// running one (CLI 2.1.323, offline captures 2026-11-17). Its text did
     /// not come from the conversation this session serves. Only a continuous
     /// session names its prompts, so only there can the two be told apart.
+    ///
+    /// The CLI updates itself, so what is not known counts as outside: a
+    /// command in a state this host has not seen, or one without a name. Only
+    /// the end of a command says nothing new; its start was judged.
     pub(super) fn note_command(&mut self, payload: &Value, prompt: Option<&str>) {
-        if (prompt.is_none() && !self.self_started)
-            || !matches!(payload["state"].as_str(), Some("queued" | "started"))
-            || payload.get("wakeup_source").is_some_and(|source| !source.is_null())
+        if prompt.is_none() && !self.self_started {
+            return;
+        }
+        let id = payload["command_uuid"].as_str();
+        let state = payload["state"].as_str();
+        if payload.get("wakeup_source").is_some_and(|source| !source.is_null()) {
+            if let Some(id) = id
+                && self.timers.len() < 64
+            {
+                self.timers.insert(id.to_owned());
+            }
+            self.timer_cycle |= state == Some("started");
+            return;
+        }
+        if id.is_some_and(|id| {
+            prompt == Some(id) || self.steers.knows(id) || self.timers.contains(id)
+        }) || state == Some("completed")
         {
             return;
         }
-        let own = payload["command_uuid"]
-            .as_str()
-            .is_some_and(|id| prompt == Some(id) || self.steers.knows(id));
-        self.outside_input |= !own;
+        self.outside_input = true;
+    }
+    /// The first init of a turn the CLI started while the session was parked.
+    pub(super) fn judge_start(&mut self) {
+        if std::mem::take(&mut self.unproven_start) {
+            self.judge_cycle();
+        }
+    }
+    /// A cycle no prompt, no added instruction and no finished background
+    /// task of this turn opened is the session's own only where a timer was
+    /// reported started for it. Proof by absence is not accepted: a CLI that
+    /// one day delivers a peer message without a command frame must not get
+    /// the session's own standing for it.
+    fn judge_cycle(&mut self) {
+        self.outside_input |= !self.timer_cycle;
     }
     pub(super) fn outside_input(&self) -> bool {
-        self.outside_input
+        self.outside_input || self.unproven_start
     }
     pub(super) fn begin_background_response(&mut self, payload: &Value) -> Result<(), Error> {
         if !self.enabled
@@ -133,6 +170,9 @@ impl Completion {
                 .is_some_and(|v| !v.is_null())
         {
             return Err(Error::Identity);
+        }
+        if self.notified_runs.is_empty() {
+            self.judge_cycle();
         }
         self.background_response = true;
         self.idle = false;
@@ -268,6 +308,9 @@ impl Completion {
                         self.consumed_runs.insert(run.into());
                     } else if !(self.self_started && self_started_result(payload)) {
                         return Err(Error::Identity);
+                    } else {
+                        // Not the finished task this cycle could have been.
+                        self.judge_cycle();
                     }
                     self.background_response = false;
                 } else if !(payload["origin"].is_null()
@@ -304,6 +347,10 @@ impl Completion {
                         payload["is_error"] == true,
                     ));
                 }
+                // Too late for the tools of this cycle, in time for the rest
+                // of the turn.
+                self.outside_input |= payload["origin"]["kind"] == "peer";
+                self.timer_cycle = false;
                 self.result = true;
                 self.changed_after_result = false;
                 self.result_had_background = !self.background.is_empty()
@@ -636,6 +683,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             self.reset_followup(limits)?;
             self.wire.unread(received);
             self.completion.self_started = true;
+            self.completion.unproven_start = true;
             self.awaiting_init = true;
             self.owner_command = false;
             self.conversation_reset = false;
@@ -650,10 +698,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
     pub fn self_started_turn(&self) -> bool {
         self.completion.self_started()
     }
-    /// The open turn holds a message of a peer session: input from outside
-    /// the conversation this session serves. It stays true until the turn
-    /// ends. A host must not let such a turn act under the trust it gives the
-    /// conversation's own participants.
+    /// The open turn holds a message of a peer session, or is one the CLI
+    /// started by itself and nothing has shown it to be a timer of the
+    /// session: input from outside the conversation this session serves.
+    /// True from the start of such a turn until its first init is read, and
+    /// from the first evidence to the end of the turn. A host must not let
+    /// such a turn act under the trust it gives the conversation's own
+    /// participants.
     pub fn outside_input(&self) -> bool {
         self.completion.outside_input()
     }

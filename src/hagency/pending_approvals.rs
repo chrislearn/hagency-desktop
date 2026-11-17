@@ -612,6 +612,11 @@ pub fn describe(row: &Value) -> (String, String) {
                 }
                 format("{agent} wants to use {tool}", &[agent(), ("tool", tool.to_owned())])
             };
+            // Nobody in this chat asked for it: say so before who the chat's
+            // message was from.
+            if params["risk"] == "peer_session" {
+                lines.push(tr("Source: a message from another Claude session on this computer, not from this chat").to_owned());
+            }
             // When someone else's message made the Agent ask, say who.
             if let Some(requester) = a["requesterMxid"].as_str().filter(|r| !r.is_empty() && a["ownerMxid"] != *r) {
                 lines.push(format("Requested by {requester}", &[("requester", requester.to_owned())]));

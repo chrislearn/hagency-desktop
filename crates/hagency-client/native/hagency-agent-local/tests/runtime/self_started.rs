@@ -291,17 +291,66 @@ async fn claude_timer_tools_are_allowed_unasked_under_every_tool_rule() {
     }
 }
 
+/// The CLI may offer the timer tools by name only, so the model loads one
+/// with `ToolSearch` first. That lookup is part of setting the timer and is
+/// not asked for; a lookup of anything else is a tool like every other.
+#[tokio::test]
+async fn claude_timer_tool_lookup_is_allowed_unasked_and_no_other_lookup() {
+    for (query, unasked) in [
+        ("select:ScheduleWakeup", true),
+        ("select:CronCreate,CronList, CronDelete", true),
+        ("select:ScheduleWakeup,Bash", false),
+        ("select:", false),
+        ("ScheduleWakeup", false),
+        ("timer", false),
+    ] {
+        let mut f = Fixture::new(
+            Kind::Claude,
+            &format!("approval:ToolSearch={query}"),
+            ToolPolicy::AskOwner,
+        );
+        let mut process = f.process().await;
+        process
+            .session
+            .open_context(&mut f.ledger, &f.scope, &f.profile)
+            .await
+            .unwrap();
+        let (queue, mut owner) = codex::approval_queue(1).unwrap();
+        let answer = async {
+            if !unasked {
+                let pending = tokio::time::timeout(Duration::from_secs(10), owner.recv())
+                    .await
+                    .expect("the owner is asked")
+                    .unwrap();
+                assert_eq!(pending.proposal.tool, "claude.ToolSearch", "{query}");
+                pending.decide(true);
+            }
+        };
+        let (done, ()) = tokio::join!(requested(&mut f, &mut process, "call", &queue), answer);
+        assert_eq!(done.tool_requests, 1, "{query}");
+        assert!(owner.try_recv().is_err(), "{query}");
+        assert!(f.path("effect").exists(), "{query}");
+        process.stop().await.unwrap();
+    }
+}
+
 /// Full trust is the owner's standing answer for their own conversation. A
 /// timer the session set continues that conversation: its tool runs unasked.
 /// A peer session's message is text from outside the room: the same tool is
 /// put to the owner and runs only on their yes.
 #[tokio::test]
 async fn claude_peer_started_turn_asks_the_owner_where_full_trust_would_allow() {
-    for (mode, asked) in [
-        ("continuous:self_timer_tool", false),
-        ("continuous:self_peer_tool", true),
+    // The last case is a CLI that one day starts a turn without reporting a
+    // command at all: nothing shows it to be a timer, so it is not trusted.
+    for (mode, frame, asked) in [
+        ("continuous:self_timer_tool", true, false),
+        ("continuous:self_peer_tool", true, true),
+        ("continuous:self_timer_tool", false, true),
     ] {
         let mut f = Fixture::called_by(Kind::Claude, mode, ToolPolicy::full_trust(), OWNER);
+        if !frame {
+            fs::write(f.path("no-command-frame"), "").unwrap();
+        }
         let mut process = f.process().await;
         process
             .session
@@ -321,6 +370,8 @@ async fn claude_peer_started_turn_asks_the_owner_where_full_trust_would_allow() 
                     .expect("the owner is asked")
                     .unwrap();
                 assert_eq!(pending.proposal.tool, "claude.Bash");
+                // The owner's card says the request is not their chat's.
+                assert_eq!(pending.proposal.risk, "peer_session");
                 assert!(!effect.exists());
                 pending.decide(true);
             }

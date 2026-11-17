@@ -3066,6 +3066,8 @@
   "Sending: {decision}…": "正在发送：{decision}…",
   "Previous request: {result}. This is a new request ({n}).": "上一个请求：{result}。这是新的请求（第 {n} 个）。",
   "Request {n}": "第 {n} 个请求",
+  "Source: a message from another Claude session on this computer, not from this chat": "来源：这台电脑上另一个 Claude 会话发来的消息，不是这个聊天里的人",
+  "Message from another Claude session on this computer": "这台电脑上另一个 Claude 会话发来的消息",
   "Requested by {requester}": "请求者：{requester}",
   "Last request: {result}. The Agent is continuing.": "上一个请求：{result}。Agent 正在继续。",
   "Could not send the decision. Try again.": "未能发送决定，请重试。",

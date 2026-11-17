@@ -303,8 +303,11 @@ message the session answered last.
 session's own later turn. It does nothing on the owner's computer and reaches
 nobody, so a local Agent's host allows it without consulting the tool rules,
 whatever they say. The same holds for the CLI's schedules of the same session
-(`CronCreate`, `CronList`, `CronDelete`). `SendMessage` stays under the tool
-rules: it reaches another session.
+(`CronCreate`, `CronList`, `CronDelete`), and for loading the description of
+one of these tools: the CLI may offer them by name only, and the model then
+looks one up (`ToolSearch` with `select:` and nothing but timer tools) before
+it can set a timer. `SendMessage` stays under the tool rules: it reaches
+another session, and so does every other lookup.
 
 **Messages from peer sessions are delivered.** Claude Code holds a message
 from a session that runs in another permission mode until a person releases
@@ -329,10 +332,35 @@ message, whether it starts a turn or is taken into a running one. From that
 frame to the end of the turn, saved tool rules and the owner's full trust
 answer for nothing: every tool the rules would allow is put to the owner,
 the timer tools included, because a timer set in such a turn would later run
-as the session's own. A denying rule still denies. Text the message left in
-the conversation is read by later turns like any other history; the host
-cannot separate that. Whether such a turn should run under the owner's
-trust instead is the owner's decision and is open.
+as the session's own. A denying rule still denies.
+
+What is not shown to be the session's own counts as outside, because the CLI
+updates itself and a later version may report a peer message differently. A
+turn the CLI starts while the session is parked is the session's own only
+where a timer was reported started for it; a turn with no command frame, a
+command in a state no capture has shown, a command without a name, and a
+further cycle that follows a timer's without a timer of its own are all
+treated like a peer message. Only the end of a command is passed over. A
+session is not parked while a background task of a turn is still running, so
+a turn without a command frame is never a background result. The cost of
+this rule is an owner who is asked once too often.
+
+The owner is told where such a request comes from. Its proposal carries the
+risk `peer_session`, and the approval card and the request list say that the
+request follows a message from another Claude session on this computer and
+not from this chat. A card that looks like the chat's own request would be
+approved as one.
+
+Three things this does not close. Text the message left in the conversation
+is read by later turns like any other history; the host cannot separate
+that. A timer the owner approves inside such a turn later fires as a timer
+of the session, and a background job approved there reports inside the same
+turn; both then act with the peer's text in context. And a pooled run: its
+CLI is not started with the setting, so a message is delivered to it only
+from a session in the same permission mode; whether such a session can reach
+a pooled run was not measured, and the pooled host does not look at where
+input came from. Whether a peer turn should run under the owner's trust
+instead is the owner's decision and is open.
 
 **A note to the model.** A model asked to do something later tends to wait
 inside the turn with a `sleep` command. That asks the owner for a command
@@ -377,4 +405,7 @@ private chat that is not encrypted (reply, then the report as its own message
 about two minutes later, then a further request answered by the same
 process), and in an encrypted room of an Agent space (the report arrived in
 the thread of the message that set the timer, readable by the owner's
-client).
+client). In that room also: a reminder asked for in plain words was set with
+the timer tool and arrived a minute later, and a message another Claude
+session on the computer sent to the parked session was answered in the same
+thread.

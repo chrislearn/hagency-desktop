@@ -299,6 +299,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
                         }
                         self.session_id = Some(session_id.clone());
                         self.awaiting_init = false;
+                        self.completion.judge_start();
                         self.wire.read_resets(false);
                     }
                     Some(bound) if bound == session_id && !init && !self.awaiting_init => {}

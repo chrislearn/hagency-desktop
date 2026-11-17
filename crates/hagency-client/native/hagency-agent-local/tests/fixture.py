@@ -301,7 +301,11 @@ if kind == 'claude':
                 assert not reply['isError']
         if mode in ('approval', 'cancel', 'hold', 'long_wait'):
             send({'type': 'assistant', 'session_id': session, 'message': {'id': 'step-1', 'content': [{'type': 'tool_use', 'id': 'tool-1', 'name': 'Write', 'input': {'file_path': str(root / 'outside' / 'result')}}], 'usage': {'input_tokens': 10, 'output_tokens': 2, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}}})
-            send({'type': 'control_request', 'request_id': 'approval-1', 'request': {'subtype': 'can_use_tool', 'tool_name': approval_tool, 'tool_use_id': 'tool-1', 'input': {'file_path': str(root / 'outside' / 'result'), 'content': 'exact'}}})
+            approval_input = {'file_path': str(root / 'outside' / 'result'), 'content': 'exact'}
+            if approval_tool.startswith('ToolSearch='):
+                approval_tool, query = approval_tool.split('=', 1)
+                approval_input = {'query': query, 'max_results': 5}
+            send({'type': 'control_request', 'request_id': 'approval-1', 'request': {'subtype': 'can_use_tool', 'tool_name': approval_tool, 'tool_use_id': 'tool-1', 'input': approval_input}})
             if mode == 'cancel':
                 send({'type': 'control_cancel_request', 'request_id': 'approval-1'})
             else:
@@ -475,7 +479,8 @@ if kind == 'claude':
             if self_mode == 'self_timer':
                 started.update({'wakeup_source':'loop_wakeup','scheduled_for':1794939960000})
             send({'type':'system','subtype':'session_state_changed','state':'running','session_id':session})
-            send(started)
+            if not (root / 'no-command-frame').exists():
+                send(started)
             send({'type':'system','subtype':'init','session_id':session})
             send({'type':'system','subtype':'status','status':'requesting','session_id':session})
             if self_tool:

@@ -130,7 +130,10 @@ async fn native_claude_idle_look_takes_over_a_timer_turn_long_after_the_last_one
     assert_eq!(driver.phase(), Phase::Running);
     assert!(!driver.can_followup());
     assert!(parked_source.is_retired());
-    assert!(!driver.outside_input());
+    assert!(
+        driver.outside_input(),
+        "nothing says whose turn it is before its start is read"
+    );
     // A second look is not a way to read an open turn.
     assert_eq!(driver.poll_idle(limits()).await, Err(Error::State));
     assert_eq!(driver.phase(), Phase::Running);
@@ -255,6 +258,44 @@ async fn native_claude_idle_look_takes_over_a_turn_a_peer_message_started() {
     assert!(driver.completion_receipt().unwrap().matches_text("Peer answer"));
     assert!(driver.can_followup());
     nothing_written(&mut peer).await;
+}
+
+/// What is not shown to be the session's own is not treated as its own. A
+/// turn that starts without any command frame, a command in a state this
+/// host has not seen, and a second cycle that follows a timer's without a
+/// timer of its own all count as input from outside.
+#[tokio::test(start_paused = true)]
+async fn native_claude_self_started_turn_is_outside_input_unless_a_timer_is_shown() {
+    let (mut driver, mut peer) = parked().await;
+    write(&mut peer, [state("running"), init()]).await;
+    assert_eq!(driver.poll_idle(limits()).await, Ok(true));
+    driver.next_message().await.unwrap();
+    assert!(driver.outside_input(), "no command frame at all");
+
+    let (mut driver, mut peer) = parked().await;
+    let mut unknown = lifecycle("peer-one", "delivered");
+    unknown["wakeup_source"] = Value::Null;
+    write(&mut peer, [state("running"), unknown, init()]).await;
+    assert_eq!(driver.poll_idle(limits()).await, Ok(true));
+    driver.next_message().await.unwrap();
+    assert!(driver.outside_input(), "a state no capture has shown");
+
+    let (mut driver, mut peer) = parked().await;
+    write(&mut peer, timer_start()).await;
+    assert_eq!(driver.poll_idle(limits()).await, Ok(true));
+    driver.next_message().await.unwrap();
+    driver.supervise_turn().unwrap();
+    assert!(!driver.outside_input());
+    event(&mut driver, &mut peer, text_result("result-timer", "Timer report"))
+        .await
+        .unwrap();
+    event(&mut driver, &mut peer, lifecycle("wake-one", "completed"))
+        .await
+        .unwrap();
+    assert!(!driver.outside_input(), "the end of the timer's own command");
+    // A second cycle follows the result directly, and no timer is reported.
+    event(&mut driver, &mut peer, init()).await.unwrap();
+    assert!(driver.outside_input());
 }
 
 /// The CLI takes a peer session's message into a turn that is running (CLI

@@ -53,6 +53,7 @@ pub(super) fn details(row: &Value, at: i64) -> String {
             match text("risk") {
                 "high" => crate::i18n::tr("High"),
                 "model_request" => crate::i18n::tr("Model request"),
+                "peer_session" => crate::i18n::tr("Message from another Claude session on this computer"),
                 v => v,
             },
         ),

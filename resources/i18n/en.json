@@ -3066,6 +3066,8 @@
   "Sending: {decision}…": "Sending: {decision}…",
   "Previous request: {result}. This is a new request ({n}).": "Previous request: {result}. This is a new request ({n}).",
   "Request {n}": "Request {n}",
+  "Source: a message from another Claude session on this computer, not from this chat": "Source: a message from another Claude session on this computer, not from this chat",
+  "Message from another Claude session on this computer": "Message from another Claude session on this computer",
   "Requested by {requester}": "Requested by {requester}",
   "Last request: {result}. The Agent is continuing.": "Last request: {result}. The Agent is continuing.",
   "Could not send the decision. Try again.": "Could not send the decision. Try again.",
