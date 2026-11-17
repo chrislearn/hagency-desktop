@@ -2785,11 +2785,19 @@ async fn run_turn<T: Transport>(
                 provider.session.continue_context(ledger, &scope, &profile).await
             }) => result.unwrap_or(Err(codex::Error::Timeout)),
         };
-        if prepared.is_ok() { Some(provider) } else {
-            // No new model input or reservation has been sent. A dead cached
-            // process may be replaced for this newly admitted dispatch only.
-            provider.stop().await.map_err(|_| RuntimeError::Provider)?;
-            None
+        match prepared {
+            Ok(()) => Some(provider),
+            Err(error) => {
+                // Includes a turn the native CLI started by itself while parked
+                // (a peer message, a timer): ADR 0013 admits none of those yet.
+                let (kind, detail) = error.diagnostic();
+                tracing::warn!(code = "agent_retained_session_replaced", kind, detail,
+                    event = error.diagnostic_event(), "A retained native session failed its reuse check");
+                // No new model input or reservation has been sent. A dead cached
+                // process may be replaced for this newly admitted dispatch only.
+                provider.stop().await.map_err(|_| RuntimeError::Provider)?;
+                None
+            }
         }
     } else { None };
     let retained = cached.is_some();
