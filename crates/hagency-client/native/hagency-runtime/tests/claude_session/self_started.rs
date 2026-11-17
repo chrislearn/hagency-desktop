@@ -81,6 +81,27 @@ async fn native_claude_idle_look_passes_idle_metadata_without_waiting_or_writing
     assert!(driver.can_followup());
 }
 
+/// A message of a peer session that the CLI holds for a person, and later
+/// drops, is reported while idle (CLI 2.1.323, offline capture 2026-11-17).
+/// Nothing ran for it: the session stays the one a next message continues.
+#[tokio::test(start_paused = true)]
+async fn native_claude_idle_look_passes_a_held_peer_message() {
+    let (mut driver, mut peer) = parked().await;
+    let hold = |state: &str| {
+        json!({"type":"system","subtype":"peer_message_hold","state":state,
+            "message_uuid":"held-one","lane":"socket","from":"uds:/tmp/cc-socks/1.sock",
+            "from_name":"work-b3","cause":"mode-mismatch","session_id":"session-one"})
+    };
+    write(&mut peer, [hold("held")]).await;
+    assert_eq!(driver.poll_idle(limits()).await, Ok(false));
+    write(&mut peer, [hold("dropped")]).await;
+    assert_eq!(driver.poll_idle(limits()).await, Ok(false));
+    assert!(!driver.self_started_turn());
+    nothing_written(&mut peer).await;
+    write(&mut peer, timer_start()).await;
+    assert_eq!(driver.poll_idle(limits()).await, Ok(true));
+}
+
 #[tokio::test(start_paused = true)]
 async fn native_claude_idle_look_reads_a_frame_that_arrives_in_two_parts() {
     let (mut driver, mut peer) = parked().await;

@@ -573,8 +573,26 @@ pub fn arguments(model: &str) -> Result<Vec<String>, Error> {
 /// inventory. An ask rule routes native tools (including newly added tools and
 /// MCP tools) through the host; it does not grant permission to execute them.
 pub fn interactive_arguments(model: &str, effort: &str) -> Result<Vec<String>, Error> {
+    interactive(model, effort, false)
+}
+/// The launch of an owner's local Agent: the same arguments, and a message
+/// from another Claude session of the same account on this computer is
+/// delivered. Without the setting the CLI holds a message from a session that
+/// runs in another permission mode for a person to release, and a headless
+/// session has nobody to ask (CLI 2.1.323, offline capture 2026-11-17: `system
+/// peer_message_hold`, cause `mode-mismatch`). The tools of the turn such a
+/// message starts are still asked for through the host.
+pub fn local_interactive_arguments(model: &str, effort: &str) -> Result<Vec<String>, Error> {
+    interactive(model, effort, true)
+}
+fn interactive(model: &str, effort: &str, peers: bool) -> Result<Vec<String>, Error> {
     if !matches!(effort, "low" | "medium" | "high" | "xhigh" | "max") {
         return Err(Error::Input);
+    }
+    let mut settings =
+        json!({"permissions":{"ask":["*"]},"sandbox":{"autoAllowBashIfSandboxed":false}});
+    if peers {
+        settings["crossSessionInbound"] = json!("accept");
     }
     let mut args = arguments(model)?;
     args.extend([
@@ -582,8 +600,7 @@ pub fn interactive_arguments(model: &str, effort: &str) -> Result<Vec<String>, E
         "--effort".into(),
         effort.into(),
         "--settings".into(),
-        json!({"permissions":{"ask":["*"]},"sandbox":{"autoAllowBashIfSandboxed":false}})
-            .to_string(),
+        settings.to_string(),
     ]);
     Ok(args)
 }

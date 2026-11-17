@@ -416,9 +416,10 @@ async fn spawn_inner(
                 command.env("CLAUDE_CONFIG_DIR", &profile.codex_home);
             }
             command.args(
-                claude::interactive_arguments(&profile.model, &profile.effort)
+                claude::local_interactive_arguments(&profile.model, &profile.effort)
                     .map_err(|_| Error::Profile("Claude model or effort"))?,
             );
+            command.args(["--append-system-prompt", CLAUDE_ROOM_NOTE]);
             // The Agent's web search switch, as a shared Claude run reads it.
             if !profile.web_search {
                 command.args(["--disallowedTools", "WebSearch,WebFetch"]);
@@ -553,8 +554,18 @@ async fn spawn_inner(
     })
 }
 
-/// The Claude tool that sets a timer for the session's own later turn.
-const SELF_TIMER_TOOL: &str = "claude.ScheduleWakeup";
+/// The Claude tools that set, list and remove timers for the session's own
+/// later turns: one wake-up, and the schedules of the same session.
+const SELF_TIMER_TOOLS: [&str; 4] = [
+    "claude.ScheduleWakeup",
+    "claude.CronCreate",
+    "claude.CronList",
+    "claude.CronDelete",
+];
+/// Added to the CLI's own instructions for a local Agent. Without it a model
+/// asked to do something later waits inside the turn (a `sleep` command):
+/// that asks the owner for a command and keeps the Agent busy meanwhile.
+const CLAUDE_ROOM_NOTE: &str = "You answer in a chat room through Hagency. To do something later, or to report on a schedule, set a timer with the ScheduleWakeup tool and end your answer. When the timer fires you run again, and what you answer then is posted to the same chat by itself. Do not pass time with sleep or another waiting command.";
 /// How long the confirmation recorded for a self-started turn lasts: the
 /// longest a confirmation may last, which is also the longest a turn may run.
 const SELF_STARTED_CONFIRMED_SECS: i64 = 3600;
@@ -1309,7 +1320,7 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
         // The owner's tool rules decide what a tool may do on this computer.
         // A timer for the session's own later turn does nothing here and
         // reaches nobody, so nobody is asked for it.
-        if tool == SELF_TIMER_TOOL {
+        if SELF_TIMER_TOOLS.iter().any(|timer| *timer == tool) {
             return claude_turn::ToolAnswer::Allow;
         }
         permission(

@@ -267,26 +267,45 @@ async fn claude_self_started_turn_runs_unasked_where_requests_ask_the_owner() {
     process.stop().await.unwrap();
 }
 
-/// Setting the timer is not a tool the owner's rules decide: under a rule
-/// that asks the owner, and under one that denies, nobody is asked and the
-/// CLI is told to go on.
+/// Setting, listing and removing the session's own timers are not tools the
+/// owner's rules decide: under a rule that asks the owner, and under one that
+/// denies, nobody is asked and the CLI is told to go on.
 #[tokio::test]
-async fn claude_timer_tool_is_allowed_unasked_under_every_tool_rule() {
-    for tools in [ToolPolicy::AskOwner, ToolPolicy::Deny] {
-        let mut f = Fixture::new(Kind::Claude, "approval:ScheduleWakeup", tools);
-        let mut process = f.process().await;
-        process
-            .session
-            .open_context(&mut f.ledger, &f.scope, &f.profile)
-            .await
-            .unwrap();
-        let (queue, mut owner) = codex::approval_queue(1).unwrap();
-        let done = requested(&mut f, &mut process, "call", &queue).await;
-        assert_eq!(done.tool_requests, 1);
-        assert!(owner.try_recv().is_err());
-        assert!(f.path("effect").exists());
-        process.stop().await.unwrap();
+async fn claude_timer_tools_are_allowed_unasked_under_every_tool_rule() {
+    for tool in ["ScheduleWakeup", "CronCreate", "CronList", "CronDelete"] {
+        for tools in [ToolPolicy::AskOwner, ToolPolicy::Deny] {
+            let mut f = Fixture::new(Kind::Claude, &format!("approval:{tool}"), tools);
+            let mut process = f.process().await;
+            process
+                .session
+                .open_context(&mut f.ledger, &f.scope, &f.profile)
+                .await
+                .unwrap();
+            let (queue, mut owner) = codex::approval_queue(1).unwrap();
+            let done = requested(&mut f, &mut process, "call", &queue).await;
+            assert_eq!(done.tool_requests, 1, "{tool}");
+            assert!(owner.try_recv().is_err(), "{tool}");
+            assert!(f.path("effect").exists(), "{tool}");
+            process.stop().await.unwrap();
+        }
     }
+}
+
+/// A local Agent's CLI is started to take messages of the owner's other
+/// sessions on this computer, and told to use a timer instead of waiting.
+#[tokio::test]
+async fn claude_local_launch_accepts_peer_messages_and_names_the_timer() {
+    let (f, mut process, _, _) = parked("continuous:self_timer").await;
+    process.stop().await.unwrap();
+    let launch: Vec<String> = serde_json::from_str(
+        fs::read_to_string(f.path("argv")).unwrap().lines().next().unwrap(),
+    )
+    .unwrap();
+    let after = |flag: &str| &launch[launch.iter().position(|arg| arg == flag).unwrap() + 1];
+    let settings: serde_json::Value = serde_json::from_str(after("--settings")).unwrap();
+    assert_eq!(settings["crossSessionInbound"], "accept");
+    assert_eq!(settings["permissions"]["ask"], serde_json::json!(["*"]));
+    assert!(after("--append-system-prompt").contains("ScheduleWakeup"));
 }
 
 /// A turn started by something this host does not know is not taken over as

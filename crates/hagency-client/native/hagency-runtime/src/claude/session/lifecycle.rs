@@ -365,6 +365,10 @@ fn idle_metadata(kind: EventKind, payload: &Value) -> bool {
             && payload["state"] == "idle")
         // A hook that ended after the turn did.
         || (kind == EventKind::System && super::hook_report(payload))
+        // A message of a peer session that the CLI holds or dropped instead
+        // of delivering (CLI 2.1.323: `held` with a cause, later `dropped`).
+        // Nothing ran for it.
+        || (kind == EventKind::System && payload["subtype"] == "peer_message_hold")
         || (kind == EventKind::CommandLifecycle && payload["state"] == "completed")
 }
 /// The first frame of a turn the CLI starts by itself (CLI 2.1.322 and

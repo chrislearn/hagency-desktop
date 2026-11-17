@@ -49,6 +49,24 @@ fn interactive_profile_loads_native_capabilities_and_routes_all_tools_to_host() 
         assert!(!args.iter().any(|arg| arg == restricted), "{restricted}");
     }
     assert!(claude::interactive_arguments("sonnet", "--dangerously-skip-permissions").is_err());
+    // A shared run never takes messages from other sessions on the computer.
+    assert!(settings.get("crossSessionInbound").is_none());
+}
+#[test]
+fn local_agent_profile_differs_only_by_accepting_messages_of_peer_sessions() {
+    let shared = claude::interactive_arguments("sonnet", "medium").unwrap();
+    let local = claude::local_interactive_arguments("sonnet", "medium").unwrap();
+    let at = local.iter().position(|arg| arg == "--settings").unwrap() + 1;
+    let settings: Value = serde_json::from_str(&local[at]).unwrap();
+    assert_eq!(settings["crossSessionInbound"], "accept");
+    assert_eq!(settings["permissions"]["ask"], json!(["*"]));
+    assert_eq!(settings["sandbox"]["autoAllowBashIfSandboxed"], false);
+    assert_eq!(settings.as_object().unwrap().len(), 3);
+    assert_eq!(shared.len(), local.len());
+    for (index, (shared, local)) in shared.iter().zip(&local).enumerate() {
+        assert!(index == at || shared == local);
+    }
+    assert!(claude::local_interactive_arguments("sonnet", "none").is_err());
 }
 #[test]
 fn native_model_aliases_context_suffixes_and_provider_ids_are_single_arguments() {

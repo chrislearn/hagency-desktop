@@ -302,8 +302,29 @@ message the session answered last.
 **No approval for the timer.** `ScheduleWakeup` only sets a timer for the
 session's own later turn. It does nothing on the owner's computer and reaches
 nobody, so a local Agent's host allows it without consulting the tool rules,
-whatever they say. Other scheduling tools of the CLI (`CronCreate` and its
-relatives) and `SendMessage` stay under the tool rules.
+whatever they say. The same holds for the CLI's schedules of the same session
+(`CronCreate`, `CronList`, `CronDelete`). `SendMessage` stays under the tool
+rules: it reaches another session.
+
+**Messages from peer sessions are delivered.** Claude Code holds a message
+from a session that runs in another permission mode until a person releases
+it (`system peer_message_hold`, cause `mode-mismatch`; measured on 2.1.323).
+The owner's interactive sessions usually run in another mode than a local
+Agent's headless one, and a headless session has nobody to release anything,
+so every such message was held and later dropped. A local Agent's CLI is
+therefore started with `crossSessionInbound: "accept"`. The tools of the turn
+such a message starts are still asked for through the host. A message that
+arrives while the session runs a turn is taken into that turn by the CLI and
+answered with it. A hold or drop notice that still arrives is idle metadata:
+nothing ran for it, and the session stays. Pooled runs do not get the
+setting.
+
+**A note to the model.** A model asked to do something later tends to wait
+inside the turn with a `sleep` command. That asks the owner for a command
+and keeps the Agent busy for the whole wait. A local Agent's CLI therefore
+gets one added instruction (`--append-system-prompt`): to do something later
+or to report on a schedule, set a timer and end the answer; the later answer
+is posted to the same chat by itself.
 
 **Decided on 2026-11-17: no separate switch.** The rules above ask for "its
 own enabled trigger" for an independent turn. For a local Agent that rule is
@@ -336,7 +357,9 @@ reports, so delivery resumes after a restart; no turn is run again.
 **Evidence.** Driver and local-runtime tests with the captured frames; the
 installed CLI against a localhost model (timer fires while parked, the turn is
 taken over, admitted, charged and settled, the next request continues the
-session); one live run on River on 2026-11-17 with a local Claude Agent in a
-private chat that is not encrypted: reply, then the report as its own message
-about two minutes later, then a further request answered by the same process.
-An encrypted room has not been run live with this path.
+session); live runs on River on 2026-11-17 with local Claude Agents: in a
+private chat that is not encrypted (reply, then the report as its own message
+about two minutes later, then a further request answered by the same
+process), and in an encrypted room of an Agent space (the report arrived in
+the thread of the message that set the timer, readable by the owner's
+client).
