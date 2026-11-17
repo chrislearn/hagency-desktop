@@ -8,10 +8,12 @@
 //! itself is admitted, charged and settled in the local ledger like a
 //! requested one, under an identity of its own.
 //!
-//! First version: local Claude Agents only. A Codex or Octos session is not
-//! looked at. Room tools answer "unavailable" (they act for a running
-//! request), questions to the requester go unanswered, and the room cannot
-//! steer or stop the turn.
+//! Only a Claude session starts a turn by itself; a Codex or Octos session is
+//! not looked at. A timer the Agent set with the host (`wakeups`) runs its
+//! turn through the same `run`, for every runtime. In both kinds of turn the
+//! room's history and file tools answer "unavailable" (they act for a
+//! running request), questions to the requester go unanswered, and the room
+//! cannot steer or stop the turn.
 use super::provider_custody::{Anchor, Provider, SessionKey, Sessions};
 use super::*;
 
@@ -176,8 +178,11 @@ pub(super) async fn pump<T: Transport>(
         if *cancel.borrow() {
             return Err(RuntimeError::Stopped);
         }
-        run(transport, lease, ledger, owner, config, cancel, status, sessions, pending, key, provider, anchor)
-            .await?;
+        run(
+            transport, lease, ledger, owner, config, cancel, status, sessions, pending, key, provider,
+            anchor, None,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -191,8 +196,12 @@ async fn refuse(mut provider: Provider, reason: &'static str) -> Result<(), Runt
     Ok(())
 }
 
+/// Run a turn nobody requested and report it to the room of `anchor`.
+/// `input` is `None` for the turn the native CLI already started in
+/// `provider`, and the host's own words for a turn the host starts for a
+/// timer (`wakeups`). Only a stop of the runtime is an error.
 #[allow(clippy::too_many_arguments)]
-async fn run<T: Transport>(
+pub(super) async fn run<T: Transport>(
     transport: &T,
     lease: &LeaseRef,
     ledger: &mut Ledger,
@@ -205,6 +214,7 @@ async fn run<T: Transport>(
     key: SessionKey,
     mut provider: Provider,
     anchor: Anchor,
+    input: Option<String>,
 ) -> Result<(), RuntimeError> {
     let scope = anchor.dispatch.scope();
     let Some(host) = transport.approval_host() else {
@@ -309,7 +319,11 @@ async fn run<T: Transport>(
         agent_id: Some(config.agent_id.clone()),
         requester_id: Some(scope.requester.clone()),
         room_id: Some(scope.room.clone()),
-        runtime: hagency_metering::dashboard::ledger::Runtime::Claude,
+        runtime: match runtime::kind(&config.credential_ref) {
+            runtime::Kind::Codex => hagency_metering::dashboard::ledger::Runtime::Codex,
+            runtime::Kind::Claude => hagency_metering::dashboard::ledger::Runtime::Claude,
+            runtime::Kind::Octos => hagency_metering::dashboard::ledger::Runtime::Octos,
+        },
         runtime_version: None,
         model: Some(config.profile.model.clone()),
         parent_execution_id: None,
@@ -323,8 +337,13 @@ async fn run<T: Transport>(
             }
         }
     };
-    tracing::info!(code = "agent_self_started_turn",
-        "A parked native session started a turn by itself; it runs as a turn of its own");
+    if input.is_some() {
+        tracing::info!(code = "agent_timer_turn",
+            "The host starts the turn of a timer the Agent set; it runs as a turn of its own");
+    } else {
+        tracing::info!(code = "agent_self_started_turn",
+            "A parked native session started a turn by itself; it runs as a turn of its own");
+    }
     admission.started();
     // The messages are sent under the anchor run's route while the turn runs.
     let prepared = inbox::Prepared {
@@ -337,9 +356,18 @@ async fn run<T: Transport>(
         _ = canceled(cancel) => Err(RuntimeError::Stopped),
         result = async {
             tokio::select! {
-                result = provider.session.run_self_started(
-                    ledger, owner, &scope, &turn, &turn, BudgetMode::Postpaid, &queue, Some(&usage_observer),
-                ) => result,
+                result = async {
+                    match input.as_deref() {
+                        None => provider.session.run_self_started(
+                            ledger, owner, &scope, &turn, &turn, BudgetMode::Postpaid, &queue,
+                            Some(&usage_observer),
+                        ).await,
+                        Some(input) => provider.session.run_host_started(
+                            ledger, owner, &scope, &turn, &turn, input, BudgetMode::Postpaid, &queue,
+                            Some(&usage_observer),
+                        ).await,
+                    }
+                } => result,
                 _ = room_host.serve(room_receiver) => Err(codex::Error::Protocol("room bridge closed")),
                 _ = async {
                     controls.serve(transport, lease, config, &prepared, control_cancel).await;

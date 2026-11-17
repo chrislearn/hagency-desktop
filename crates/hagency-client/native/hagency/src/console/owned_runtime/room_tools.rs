@@ -228,11 +228,28 @@ impl Host {
         operation: &RoomOperation,
         context: Option<&hagency_runtime::codex::session::ContextUsage>,
     ) -> RoomReply {
+        if let RoomOperation::Timer(operation) = operation {
+            // The host keeps a timer for the conversation of the run this
+            // call belongs to. Setting one sends nothing and reads nothing
+            // of the room, so it does not ask the server whether that run is
+            // still running: the turn a timer starts sets the next one the
+            // same way.
+            let Ok(root) = e2ee::message_root(&self.gate.console, &self.gate.lease, &self.config)
+            else {
+                return RoomReply::unavailable();
+            };
+            let text = wakeups::tool(&root, &self.gate.expected, &self.gate.execution, operation);
+            let is_error = serde_json::from_str::<Value>(&text)
+                .ok()
+                .is_some_and(|v| v.get("error").is_some());
+            return RoomReply::new(text, is_error).unwrap_or_else(|_| RoomReply::unavailable());
+        }
         let state = match self.ensure().await {
             Ok(state) => state,
             Err(_) => return RoomReply::unavailable(),
         };
         let text = match operation {
+            RoomOperation::Timer(_) => return RoomReply::unavailable(),
             RoomOperation::History { cursor } => {
                 match state.history.read_native(cursor.as_deref(), context).await {
                     Ok(text) => text,

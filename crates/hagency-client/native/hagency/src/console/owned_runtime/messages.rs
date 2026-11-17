@@ -785,6 +785,88 @@ pub(super) mod undelivered {
         }
     }
 }
+/// Timers a local Agent set for its conversation (`wakeups`), sealed with the
+/// outbox key of the Agent's device. A host that does not know them leaves
+/// the folder alone.
+pub(super) mod timers {
+    use super::{Path, PathBuf};
+    use serde::{Deserialize, Serialize};
+    const MAX_TIMERS: usize = 512;
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(in crate::console::owned_runtime) struct Timer {
+        pub version: u8,
+        pub id: String,
+        /// The run the Agent answered when it set the timer. The turn the
+        /// timer starts reports to that run's room and thread.
+        pub dispatch: String,
+        pub execution: String,
+        pub room: String,
+        pub thread: String,
+        /// Unix seconds.
+        pub due: i64,
+        pub created: i64,
+        pub note: String,
+        pub repeat: Option<u64>,
+        /// Turns started for the current due time. Written before a turn
+        /// starts, so a restart in the middle of it is counted.
+        pub attempts: u8,
+        /// Turns that ran to their end.
+        pub fired: u32,
+    }
+    fn directory(device_root: &Path) -> Result<(PathBuf, super::StoreCipher), ()> {
+        let root = device_root.join("outgoing-messages");
+        hagency_store::private::directory(&root).map_err(|_| ())?;
+        let cipher = super::cipher(&root)?;
+        let directory = root.join("timers");
+        hagency_store::private::directory(&directory).map_err(|_| ())?;
+        Ok((directory, cipher))
+    }
+    fn name(id: &str) -> Result<String, ()> {
+        // The id came from this host; it is still never a path.
+        if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Err(());
+        }
+        Ok(format!("{id}.sealed"))
+    }
+    /// True where a timer may have been saved: a look creates no folder and
+    /// no key for an Agent that never set one.
+    pub(in crate::console::owned_runtime) fn any(device_root: &Path) -> bool {
+        device_root.join("outgoing-messages").join("timers").is_dir()
+    }
+    pub(in crate::console::owned_runtime) fn save(device_root: &Path, timer: &Timer) -> Result<(), ()> {
+        let (directory, cipher) = directory(device_root)?;
+        let path = directory.join(name(&timer.id)?);
+        let bytes = cipher.encrypt_value(timer).map_err(|_| ())?;
+        if path.exists() {
+            return hagency_store::private::replace(&path, &bytes).map_err(|_| ());
+        }
+        if std::fs::read_dir(&directory).map_err(|_| ())?.count() >= MAX_TIMERS {
+            return Err(());
+        }
+        hagency_store::private::write_new(&path, &bytes).map_err(|_| ())
+    }
+    /// Every saved timer. One that cannot be read is skipped, not removed.
+    pub(in crate::console::owned_runtime) fn list(device_root: &Path) -> Vec<Timer> {
+        if !any(device_root) {
+            return Vec::new();
+        }
+        let Ok((directory, cipher)) = directory(device_root) else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(&directory) else { return Vec::new() };
+        entries
+            .take(MAX_TIMERS)
+            .filter_map(|entry| {
+                let bytes = super::read(&entry.ok()?.path(), 64 * 1024).ok()?;
+                cipher.decrypt_value::<Timer>(&bytes).ok().filter(|timer| timer.version == 1)
+            })
+            .collect()
+    }
+    pub(in crate::console::owned_runtime) fn remove(device_root: &Path, id: &str) {
+        if let Ok(name) = name(id) {
+            let _ = std::fs::remove_file(device_root.join("outgoing-messages").join("timers").join(name));
+        }
+    }
+}
 impl MessageSink for Outbox {
     fn record(&self, id: &str, text: &str) -> Result<(), MessageError> {
         if id.is_empty() || id.len() > 2048 || id.chars().any(char::is_control)

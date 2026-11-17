@@ -451,7 +451,8 @@ async fn drive<H: Host, C: Capture>(
                 } else {
                     None
                 };
-                if wire.outside_input() {
+                let outside = wire.outside_input();
+                if outside {
                     host.outside_input();
                 }
                 let question_id = request_id.clone();
@@ -464,12 +465,21 @@ async fn drive<H: Host, C: Capture>(
                     // this dispatch's room authority. External MCP tools still
                     // use the owner's ordinary permission policy below.
                     if let Some(name) = tool_name.strip_prefix("mcp__hagency_matrix__") {
-                        return Decision::Tool(ToolAnswer::allowed(
-                            queue.room.is_some()
-                                && hagency_runtime::room_tools::RoomTools::history_and_files()
-                                    .parse(name, &input)
-                                    .is_ok(),
-                        ));
+                        use hagency_runtime::room_tools::{RoomOperation, RoomTimerOperation, RoomTools};
+                        let operation = RoomTools::history_and_files()
+                            .with_timers()
+                            .parse(name, &input);
+                        // A timer set or removed on the word of a peer
+                        // session would later act as the session's own: in
+                        // such a turn it is the owner's to decide, below.
+                        let peer_timer = outside
+                            && matches!(&operation, Ok(RoomOperation::Timer(timer))
+                                if !matches!(timer, RoomTimerOperation::ListWakeups {}));
+                        if !peer_timer {
+                            return Decision::Tool(ToolAnswer::allowed(
+                                queue.room.is_some() && operation.is_ok(),
+                            ));
+                        }
                     }
                     if let Some(questions) = questions {
                         return Decision::Question(match &queue.questions {

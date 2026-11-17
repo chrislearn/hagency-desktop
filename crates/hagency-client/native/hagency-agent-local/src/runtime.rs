@@ -580,13 +580,17 @@ fn timer_tool_lookup(tool: &str, arguments: &Value) -> bool {
             .and_then(|query| query.strip_prefix("select:"))
             .is_some_and(|names| {
                 names.split(',').all(|name| {
+                    let name = name.trim();
                     SELF_TIMER_TOOLS
                         .iter()
-                        .any(|timer| timer.strip_prefix("claude.") == Some(name.trim()))
+                        .any(|timer| timer.strip_prefix("claude.") == Some(name))
+                        || name.strip_prefix("mcp__hagency_matrix__").is_some_and(|timer| {
+                            hagency_runtime::room_tools::ROOM_TIMER_TOOLS.contains(&timer)
+                        })
                 })
             })
 }
-const CLAUDE_ROOM_NOTE: &str = "You answer in a chat room through Hagency. To do something later, or to report on a schedule, set a timer with the ScheduleWakeup tool and end your answer. When the timer fires you run again, and what you answer then is posted to the same chat by itself. Do not pass time with sleep or another waiting command.";
+const CLAUDE_ROOM_NOTE: &str = "You answer in a chat room through Hagency. To do something later, or to report on a schedule, set a timer with the schedule_wakeup tool of the hagency_matrix server (mcp__hagency_matrix__schedule_wakeup) and end your answer. When the timer fires you run again, and what you answer then is posted to the same chat by itself. That timer is kept by Hagency and survives a restart; ScheduleWakeup lives only as long as this process, so use it only when you are asked for it by name. Do not pass time with sleep or another waiting command.";
 /// How long the confirmation recorded for a self-started turn lasts: the
 /// longest a confirmation may last, which is also the longest a turn may run.
 const SELF_STARTED_CONFIRMED_SECS: i64 = 3600;
@@ -871,6 +875,34 @@ impl Session {
         }
         self.run_admitted(
             ledger, owner, scope, call, dispatch, None, mode, queue, None, observer,
+        )
+        .await
+    }
+    /// Run a turn the host starts for a timer the conversation's Agent set
+    /// with the host (`schedule_wakeup`). Like a turn the CLI started by
+    /// itself it continues a conversation that was already admitted: where
+    /// the scope's requests need the owner's confirmation, it is recorded
+    /// here, and a denying scope or a spent budget refuses the turn. Every
+    /// runtime can run one; `input` is what the host tells the model.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_host_started(
+        &mut self,
+        ledger: &mut Ledger,
+        owner: &str,
+        scope: &Scope,
+        call: &str,
+        dispatch: &str,
+        input: &str,
+        mode: BudgetMode,
+        queue: &ApprovalQueue,
+        observer: Option<&(dyn Fn(&Usage) + Send + Sync)>,
+    ) -> Result<Completed> {
+        if ledger.request_disposition(scope, dispatch)? == RequestPolicy::AskOwner {
+            let now = now();
+            ledger.approve_request(owner, scope, dispatch, now + SELF_STARTED_CONFIRMED_SECS, now)?;
+        }
+        self.run_admitted(
+            ledger, owner, scope, call, dispatch, Some(input), mode, queue, None, observer,
         )
         .await
     }

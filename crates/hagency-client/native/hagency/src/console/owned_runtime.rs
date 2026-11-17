@@ -8,6 +8,7 @@ pub(in crate::console) mod questions;
 mod room_tools;
 pub(in crate::console) mod run_controls;
 mod service;
+mod wakeups;
 #[cfg(unix)]
 mod working_directory;
 use super::lifecycle::{RetainedTask, TaskCustody};
@@ -1905,6 +1906,7 @@ async fn execution_loop_with_gate<T: Transport>(
     let mut sessions = provider_custody::Sessions::default();
     // Runs that hold reports of a turn the native CLI started by itself.
     let mut undelivered = idle_turns::recover(console, lease, ledger, owner, config);
+    let mut timers = wakeups::Clock::new();
     let mut reply_cursor = String::new();
     let mut finish_cursors = [String::new(), String::new(), String::new()];
     loop {
@@ -2001,6 +2003,13 @@ async fn execution_loop_with_gate<T: Transport>(
         // never meets a session that is in the middle of such a turn.
         idle_turns::pump(
             console, lease, ledger, owner, config, cancel, status, &mut sessions, &mut undelivered,
+        )
+        .await?;
+        // A timer the Agent set with the host is due: its turn runs here,
+        // between requests, like the turn above.
+        wakeups::pump(
+            console, lease, ledger, owner, config, cancel, status, &mut sessions, &mut undelivered,
+            &mut timers,
         )
         .await?;
         idle_turns::deliver(console, lease, config, cancel, &mut undelivered).await?;
@@ -2915,7 +2924,7 @@ async fn run_turn<T: Transport>(
             provider.session.verify_host_environment().await.inspect_err(|error|{provider_failure("provider_environment", error);})?;
             provider.session.require_local_account().await.inspect_err(|error|{provider_failure("provider_account", error);})?;
             if room_tools {
-                provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files()).await
+                provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files().with_timers()).await
                     .inspect_err(|error|{provider_failure("provider_room_tools", error);})?;
             }
             provider.session.open_context(ledger,&scope,&profile).await.inspect_err(|error|{provider_failure("provider_context", error);})?;

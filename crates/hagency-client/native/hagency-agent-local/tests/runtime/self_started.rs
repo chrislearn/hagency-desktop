@@ -267,6 +267,92 @@ async fn claude_self_started_turn_runs_unasked_where_requests_ask_the_owner() {
     process.stop().await.unwrap();
 }
 
+/// A turn the host starts for a timer the Agent set with it: every runtime
+/// runs one. Like a self-started turn it needs nobody's confirmation where
+/// requests ask the owner, is charged and settled as a turn of its own, and
+/// is refused by a denying scope and by a spent budget before the model is
+/// called. The next request is still asked for.
+#[tokio::test]
+async fn host_started_timer_turn_runs_unasked_and_is_refused_like_a_request() {
+    for kind in [Kind::Claude, Kind::Octos] {
+        for (case, policy, expected) in [
+            ("ask", rule(RequestPolicy::AskOwner, Limit::Unlimited), Ok(())),
+            ("deny", rule(RequestPolicy::Deny, Limit::Unlimited), Err(false)),
+            ("budget", rule(RequestPolicy::Allow, Limit::Tokens(1)), Err(true)),
+        ] {
+            let mut f = Fixture::new(kind, "normal", ToolPolicy::Deny);
+            let mut process = f.process().await;
+            process
+                .session
+                .open_context(&mut f.ledger, &f.scope, &f.profile)
+                .await
+                .unwrap();
+            let (queue, mut owner) = codex::approval_queue(1).unwrap();
+            if case == "budget" {
+                // Something is already spent in this scope.
+                process
+                    .session
+                    .run_with_started(
+                        &mut f.ledger, OWNER, &f.scope, "first", "first", "hello",
+                        BudgetMode::Postpaid, &queue, None,
+                    )
+                    .await
+                    .unwrap();
+                process.stop().await.unwrap();
+                process = f.process().await;
+                process
+                    .session
+                    .open_context(&mut f.ledger, &f.scope, &f.profile)
+                    .await
+                    .unwrap();
+            }
+            let spent = f.spent();
+            f.ledger
+                .set_policy(OWNER, &f.scope, Layer::Requester, 1, &policy)
+                .unwrap();
+            let done = tokio::time::timeout(
+                Duration::from_secs(10),
+                process.session.run_host_started(
+                    &mut f.ledger,
+                    OWNER,
+                    &f.scope,
+                    "self-started-timer",
+                    "self-started-timer",
+                    "[Hagency timer] A timer you set in this chat is due now.",
+                    BudgetMode::Postpaid,
+                    &queue,
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+            match expected {
+                Ok(()) => {
+                    let done = done.unwrap();
+                    assert_eq!(done.text, "offline reply", "{case}");
+                    assert!(done.usage.is_reported());
+                    assert!(f.spent().0 > spent.0, "{case}");
+                    assert!(f.ledger.outstanding_calls(OWNER).unwrap().is_empty());
+                }
+                Err(budget) => {
+                    assert!(
+                        matches!(
+                            (&done, budget),
+                            (Err(Error::Ledger(hagency_agent_local::Error::Budget)), true)
+                                | (Err(Error::Ledger(hagency_agent_local::Error::Denied)), false)
+                        ),
+                        "{case}"
+                    );
+                    assert_eq!(f.spent(), spent, "{case}");
+                    assert!(f.ledger.outstanding_calls(OWNER).unwrap().is_empty());
+                }
+            }
+            assert!(owner.try_recv().is_err(), "{case}: nobody is asked");
+            process.stop().await.unwrap();
+        }
+    }
+}
+
 /// Setting, listing and removing the session's own timers are not tools the
 /// owner's rules decide: under a rule that asks the owner, and under one that
 /// denies, nobody is asked and the CLI is told to go on.
@@ -299,6 +385,8 @@ async fn claude_timer_tool_lookup_is_allowed_unasked_and_no_other_lookup() {
     for (query, unasked) in [
         ("select:ScheduleWakeup", true),
         ("select:CronCreate,CronList, CronDelete", true),
+        ("select:mcp__hagency_matrix__schedule_wakeup,mcp__hagency_matrix__list_wakeups", true),
+        ("select:mcp__hagency_matrix__send_file", false),
         ("select:ScheduleWakeup,Bash", false),
         ("select:", false),
         ("ScheduleWakeup", false),
@@ -398,7 +486,7 @@ async fn claude_local_launch_accepts_peer_messages_and_names_the_timer() {
     let settings: serde_json::Value = serde_json::from_str(after("--settings")).unwrap();
     assert_eq!(settings["crossSessionInbound"], "accept");
     assert_eq!(settings["permissions"]["ask"], serde_json::json!(["*"]));
-    assert!(after("--append-system-prompt").contains("ScheduleWakeup"));
+    assert!(after("--append-system-prompt").contains("mcp__hagency_matrix__schedule_wakeup"));
 }
 
 /// A turn started by something this host does not know is not taken over as
