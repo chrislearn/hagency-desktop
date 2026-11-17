@@ -210,6 +210,11 @@ async fn native_fixture_mode(mode: &str) -> (tempfile::TempDir, Profile, tokio::
     .unwrap()
     .unwrap();
     let port: u16 = port.trim().parse().unwrap();
+    let async_feature = if mode == "async_message" {
+        "send_message_to_user_async = true\n"
+    } else {
+        ""
+    };
     fs::write(
         root.join("provider/config.toml"),
         format!(
@@ -218,6 +223,7 @@ model = "gpt-5.4"
 web_search = "disabled"
 [features]
 multi_agent = true
+{async_feature}
 [model_providers.offline]
 name = "Offline protocol fixture"
 base_url = "http://127.0.0.1:{port}"
@@ -238,6 +244,54 @@ requires_openai_auth = false
         web_search: false,
     };
     (tmp, profile, model)
+}
+
+#[tokio::test]
+#[ignore = "requires explicit installed Codex with async message feature; localhost fixture, no paid model"]
+async fn native_codex_async_messages_remain_distinct_from_the_final_answer() {
+    use hagency_runtime::live_text::{LiveText, MessageError, MessageSink};
+    use std::sync::{Arc, Mutex};
+    #[derive(Default)]
+    struct Messages(Mutex<Vec<(String, String)>>);
+    impl MessageSink for Messages {
+        fn record(&self, id: &str, text: &str) -> Result<(), MessageError> {
+            self.0.lock().unwrap().push((id.into(), text.into()));
+            Ok(())
+        }
+    }
+    let (_tmp, profile, mut model) = native_fixture_mode("async_message").await;
+    let scope = Scope { agent:"agent".into(), binding:"binding".into(), room:"!room:test".into(),
+        requester:"@member:test".into(), thread:"root".into() };
+    let mut ledger = Ledger::open(_tmp.path().join("ledger"), "@owner:test").unwrap();
+    ledger.register_binding("@owner:test", &scope).unwrap();
+    let policy = Policy { budget: Budget { limit: Limit::Unlimited, period: Period::Lifetime },
+        requests: RequestPolicy::Allow, high_risk: ToolPolicy::Deny };
+    ledger.set_agent_policy("@owner:test", "agent", 0, &policy).unwrap();
+    for layer in [Layer::Room, Layer::Requester] {
+        ledger.set_policy("@owner:test", &scope, layer, 0, &policy).unwrap();
+    }
+    let guardian = Path::new(env!("CARGO_BIN_EXE_hagency-local-probe"));
+    let mut process = runtime::spawn_for_scope_with_guardian(
+        &profile, "offline-test-only", &mut ledger, &scope, Some(guardian),
+    ).await.unwrap();
+    process.session.initialize().await.unwrap();
+    process.session.open_context(&mut ledger, &scope, &profile).await.unwrap();
+    let messages = Arc::new(Messages::default());
+    let (queue, _) = codex::approval_queue(1).unwrap();
+    let queue = queue.with_live_text(LiveText::with_messages(messages.clone()));
+    let done = tokio::time::timeout(Duration::from_secs(30), process.session.run_with_started(
+        &mut ledger, "@owner:test", &scope, "call", "dispatch", "Send two updates",
+        BudgetMode::Postpaid, &queue, None,
+    )).await.unwrap().unwrap();
+    assert_eq!(done.text, "ASYNC_FINAL");
+    let saved = messages.0.lock().unwrap();
+    assert_eq!(saved.len(), 2);
+    assert_eq!(saved[0].1, "same report");
+    assert_eq!(saved[1].1, "same report");
+    assert_ne!(saved[0].0, saved[1].0);
+    drop(saved);
+    process.stop().await.unwrap();
+    model.kill().await.unwrap();
 }
 
 #[tokio::test]
