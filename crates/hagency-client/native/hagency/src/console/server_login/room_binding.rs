@@ -20,7 +20,24 @@ impl ServerLogin {
             room: room.clone(),
             command: command.clone(),
         };
-        match self.owner_api(cookie, operation()).await {
+        let mut first = self.owner_api(cookie, operation()).await;
+        if first
+            .as_ref()
+            .is_err_and(|e| e.code == "private_agent_owner_direct_only")
+        {
+            // A new local Agent is private, which serves only its owner's direct chat. Binding it to a
+            // project Room is the owner asking it to serve that Room, so it becomes public first. This
+            // is reversible: making it private again requires leaving its project Rooms.
+            self.owner_api(
+                cookie,
+                OwnerOperation::MakePublic {
+                    agent: agent.clone(),
+                },
+            )
+            .await?;
+            first = self.owner_api(cookie, operation()).await;
+        }
+        match first {
             Err(error) if error.code == "service_invitation_denied" => {}
             result => return result,
         }
