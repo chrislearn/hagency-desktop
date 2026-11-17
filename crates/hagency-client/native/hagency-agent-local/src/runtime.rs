@@ -1,7 +1,7 @@
 //! Desktop runtime bridge. Native sessions may span many independently admitted
 //! calls. Accounts remain provider-owned; each call has its own ledger and approvals.
 use crate::codex::{self, ApprovalQueue, BudgetMode, Completed, Error, Profile, Result, TurnStatus};
-use crate::{Ledger, Reservation, Scope, ToolPolicy, ToolProposal, Usage};
+use crate::{Ledger, RequestPolicy, Reservation, Scope, ToolPolicy, ToolProposal, Usage};
 use hagency_runtime::{claude, octos};
 use serde_json::Value;
 use std::{
@@ -553,6 +553,11 @@ async fn spawn_inner(
     })
 }
 
+/// The Claude tool that sets a timer for the session's own later turn.
+const SELF_TIMER_TOOL: &str = "claude.ScheduleWakeup";
+/// How long the confirmation recorded for a self-started turn lasts: the
+/// longest a confirmation may last, which is also the longest a turn may run.
+const SELF_STARTED_CONFIRMED_SECS: i64 = 3600;
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
@@ -671,6 +676,31 @@ impl Session {
             Self::Octos { .. } => false,
         }
     }
+    /// Look, without waiting, at what a retained idle Claude process wrote
+    /// since its last turn. `true`: the CLI started a turn by itself (a timer
+    /// the session set, a message from a peer session) and that turn is now
+    /// open. The caller runs it with `run_self_started` or stops the process;
+    /// until then the session can neither continue nor be looked at again.
+    /// An error means the process can no longer be reused. Codex and Octos
+    /// sessions have nothing to look at here.
+    pub async fn poll_self_started(&mut self) -> Result<bool> {
+        match self {
+            Self::Claude { wire, reusable, .. } => {
+                if !*reusable || !wire.can_followup() {
+                    return Err(Error::Protocol("native session cannot continue"));
+                }
+                let started = wire
+                    .poll_idle(claude::session::Limits::default())
+                    .await
+                    .map_err(|_| Error::Protocol("retained Claude process unavailable"))?;
+                if started {
+                    *reusable = false;
+                }
+                Ok(started)
+            }
+            _ => Ok(false),
+        }
+    }
     /// Revalidate durable scope and the retained native process before a new
     /// reservation. A failed probe has not transmitted this turn's model input.
     pub async fn continue_context(
@@ -775,12 +805,67 @@ impl Session {
         started: Option<tokio::sync::oneshot::Sender<()>>,
         observer: Option<&(dyn Fn(&Usage) + Send + Sync)>,
     ) -> Result<Completed> {
+        self.run_admitted(
+            ledger, owner, scope, call, dispatch, Some(input), mode, queue, started, observer,
+        )
+        .await
+    }
+    /// Run the turn `poll_self_started` found open. It is charged and settled
+    /// exactly like a requested turn, under `call` and a `dispatch` identity
+    /// of the host's own. It continues a conversation that was already
+    /// admitted, so nobody is asked: where the scope's requests need the
+    /// owner's confirmation, that confirmation is recorded here. A scope that
+    /// denies requests, or a spent budget, still refuses it, and a refusal
+    /// leaves the caller to stop the process. Its tool requests go through
+    /// `queue` like any other turn's.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_self_started(
+        &mut self,
+        ledger: &mut Ledger,
+        owner: &str,
+        scope: &Scope,
+        call: &str,
+        dispatch: &str,
+        mode: BudgetMode,
+        queue: &ApprovalQueue,
+        observer: Option<&(dyn Fn(&Usage) + Send + Sync)>,
+    ) -> Result<Completed> {
+        if !matches!(self, Self::Claude { wire, .. } if wire.self_started_turn()) {
+            return Err(Error::Protocol("no self-started turn is open"));
+        }
+        if ledger.request_disposition(scope, dispatch)? == RequestPolicy::AskOwner {
+            let now = now();
+            ledger.approve_request(owner, scope, dispatch, now + SELF_STARTED_CONFIRMED_SECS, now)?;
+        }
+        self.run_admitted(
+            ledger, owner, scope, call, dispatch, None, mode, queue, None, observer,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    async fn run_admitted(
+        &mut self,
+        ledger: &mut Ledger,
+        owner: &str,
+        scope: &Scope,
+        call: &str,
+        dispatch: &str,
+        input: Option<&str>,
+        mode: BudgetMode,
+        queue: &ApprovalQueue,
+        started: Option<tokio::sync::oneshot::Sender<()>>,
+        observer: Option<&(dyn Fn(&Usage) + Send + Sync)>,
+    ) -> Result<Completed> {
         if let Self::Codex(session) = self {
+            let input = input.ok_or(Error::Protocol("no self-started turn is open"))?;
             return session
                 .run_with_started_observed(
                     ledger, owner, scope, call, dispatch, input, mode, queue, started, observer,
                 )
                 .await;
+        }
+        if input.is_none() && !matches!(self, Self::Claude { .. }) {
+            return Err(Error::Protocol("no self-started turn is open"));
         }
         ledger.owner(owner)?;
         let bound = match self {
@@ -790,7 +875,7 @@ impl Session {
         if bound != Some(scope) {
             return Err(Error::Protocol("run scope differs from opened context"));
         }
-        if input.is_empty() || input.len() > 65536 {
+        if input.is_some_and(|input| input.is_empty() || input.len() > 65536) {
             return Err(Error::Profile("input size"));
         }
         let controls = queue
@@ -846,7 +931,8 @@ impl Session {
                     scope,
                     call,
                     dispatch,
-                    input,
+                    // Only a Claude session reaches here without an input.
+                    input.unwrap_or_default(),
                     queue,
                     started,
                     controls,
@@ -1153,9 +1239,19 @@ struct PersonalClaudeHost<'a> {
     context: &'a str,
     dispatch: &'a str,
     queue: &'a ApprovalQueue,
+    /// The CLI started this turn by itself; there is no input to write.
+    self_started: bool,
 }
 impl claude_turn::Host for PersonalClaudeHost<'_> {
     async fn start(&mut self, process: &mut Claude, input: &str) -> Result<()> {
+        if self.self_started {
+            // The driver already holds the turn open (`poll_self_started`).
+            return if process.self_started_turn() {
+                Ok(())
+            } else {
+                Err(Error::Protocol("Claude self-started turn"))
+            };
+        }
         // The owner's own slash command runs as one. Anyone else's text, and
         // any text the host wrapped, is a prompt and can never be a command.
         let written = if owner_command(self.owner, self.scope, input) {
@@ -1210,6 +1306,12 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
         arguments: Value,
         directory: &Path,
     ) -> claude_turn::ToolAnswer {
+        // The owner's tool rules decide what a tool may do on this computer.
+        // A timer for the session's own later turn does nothing here and
+        // reaches nobody, so nobody is asked for it.
+        if tool == SELF_TIMER_TOOL {
+            return claude_turn::ToolAnswer::Allow;
+        }
         permission(
             self.ledger,
             self.owner,
@@ -1254,7 +1356,7 @@ async fn run_claude(
     call: &str,
     context: &str,
     dispatch: &str,
-    input: &str,
+    input: Option<&str>,
     queue: &ApprovalQueue,
     started: Option<tokio::sync::oneshot::Sender<()>>,
     stream: Option<crate::run_controls::Stream>,
@@ -1267,13 +1369,14 @@ async fn run_claude(
         context,
         dispatch,
         queue,
+        self_started: input.is_none(),
     };
     claude_turn::run(
         wire,
         profile,
         scope,
         dispatch,
-        input,
+        input.unwrap_or(""),
         queue,
         started,
         stream,

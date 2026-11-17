@@ -20,6 +20,11 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
+/// Leads the identity of every message of a turn the native CLI started by
+/// itself (`idle_turns`). Like an Octos report, such a message has no running
+/// dispatch to be sent under: it is recorded as a report (version 2) and each
+/// send obtains its own delivery-only authority.
+const SELF_STARTED_PREFIX: &str = "self-started:";
 const MAX_RECORDS: usize = 16_384;
 const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
 // JSON escaping and encrypted serialization can exceed the original UTF-8.
@@ -708,6 +713,78 @@ impl Outbox {
         Ok(())
     }
 }
+/// Records every message of one self-started turn as a report on the route
+/// of the run its session last answered. `turn` keeps the identities of two
+/// such turns apart.
+pub(super) struct SelfStartedReports {
+    outbox: std::sync::Arc<Outbox>,
+    turn: String,
+}
+impl SelfStartedReports {
+    pub(super) fn new(outbox: std::sync::Arc<Outbox>, turn: &str) -> Self {
+        Self { outbox, turn: turn.into() }
+    }
+}
+impl MessageSink for SelfStartedReports {
+    fn record(&self, id: &str, text: &str) -> Result<(), MessageError> {
+        self.outbox.record(&format!("{SELF_STARTED_PREFIX}{}:{id}", self.turn), text)
+    }
+}
+/// Runs whose outbox may hold reports of a self-started turn that are not
+/// delivered yet. Such a run ended long before, so nothing else returns to
+/// its outbox after a restart; these sealed notes say where to look. A note
+/// names the run only (its dispatch and execution) and is removed once the
+/// outbox has nothing pending.
+pub(super) mod undelivered {
+    use super::{Path, PathBuf};
+    const MAX_NOTES: usize = 1024;
+    fn directory(device_root: &Path) -> Result<(PathBuf, super::StoreCipher), ()> {
+        let root = device_root.join("outgoing-messages");
+        hagency_store::private::directory(&root).map_err(|_| ())?;
+        let cipher = super::cipher(&root)?;
+        let directory = root.join("self-started-pending");
+        hagency_store::private::directory(&directory).map_err(|_| ())?;
+        Ok((directory, cipher))
+    }
+    fn name(dispatch: &str, execution: &str) -> Result<String, ()> {
+        Ok(format!("{}.sealed", super::hash(serde_json::to_vec(&(dispatch, execution)).map_err(|_| ())?)))
+    }
+    pub(in crate::console::owned_runtime) fn note(device_root: &Path, dispatch: &str, execution: &str) -> Result<(), ()> {
+        let (directory, cipher) = directory(device_root)?;
+        let path = directory.join(name(dispatch, execution)?);
+        if path.exists() {
+            return Ok(());
+        }
+        if std::fs::read_dir(&directory).map_err(|_| ())?.count() >= MAX_NOTES {
+            return Err(());
+        }
+        let bytes = cipher.encrypt_value(&(dispatch, execution)).map_err(|_| ())?;
+        hagency_store::private::write_new(&path, &bytes).map_err(|_| ())
+    }
+    /// Every noted run. A note that cannot be read is skipped, not removed.
+    /// An Agent that never had a note gets no folder and no key from a look.
+    pub(in crate::console::owned_runtime) fn list(device_root: &Path) -> Vec<(String, String)> {
+        if !device_root.join("outgoing-messages").join("self-started-pending").is_dir() {
+            return Vec::new();
+        }
+        let Ok((directory, cipher)) = directory(device_root) else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(&directory) else { return Vec::new() };
+        entries
+            .take(MAX_NOTES)
+            .filter_map(|entry| {
+                let bytes = super::read(&entry.ok()?.path(), 16 * 1024).ok()?;
+                cipher.decrypt_value::<(String, String)>(&bytes).ok()
+            })
+            .collect()
+    }
+    pub(in crate::console::owned_runtime) fn forget(device_root: &Path, dispatch: &str, execution: &str) {
+        if let Ok(name) = name(dispatch, execution) {
+            let _ = std::fs::remove_file(
+                device_root.join("outgoing-messages").join("self-started-pending").join(name),
+            );
+        }
+    }
+}
 impl MessageSink for Outbox {
     fn record(&self, id: &str, text: &str) -> Result<(), MessageError> {
         if id.is_empty() || id.len() > 2048 || id.chars().any(char::is_control)
@@ -740,9 +817,10 @@ impl MessageSink for Outbox {
             .checked_add(1)
             .ok_or(MessageError)?;
         // Ordinary run replies keep their v1 format and recovery behavior.
-        // Only host-constructed, explicitly attributed Octos report IDs opt
-        // into the new durable-message contract.
-        let is_report = id.starts_with("octos:report:");
+        // Only host-constructed, explicitly attributed Octos report IDs and
+        // the messages of a self-started turn opt into the new
+        // durable-message contract.
+        let is_report = id.starts_with("octos:report:") || id.starts_with(SELF_STARTED_PREFIX);
         let report_id = if is_report {
             let mut random = [0u8; 32];
             getrandom::fill(&mut random).map_err(|_| MessageError)?;

@@ -29,6 +29,10 @@ pub(super) struct Completion {
     answer_stop: Option<String>,
     /// The open turn was logged once; see `report_open`.
     reported_open: bool,
+    /// The CLI started this turn by itself while the session was parked: a
+    /// timer it set, or a message from a peer session. No prompt of this host
+    /// opened it; see `SessionDriver::poll_idle`.
+    self_started: bool,
 }
 impl Completion {
     /// A turn that has its result and native idle and still stays open waits
@@ -90,7 +94,10 @@ impl Completion {
             || self.snapshot.is_some()
             || self.background_response
             || self.steers.cycle_open()
-            || self.notified_runs.is_empty()
+            // In a turn the CLI started by itself another such cycle may
+            // follow a result directly: a second timer, or a peer message
+            // that arrived while the first cycle ran. Its result says which.
+            || (self.notified_runs.is_empty() && !self.self_started)
             || payload
                 .get("user_message_uuid")
                 .is_some_and(|v| !v.is_null())
@@ -228,16 +235,20 @@ impl Completion {
             },
             EventKind::Result => {
                 if self.background_response {
-                    if !self.background_result(payload) {
+                    if self.background_result(payload) {
+                        let run = payload["origin"]["runId"].as_str().ok_or(Error::Identity)?;
+                        self.notified_runs.remove(run);
+                        self.consumed_runs.insert(run.into());
+                    } else if !(self.self_started && self_started_result(payload)) {
                         return Err(Error::Identity);
                     }
-                    let run = payload["origin"]["runId"].as_str().ok_or(Error::Identity)?;
-                    self.notified_runs.remove(run);
-                    self.consumed_runs.insert(run.into());
                     self.background_response = false;
-                } else if !payload["origin"].is_null() {
+                } else if !(payload["origin"].is_null()
+                    || (self.self_started && self_started_result(payload)))
+                {
                     // An autonomous result must be tied to the original task's
-                    // observed start, completion notification and native init.
+                    // observed start, completion notification and native init,
+                    // or belong to a turn the host took over as self-started.
                     return Err(Error::Identity);
                 }
                 if let Some(id) = &self.snapshot
@@ -330,6 +341,44 @@ impl Completion {
     }
     pub(super) fn snapshot_requested(&self) -> bool {
         self.snapshot.is_some()
+    }
+    pub(super) fn self_started(&self) -> bool {
+        self.self_started
+    }
+}
+/// The result of a cycle the CLI started by itself. A timer the session set
+/// reports no origin (CLI 2.1.323, offline capture 2026-11-17); a message
+/// from a peer session of the same account names that peer (2.1.322). A
+/// finished background task reports `task-notification` and keeps its own,
+/// stricter rule (`background_result`). Any other origin is not known here.
+fn self_started_result(payload: &Value) -> bool {
+    payload["origin"].is_null() || payload["origin"]["kind"] == "peer"
+}
+/// What a retained idle process may write between turns without having
+/// started anything: it reports no model, tool or command activity and
+/// carries no usage or authority. The reuse probe and the idle look pass
+/// exactly these frames of the bound session.
+fn idle_metadata(kind: EventKind, payload: &Value) -> bool {
+    matches!(kind, EventKind::AuthStatus | EventKind::RateLimit)
+        || (kind == EventKind::System
+            && payload["subtype"] == "session_state_changed"
+            && payload["state"] == "idle")
+        // A hook that ended after the turn did.
+        || (kind == EventKind::System && super::hook_report(payload))
+        || (kind == EventKind::CommandLifecycle && payload["state"] == "completed")
+}
+/// The first frame of a turn the CLI starts by itself (CLI 2.1.322 and
+/// 2.1.323): the session leaves idle, then the command is reported started,
+/// then `init`. A queued command is reported the same way before it starts.
+fn self_start(kind: EventKind, payload: &Value) -> bool {
+    match kind {
+        EventKind::System => {
+            payload["subtype"] == "session_state_changed" && payload["state"] == "running"
+        }
+        EventKind::CommandLifecycle => {
+            matches!(payload["state"].as_str(), Some("queued" | "started"))
+        }
+        _ => false,
     }
 }
 
@@ -508,18 +557,67 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
                     kind,
                     payload,
                 } if Some(session_id.as_str()) == self.session_id.as_deref()
-                    && (matches!(kind, EventKind::AuthStatus | EventKind::RateLimit)
-                        || (kind == EventKind::System
-                            && payload["subtype"] == "session_state_changed"
-                            && payload["state"] == "idle")
-                        // A hook that ended after the turn did.
-                        || (kind == EventKind::System && super::hook_report(&payload))
-                        || (kind == EventKind::CommandLifecycle
-                            && payload["state"] == "completed")) => {}
+                    && idle_metadata(kind, &payload) => {}
                 _ => return Err(Error::Identity),
             }
         }
         Err(Error::Capacity)
+    }
+    /// Read, without waiting, what a retained idle process wrote since its
+    /// last turn ended. Idle metadata is passed exactly as the reuse probe
+    /// passes it. `true`: the CLI started a turn by itself (a timer the
+    /// session set, a message from a peer session). That turn is now open
+    /// here as a turn without a prompt, with fresh bounds, receipts and
+    /// approval identities: the host admits it and reads it with
+    /// `next_message` like any other turn, or stops the process. Nothing is
+    /// written to the CLI, and any other frame ends the session as it would
+    /// at the next reuse probe.
+    pub async fn poll_idle(&mut self, limits: super::Limits) -> Result<bool, Error> {
+        if !self.can_followup() {
+            return Err(Error::State);
+        }
+        let operation = Operation::new(self, Phase::ResultObserved)?;
+        let result = operation.driver.poll_idle_inner(limits).await;
+        operation.finish(result)
+    }
+    async fn poll_idle_inner(&mut self, limits: super::Limits) -> Result<bool, Error> {
+        for _ in 0..64 {
+            let Some(received) = self.wire.poll_idle().await? else {
+                return Ok(false);
+            };
+            match &received.message {
+                super::Message::Event {
+                    session_id,
+                    kind,
+                    payload,
+                } if Some(session_id.as_str()) == self.session_id.as_deref() => {
+                    if idle_metadata(*kind, payload) {
+                        continue;
+                    }
+                    if !self_start(*kind, payload) {
+                        return Err(Error::Identity);
+                    }
+                }
+                _ => return Err(Error::Identity),
+            }
+            // The turn's first frame is read again as the prelude of its
+            // init, exactly like the frames that precede a prompt's init.
+            self.reset_followup(limits)?;
+            self.wire.unread(received);
+            self.completion.self_started = true;
+            self.awaiting_init = true;
+            self.owner_command = false;
+            self.conversation_reset = false;
+            self.wire.read_resets(false);
+            self.phase = Phase::Running;
+            return Ok(true);
+        }
+        // More idle metadata than one look reads: the rest waits for the next.
+        Ok(false)
+    }
+    /// The open turn is one the CLI started by itself; see `poll_idle`.
+    pub fn self_started_turn(&self) -> bool {
+        self.completion.self_started()
     }
     /// Query the CLI's local /usage command after the whole turn is idle. This
     /// keeps later child usage in the original call and does not run the model.

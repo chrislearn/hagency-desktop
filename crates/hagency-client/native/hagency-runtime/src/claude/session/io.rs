@@ -286,6 +286,11 @@ impl<R, W, E> Wire<R, W, E> {
     pub fn has_buffered_input(&self) -> bool {
         !self.queue.is_empty() || self.start < self.end || self.decoder.buffered_bytes() != 0
     }
+    /// Put back the frame `poll_idle` just returned: the next read returns it
+    /// first. Its bytes were charged to the queue bound when it was decoded.
+    pub fn unread(&mut self, received: Received) {
+        self.queue.push_front((received, 0));
+    }
     pub fn ignored_frames(&self) -> u64 {
         self.decoder.ignored_frames()
     }
@@ -443,6 +448,55 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> Wire<R, 
                 return Ok(received);
             }
             self.step(until, false, false).await?;
+        }
+    }
+    /// One frame the peer has already written, without waiting for more. For
+    /// a stream between turns only: no host frame is in flight, and the
+    /// bounds of the turn that ended do not apply to a look that never waits.
+    /// A frame that began and did not end keeps the decoder's own deadline.
+    /// Standard error is drained too, so a quiet process cannot fill it.
+    pub async fn poll_idle(&mut self) -> Result<Option<Received>, Error> {
+        if self.termination.is_some() {
+            return Err(Error::Closed);
+        }
+        if self.writing.is_some() {
+            return Err(Error::State);
+        }
+        enum Observed {
+            Read(std::io::Result<usize>),
+            Stderr(std::io::Result<usize>),
+            Nothing,
+        }
+        loop {
+            self.decoder.check_deadline(self.now_ms())?;
+            if let Some(received) = self.buffered()? {
+                return Ok(Some(received));
+            }
+            let streams = self.streams.as_mut().ok_or(Error::Closed)?;
+            // One poll of each stream. Bytes that are not there yet are read
+            // by a later look; nothing is cancelled with bytes taken.
+            let observed = tokio::select! {
+                biased;
+                result=streams.stdout.read(&mut self.input)=>Observed::Read(result),
+                result=streams.stderr.read(&mut self.stderr_buffer), if self.stderr_open=>Observed::Stderr(result),
+                _=std::future::ready(())=>Observed::Nothing,
+            };
+            match observed {
+                Observed::Nothing => return Ok(None),
+                Observed::Read(Ok(0)) => {
+                    self.decoder.eof()?;
+                    return Err(Error::PeerEof);
+                }
+                Observed::Read(Ok(n)) => {
+                    self.start = 0;
+                    self.end = n;
+                    self.input_at = Instant::now();
+                }
+                Observed::Stderr(Ok(0)) => self.stderr_open = false,
+                Observed::Stderr(Ok(n)) => self.stderr(n)?,
+                Observed::Read(Err(_)) => return Err(Error::Io("stdout read")),
+                Observed::Stderr(Err(_)) => return Err(Error::Io("stderr read")),
+            }
         }
     }
     async fn step(&mut self, until: Deadline, write: bool, barrier: bool) -> Result<(), Error> {

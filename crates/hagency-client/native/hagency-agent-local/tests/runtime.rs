@@ -37,6 +37,18 @@ mod resume_kept;
 mod owner_command;
 #[path = "runtime/messages.rs"]
 mod messages;
+#[path = "runtime/self_started.rs"]
+mod self_started;
+
+/// The native process-custody helper of these tests. Under the Makepad JIT
+/// the compile-time path names a JIT instance, which cannot start in the
+/// guardian's sealed environment: name an existing native build of the probe
+/// in HAGENCY_TEST_GUARDIAN there.
+fn guardian() -> PathBuf {
+    std::env::var_os("HAGENCY_TEST_GUARDIAN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_hagency-local-probe")))
+}
 
 struct Fixture {
     root: tempfile::TempDir,
@@ -139,9 +151,7 @@ impl Fixture {
         }
     }
     async fn process(&mut self) -> Process {
-        let guardian = std::env::var_os("HAGENCY_TEST_GUARDIAN")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_hagency-local-probe")));
+        let guardian = guardian();
         let mut process = spawn_for_scope_with_guardian(
             &self.profile,
             &self.reference,
@@ -981,7 +991,8 @@ async fn claude_unsupported_version_is_actionable_without_prompt_or_fresh_retry(
         .unwrap();
     process.stop().await.unwrap();
     fs::write(f.path("cli-version"), "2.1.321").unwrap();
-    let guardian = std::path::Path::new(env!("CARGO_BIN_EXE_hagency-local-probe"));
+    let guardian = guardian();
+    let guardian = guardian.as_path();
     let error = spawn_for_scope_with_guardian(
         &f.profile,
         &f.reference,

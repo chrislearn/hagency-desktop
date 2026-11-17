@@ -225,6 +225,9 @@ impl<R, W, E> SessionDriver<R, W, E> {
             || self.phase != Phase::Running
             || self.awaiting_init
             || self.completion.snapshot_requested()
+            // A turn the CLI started by itself has no prompt of this host to
+            // correlate an added message with. The message waits its turn.
+            || self.completion.self_started()
             || self.interrupt.outstanding()
             || self.wire.write_progress().is_some()
         {

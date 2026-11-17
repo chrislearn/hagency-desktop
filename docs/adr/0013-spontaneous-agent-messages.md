@@ -256,3 +256,87 @@ and notifications remain subject to its own client and homeserver behavior.
 - Run the repository's budget and chat regression gate before promoting a
   build. Record source revisions, provider versions and live-test evidence;
   fixtures alone do not prove live interoperability.
+
+## First implementation of an idle session's own turn (2026-11-17)
+
+This section records what is built for item 3 of the decision ("an
+independent report from an authorized idle session") and where it stops short
+of the rules above. It covers local Claude Agents only. Codex, Octos and
+pooled Agents are unchanged.
+
+**What starts such a turn.** A retained Claude Code process starts a turn by
+itself when a timer the session set fires (`ScheduleWakeup`) or when another
+Claude session on the same computer, under the same user, sends it a message.
+Nothing is written to the process for it. Measured on Claude Code 2.1.323: the
+stream shows `session_state_changed running`, `command_lifecycle started`
+(with `wakeup_source: loop_wakeup` for a timer), `init`, the turn, and a
+`result` that names no user message. A timer's result has no `origin`; a peer
+message's result has `origin.kind = "peer"`. Any other origin is refused.
+
+**How the host sees it.** The run loop of each binding looks at its parked
+sessions once per pass, without waiting and without writing. Idle metadata is
+passed over; the first frame of a turn makes the session leave the cache with
+that turn open; any other frame ends the process, as the reuse check of its
+next request did before. The look runs before the next request is taken.
+
+**Route.** A retained session belongs to one conversation: its key holds the
+Agent, binding, room, requester and thread. Its own turn reports to the room
+and thread of the run that session answered last. This is the session's own
+conversation, not "the most recent room of the Agent", so the rule against
+inferring a destination is kept. An Agent-level report with no session behind
+it still needs the configured route this ADR describes; that is not built.
+
+**Admission and budget.** The turn already runs inside the CLI when the host
+sees it, so admission decides whether the host lets it continue. It continues
+a conversation that was already admitted, and nobody is asked for it. It is
+charged and settled in the local ledger as a call of its own
+(`self-started-<random>`), under the session's scope. Where the scope's
+requests need the owner's confirmation, the host records that confirmation
+for this turn itself; the next request is asked for as before. Three things
+still refuse it: a scope whose requests are denied, a spent budget, and
+hosting that is closed. A refused turn is charged nothing and its process is
+stopped; the conversation resumes from disk with the next request. Tool
+requests inside the turn follow the saved tool rules and are shown on the
+message the session answered last.
+
+**No approval for the timer.** `ScheduleWakeup` only sets a timer for the
+session's own later turn. It does nothing on the owner's computer and reaches
+nobody, so a local Agent's host allows it without consulting the tool rules,
+whatever they say. Other scheduling tools of the CLI (`CronCreate` and its
+relatives) and `SendMessage` stay under the tool rules.
+
+**Decided on 2026-11-17: no separate switch.** The rules above ask for "its
+own enabled trigger" for an independent turn. For a local Agent that rule is
+set aside: its own turn needs no approval and no switch of its own. A timer
+exists only because an admitted run set it, and a peer message can only come
+from the owner's own computer and user. What bounds such a turn is the
+budget, a denying request rule, and stopping the Agent or its hosting.
+
+**Delivery.** Every message of the turn, its final answer included, is
+recorded as a version-2 report (`self-started:<turn>:<native id>`) in the
+encrypted outbox of the run the session answered last and sent with
+delivery-only authority, as described under "Delivery, ordering and
+recovery". A sealed note beside the outbox names each run that may hold such
+reports, so delivery resumes after a restart; no turn is run again.
+
+**Limits of this version.**
+
+- A turn that starts between the look and the reuse check of a new request
+  still ends its session; its output is lost and the request starts a fresh
+  process.
+- A self-started cycle that follows a requested turn's result without an idle
+  state in between still ends that requested turn as a late failure.
+- Room tools answer "unavailable" in such a turn, questions to the requester
+  go unanswered, and the room cannot steer or stop it.
+- Stopping the process (refusal, eviction from the cache of 8 sessions, daemon
+  restart) ends the CLI's pending timers.
+- A host that predates version-2 records cannot read an outbox that holds one
+  (see rollout step 4).
+
+**Evidence.** Driver and local-runtime tests with the captured frames; the
+installed CLI against a localhost model (timer fires while parked, the turn is
+taken over, admitted, charged and settled, the next request continues the
+session); one live run on River on 2026-11-17 with a local Claude Agent in a
+private chat that is not encrypted: reply, then the report as its own message
+about two minutes later, then a further request answered by the same process.
+An encrypted room has not been run live with this path.

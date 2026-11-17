@@ -474,6 +474,17 @@ impl Controller {
         let text = hagency_runtime::live_text::LiveText::with_messages(messages.clone());
         Ok(Self { sender: None, card: None, messages, text })
     }
+    /// Delivery for a turn the native CLI started by itself: every message
+    /// is recorded as a report on `route`, the route of the run the session
+    /// last answered. There is no card and nobody to steer or stop it from
+    /// the room.
+    pub(super) fn self_started(route: super::messages::Route, root: &Path, turn: &str) -> Result<Self, ()> {
+        let messages = Arc::new(super::messages::Outbox::open_route(root, route)?);
+        let text = hagency_runtime::live_text::LiveText::with_messages(Arc::new(
+            super::messages::SelfStartedReports::new(messages.clone(), turn),
+        ));
+        Ok(Self { sender: None, card: None, messages, text })
+    }
     pub(super) fn finish(&self, state: CardState) {
         if let Some(card) = &self.card { card.finish(state); }
     }

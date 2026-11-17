@@ -1,5 +1,6 @@
 //! Explicit owner-started, chat-only Codex host. No legacy execution fallback.
 mod drain;
+mod idle_turns;
 pub(in crate::console) mod messages;
 pub(in crate::console) mod e2ee;
 mod provider_custody;
@@ -1902,6 +1903,8 @@ async fn execution_loop_with_gate<T: Transport>(
 ) -> Result<(), RuntimeError> {
     let mut reported = BTreeSet::new();
     let mut sessions = provider_custody::Sessions::default();
+    // Runs that hold reports of a turn the native CLI started by itself.
+    let mut undelivered = idle_turns::recover(console, lease, ledger, owner, config);
     let mut reply_cursor = String::new();
     let mut finish_cursors = [String::new(), String::new(), String::new()];
     loop {
@@ -1993,6 +1996,14 @@ async fn execution_loop_with_gate<T: Transport>(
         if console.supports_group_crypto() {
             e2ee::pump_candidates(console, lease, config, cancel).await?;
         }
+        // A parked session may have started a turn by itself (a timer, a peer
+        // message). It runs before the next request is taken, so a request
+        // never meets a session that is in the middle of such a turn.
+        idle_turns::pump(
+            console, lease, ledger, owner, config, cancel, status, &mut sessions, &mut undelivered,
+        )
+        .await?;
+        idle_turns::deliver(console, lease, config, cancel, &mut undelivered).await?;
         let events = match operation(
             console,
             cancel,
@@ -3006,7 +3017,12 @@ async fn run_turn<T: Transport>(
         &prepared.execution_id,
         reply,
     ))?;
-    if retain { sessions.retain(session_key, provider); }
+    if retain {
+        sessions.retain(session_key, provider, provider_custody::Anchor {
+            dispatch: prepared.dispatch.clone(),
+            execution: prepared.execution_id.clone(),
+        });
+    }
     Ok(None)
 }
 

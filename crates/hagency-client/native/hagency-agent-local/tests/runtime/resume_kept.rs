@@ -63,7 +63,7 @@ async fn call(f: &mut Fixture, name: &str) {
 
 #[tokio::test]
 async fn claude_startup_failure_without_the_missing_context_diagnostic_keeps_the_saved_session() {
-    let guardian = PathBuf::from(env!("CARGO_BIN_EXE_hagency-local-probe"));
+    let guardian = guardian();
     let mut discarded = Vec::new();
     for failure in ["reworded", "eof", "refused", "unexpected"] {
         let mut f = Fixture::new(Kind::Claude, "normal", ToolPolicy::Deny);
@@ -120,7 +120,7 @@ async fn claude_startup_failure_without_the_missing_context_diagnostic_keeps_the
 
 #[tokio::test]
 async fn claude_missing_context_discard_is_reported_to_the_host_with_a_stable_code() {
-    let guardian = PathBuf::from(env!("CARGO_BIN_EXE_hagency-local-probe"));
+    let guardian = guardian();
     let mut f = Fixture::new(Kind::Claude, "normal", ToolPolicy::Deny);
     call(&mut f, "before_missing").await;
     let saved = saved_sessions(&f);
@@ -171,7 +171,7 @@ async fn start(f: &mut Fixture) -> codex::Result<Process> {
         &f.reference,
         &mut f.ledger,
         &f.scope,
-        Some(&PathBuf::from(env!("CARGO_BIN_EXE_hagency-local-probe"))),
+        Some(&guardian()),
     )
     .await
 }

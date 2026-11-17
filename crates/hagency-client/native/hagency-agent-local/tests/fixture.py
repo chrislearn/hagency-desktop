@@ -456,6 +456,42 @@ if kind == 'claude':
             send(result)
         if os.environ.get('CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS') == '1':
             send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':session})
+        if mode in ('self_timer', 'self_peer', 'self_unknown') and not (root / 'self-started').exists():
+            # Captured CLI 2.1.323 (offline, 2026-11-17): a timer the session
+            # set, or a message from another session on this computer, starts
+            # a turn while the host has the session parked. Nothing was
+            # written to stdin; no frame names a user message. A timer's
+            # result has no origin, a peer message's result names the peer.
+            while not (root / 'fire').exists():
+                time.sleep(0.01)
+            (root / 'self-started').write_text('')
+            process_count += 1
+            n = process_count
+            started = {'type':'command_lifecycle','command_uuid':'self-command','state':'started','session_id':session}
+            if mode == 'self_timer':
+                started.update({'wakeup_source':'loop_wakeup','scheduled_for':1794939960000})
+            send({'type':'system','subtype':'session_state_changed','state':'running','session_id':session})
+            send(started)
+            send({'type':'system','subtype':'init','session_id':session})
+            send({'type':'system','subtype':'status','status':'requesting','session_id':session})
+            send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
+                'message':{'id':'self-progress','content':[{'type':'text','text':'self-started progress'},
+                    {'type':'tool_use','id':'self-tool','name':'Read','input':{}}]}})
+            send({'type':'user','session_id':session,'message':{'content':[{'type':'tool_result','tool_use_id':'self-tool','content':'done'}]}})
+            send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
+                'message':{'id':'self-answer','content':[{'type':'text','text':'self-started report'}]}})
+            own = {'type':'result','subtype':'success','is_error':False,'result':'self-started report',
+                'session_id':session,'usage':usage,
+                'modelUsage':{'main':{'inputTokens':10*n,'outputTokens':7*n,'cacheReadInputTokens':3*n,'cacheCreationInputTokens':4*n},
+                    'subagent':{'inputTokens':20*n,'outputTokens':10*n,'cacheReadInputTokens':0,'cacheCreationInputTokens':0}}}
+            if mode == 'self_peer':
+                own['origin'] = {'kind':'peer','from':'uds:/tmp/cc-socks/3165.sock','verifiedPeerPid':3165,
+                    'verifiedLocal':True,'msg_id':'peer-message-one','name':'work-6a','fromMode':'prompting','body':'Peer says hello'}
+            if mode == 'self_unknown':
+                own['origin'] = {'kind':'channel','server':'elsewhere'}
+            send(own)
+            send({'type':'command_lifecycle','command_uuid':'self-command','state':'completed','session_id':session})
+            send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':session})
         if not continuous or mode == 'exit':
             break
         if mode == 'late_callback':
