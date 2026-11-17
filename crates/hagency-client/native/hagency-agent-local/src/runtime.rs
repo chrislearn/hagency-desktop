@@ -1175,7 +1175,8 @@ async fn permission(
     cwd: &Path,
     queue: &ApprovalQueue,
 ) -> claude_turn::ToolAnswer {
-    permission_within(ledger, owner, scope, dispatch, tool, arguments, cwd, queue, 280).await
+    permission_within(ledger, owner, scope, dispatch, tool, arguments, cwd, queue, 280, false)
+        .await
 }
 /// The owner's policy for one tool request, asking the owner when the policy
 /// says so and waiting at most `wait_secs` for the answer.
@@ -1190,6 +1191,9 @@ async fn permission_within(
     cwd: &Path,
     queue: &ApprovalQueue,
     wait_secs: u64,
+    // Saved rules and full trust do not answer for this request: where they
+    // would allow it, the owner is asked. A denying rule still denies.
+    ask_where_allowed: bool,
 ) -> claude_turn::ToolAnswer {
     use claude_turn::ToolAnswer;
     let Ok(versions) = ledger.policy_snapshot(scope) else {
@@ -1205,7 +1209,11 @@ async fn permission_within(
         policy_revision: versions.map(|v| v.revision),
         expires: now() + wait_secs as i64,
     };
-    match ledger.tool_disposition(&proposal, now()) {
+    let disposition = match ledger.tool_disposition(&proposal, now()) {
+        Ok(ToolPolicy::AllowWithRules { .. }) if ask_where_allowed => Ok(ToolPolicy::AskOwner),
+        other => other,
+    };
+    match disposition {
         Ok(ToolPolicy::AllowWithRules { .. }) => {
             ToolAnswer::allowed(ledger.authorize_tool(&proposal, now()).is_ok())
         }
@@ -1252,6 +1260,8 @@ struct PersonalClaudeHost<'a> {
     queue: &'a ApprovalQueue,
     /// The CLI started this turn by itself; there is no input to write.
     self_started: bool,
+    /// The turn holds a message of a peer session (`outside_input`).
+    outside: bool,
 }
 impl claude_turn::Host for PersonalClaudeHost<'_> {
     async fn start(&mut self, process: &mut Claude, input: &str) -> Result<()> {
@@ -1320,10 +1330,15 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
         // The owner's tool rules decide what a tool may do on this computer.
         // A timer for the session's own later turn does nothing here and
         // reaches nobody, so nobody is asked for it.
-        if SELF_TIMER_TOOLS.iter().any(|timer| *timer == tool) {
+        if !self.outside && SELF_TIMER_TOOLS.iter().any(|timer| *timer == tool) {
             return claude_turn::ToolAnswer::Allow;
         }
-        permission(
+        // A turn that holds a peer session's message acts on text from
+        // outside the room. The trust saved for the people of this
+        // conversation, the owner's full trust included, was not given to
+        // that text: every tool of such a turn is put to the owner, a timer
+        // too, since its later turn would run as the session's own.
+        permission_within(
             self.ledger,
             self.owner,
             self.scope,
@@ -1332,8 +1347,13 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
             arguments,
             directory,
             self.queue,
+            280,
+            self.outside,
         )
         .await
+    }
+    fn outside_input(&mut self) {
+        self.outside = true;
     }
 }
 // Personal accounting is retained by its original session ledger and native
@@ -1381,6 +1401,7 @@ async fn run_claude(
         dispatch,
         queue,
         self_started: input.is_none(),
+        outside: false,
     };
     claude_turn::run(
         wire,

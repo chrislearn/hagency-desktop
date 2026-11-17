@@ -191,7 +191,9 @@ if kind == 'claude':
         assert prompt.get('session_id') in ('', session), prompt
         if os.environ.get('CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS') == '1':
             send({'type':'system','subtype':'session_state_changed','state':'running','session_id':session})
-            send({'type':'command_lifecycle','command_uuid':'fixture-command','state':'started','session_id':session})
+            # The CLI reports a prompt as a command under the identifier the
+            # host gave the prompt (2.1.323, every offline capture).
+            send({'type':'command_lifecycle','command_uuid':prompt.get('uuid') or 'fixture-command','state':'started','session_id':session})
         send({'type': 'system', 'subtype': 'init', 'session_id': session, 'user_message_uuids':[prompt.get('uuid')]})
         aborted = False
         if mode in ('spontaneous_messages', 'spontaneous_split'):
@@ -456,7 +458,9 @@ if kind == 'claude':
             send(result)
         if os.environ.get('CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS') == '1':
             send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':session})
-        if mode in ('self_timer', 'self_peer', 'self_unknown') and not (root / 'self-started').exists():
+        self_tool = mode.endswith('_tool')
+        self_mode = mode[:-5] if self_tool else mode
+        if self_mode in ('self_timer', 'self_peer', 'self_unknown') and not (root / 'self-started').exists():
             # Captured CLI 2.1.323 (offline, 2026-11-17): a timer the session
             # set, or a message from another session on this computer, starts
             # a turn while the host has the session parked. Nothing was
@@ -468,12 +472,20 @@ if kind == 'claude':
             process_count += 1
             n = process_count
             started = {'type':'command_lifecycle','command_uuid':'self-command','state':'started','session_id':session}
-            if mode == 'self_timer':
+            if self_mode == 'self_timer':
                 started.update({'wakeup_source':'loop_wakeup','scheduled_for':1794939960000})
             send({'type':'system','subtype':'session_state_changed','state':'running','session_id':session})
             send(started)
             send({'type':'system','subtype':'init','session_id':session})
             send({'type':'system','subtype':'status','status':'requesting','session_id':session})
+            if self_tool:
+                send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
+                    'message':{'id':'self-step','content':[{'type':'tool_use','id':'self-command-tool','name':'Bash','input':{'command':'offline-self-command'}}]}})
+                send({'type':'control_request','request_id':'self-approval','request':{'subtype':'can_use_tool','tool_name':'Bash','tool_use_id':'self-command-tool','input':{'command':'offline-self-command'}}})
+                response = read()['response']['response']
+                if response['behavior'] == 'allow':
+                    (root / 'self-effect').write_text('one')
+                send({'type':'user','session_id':session,'message':{'content':[{'type':'tool_result','tool_use_id':'self-command-tool','content':'done'}]}})
             send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
                 'message':{'id':'self-progress','content':[{'type':'text','text':'self-started progress'},
                     {'type':'tool_use','id':'self-tool','name':'Read','input':{}}]}})
@@ -484,10 +496,10 @@ if kind == 'claude':
                 'session_id':session,'usage':usage,
                 'modelUsage':{'main':{'inputTokens':10*n,'outputTokens':7*n,'cacheReadInputTokens':3*n,'cacheCreationInputTokens':4*n},
                     'subagent':{'inputTokens':20*n,'outputTokens':10*n,'cacheReadInputTokens':0,'cacheCreationInputTokens':0}}}
-            if mode == 'self_peer':
+            if self_mode == 'self_peer':
                 own['origin'] = {'kind':'peer','from':'uds:/tmp/cc-socks/3165.sock','verifiedPeerPid':3165,
                     'verifiedLocal':True,'msg_id':'peer-message-one','name':'work-6a','fromMode':'prompting','body':'Peer says hello'}
-            if mode == 'self_unknown':
+            if self_mode == 'self_unknown':
                 own['origin'] = {'kind':'channel','server':'elsewhere'}
             send(own)
             send({'type':'command_lifecycle','command_uuid':'self-command','state':'completed','session_id':session})

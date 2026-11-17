@@ -221,6 +221,10 @@ impl OwnedClaudeSession {
     pub fn self_started_turn(&self) -> bool {
         self.session.self_started_turn()
     }
+    /// See `SessionDriver::outside_input`.
+    pub fn outside_input(&self) -> bool {
+        self.session.outside_input()
+    }
     pub fn usage_snapshot_requested(&self) -> bool {
         self.session.usage_snapshot_requested()
     }

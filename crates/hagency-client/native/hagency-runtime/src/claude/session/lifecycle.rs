@@ -33,6 +33,9 @@ pub(super) struct Completion {
     /// timer it set, or a message from a peer session. No prompt of this host
     /// opened it; see `SessionDriver::poll_idle`.
     self_started: bool,
+    /// The CLI took a message into this turn that this host did not write
+    /// and no timer of the session produced; see `note_command`.
+    outside_input: bool,
 }
 impl Completion {
     /// A turn that has its result and native idle and still stays open waits
@@ -87,6 +90,30 @@ impl Completion {
         {
             self.background_runs.insert(run.to_owned());
         }
+    }
+    /// Every input the CLI runs is reported as a command: the prompt and the
+    /// steers under the identifiers this host gave them, a timer of the
+    /// session with its `wakeup_source`. A finished background task is not
+    /// reported as a command at all. A command that is neither this host's
+    /// nor a timer's is a message from a peer session of the same account,
+    /// whether it starts a turn of its own or the CLI takes it into a
+    /// running one (CLI 2.1.323, offline captures 2026-11-17). Its text did
+    /// not come from the conversation this session serves. Only a continuous
+    /// session names its prompts, so only there can the two be told apart.
+    pub(super) fn note_command(&mut self, payload: &Value, prompt: Option<&str>) {
+        if (prompt.is_none() && !self.self_started)
+            || !matches!(payload["state"].as_str(), Some("queued" | "started"))
+            || payload.get("wakeup_source").is_some_and(|source| !source.is_null())
+        {
+            return;
+        }
+        let own = payload["command_uuid"]
+            .as_str()
+            .is_some_and(|id| prompt == Some(id) || self.steers.knows(id));
+        self.outside_input |= !own;
+    }
+    pub(super) fn outside_input(&self) -> bool {
+        self.outside_input
     }
     pub(super) fn begin_background_response(&mut self, payload: &Value) -> Result<(), Error> {
         if !self.enabled
@@ -622,6 +649,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
     /// The open turn is one the CLI started by itself; see `poll_idle`.
     pub fn self_started_turn(&self) -> bool {
         self.completion.self_started()
+    }
+    /// The open turn holds a message of a peer session: input from outside
+    /// the conversation this session serves. It stays true until the turn
+    /// ends. A host must not let such a turn act under the trust it gives the
+    /// conversation's own participants.
+    pub fn outside_input(&self) -> bool {
+        self.completion.outside_input()
     }
     /// Query the CLI's local /usage command after the whole turn is idle. This
     /// keeps later child usage in the original call and does not run the model.

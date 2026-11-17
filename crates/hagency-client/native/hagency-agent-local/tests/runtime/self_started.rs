@@ -291,6 +291,48 @@ async fn claude_timer_tools_are_allowed_unasked_under_every_tool_rule() {
     }
 }
 
+/// Full trust is the owner's standing answer for their own conversation. A
+/// timer the session set continues that conversation: its tool runs unasked.
+/// A peer session's message is text from outside the room: the same tool is
+/// put to the owner and runs only on their yes.
+#[tokio::test]
+async fn claude_peer_started_turn_asks_the_owner_where_full_trust_would_allow() {
+    for (mode, asked) in [
+        ("continuous:self_timer_tool", false),
+        ("continuous:self_peer_tool", true),
+    ] {
+        let mut f = Fixture::called_by(Kind::Claude, mode, ToolPolicy::full_trust(), OWNER);
+        let mut process = f.process().await;
+        process
+            .session
+            .open_context(&mut f.ledger, &f.scope, &f.profile)
+            .await
+            .unwrap();
+        let (queue, mut owner) = codex::approval_queue(1).unwrap();
+        let queue = queue.with_live_text(LiveText::with_messages(Arc::new(Messages::default())));
+        requested(&mut f, &mut process, "first", &queue).await;
+        fs::write(f.path("fire"), "").unwrap();
+        look_until_started(&mut process).await;
+        let effect = f.path("self-effect");
+        let answer = async {
+            if asked {
+                let pending = tokio::time::timeout(Duration::from_secs(10), owner.recv())
+                    .await
+                    .expect("the owner is asked")
+                    .unwrap();
+                assert_eq!(pending.proposal.tool, "claude.Bash");
+                assert!(!effect.exists());
+                pending.decide(true);
+            }
+        };
+        let (done, ()) = tokio::join!(self_started(&mut f, &mut process, "self-one", &queue), answer);
+        done.unwrap();
+        assert!(effect.exists(), "{mode}");
+        assert!(owner.try_recv().is_err(), "{mode}");
+        process.stop().await.unwrap();
+    }
+}
+
 /// A local Agent's CLI is started to take messages of the owner's other
 /// sessions on this computer, and told to use a timer instead of waiting.
 #[tokio::test]

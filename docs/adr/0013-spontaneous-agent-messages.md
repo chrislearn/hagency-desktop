@@ -312,12 +312,27 @@ it (`system peer_message_hold`, cause `mode-mismatch`; measured on 2.1.323).
 The owner's interactive sessions usually run in another mode than a local
 Agent's headless one, and a headless session has nobody to release anything,
 so every such message was held and later dropped. A local Agent's CLI is
-therefore started with `crossSessionInbound: "accept"`. The tools of the turn
-such a message starts are still asked for through the host. A message that
+therefore started with `crossSessionInbound: "accept"`. A message that
 arrives while the session runs a turn is taken into that turn by the CLI and
 answered with it. A hold or drop notice that still arrives is idle metadata:
 nothing ran for it, and the session stays. Pooled runs do not get the
 setting.
+
+**A peer message does not carry the room's trust.** Its text comes from
+outside the conversation, from any Claude session of the same user on the
+computer, whatever that session was told or has read. The host tells it
+apart from the frames alone: the CLI reports every input as a command, the
+prompt and added instructions under the identifiers the host gave them, a
+timer with its `wakeup_source`, and a finished background task not as a
+command at all. A command that is neither the host's nor a timer's is a peer
+message, whether it starts a turn or is taken into a running one. From that
+frame to the end of the turn, saved tool rules and the owner's full trust
+answer for nothing: every tool the rules would allow is put to the owner,
+the timer tools included, because a timer set in such a turn would later run
+as the session's own. A denying rule still denies. Text the message left in
+the conversation is read by later turns like any other history; the host
+cannot separate that. Whether such a turn should run under the owner's
+trust instead is the owner's decision and is open.
 
 **A note to the model.** A model asked to do something later tends to wait
 inside the turn with a `sleep` command. That asks the owner for a command

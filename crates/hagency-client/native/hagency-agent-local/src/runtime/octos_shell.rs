@@ -124,6 +124,7 @@ pub(super) async fn handle(
             files.workspace.canonical_directory(),
             queue,
             APPROVAL_SECS,
+            false,
         );
         tokio::pin!(decision);
         match octos_wait_tool(wire, decision.as_mut(), controls, buffered, stopping, steers, &call.call_id).await? {

@@ -130,6 +130,7 @@ async fn native_claude_idle_look_takes_over_a_timer_turn_long_after_the_last_one
     assert_eq!(driver.phase(), Phase::Running);
     assert!(!driver.can_followup());
     assert!(parked_source.is_retired());
+    assert!(!driver.outside_input());
     // A second look is not a way to read an open turn.
     assert_eq!(driver.poll_idle(limits()).await, Err(Error::State));
     assert_eq!(driver.phase(), Phase::Running);
@@ -140,6 +141,7 @@ async fn native_claude_idle_look_takes_over_a_timer_turn_long_after_the_last_one
         Message::Event { kind: EventKind::System, ref payload, .. } if payload["subtype"] == "init"
     ));
     assert_eq!(driver.session_id(), Some("session-one"));
+    assert!(!driver.outside_input(), "a timer of the session is its own input");
     driver.supervise_turn().unwrap();
     assert!(
         driver.prepare_steer("added").is_err(),
@@ -230,6 +232,8 @@ async fn native_claude_idle_look_takes_over_a_turn_a_peer_message_started() {
     assert_eq!(driver.poll_idle(limits()).await, Ok(true));
     assert!(driver.self_started_turn());
     driver.next_message().await.unwrap();
+    // Known before anything of the turn can ask for a tool.
+    assert!(driver.outside_input(), "a command no timer and no prompt started");
     driver.supervise_turn().unwrap();
     event(
         &mut driver,
@@ -251,6 +255,40 @@ async fn native_claude_idle_look_takes_over_a_turn_a_peer_message_started() {
     assert!(driver.completion_receipt().unwrap().matches_text("Peer answer"));
     assert!(driver.can_followup());
     nothing_written(&mut peer).await;
+}
+
+/// The CLI takes a peer session's message into a turn that is running (CLI
+/// 2.1.323, offline capture 2026-11-17: a second command starts and
+/// completes inside the turn, and the result names the prompt alone). The
+/// prompt's own command and a timer are not such input; the next turn starts
+/// clean.
+#[tokio::test(start_paused = true)]
+async fn native_claude_prompted_turn_knows_a_peer_message_the_cli_took_in() {
+    let (mut driver, mut peer) = parked().await;
+    let probe = async {
+        let probe = read(&mut peer).await;
+        peer.output.write_all(&encoded(json!({"type":"control_response","response":{"subtype":"success","request_id":probe["request_id"],"response":{"mcpServers":[]}}}))).await.unwrap();
+    };
+    let (prepared, ()) = tokio::join!(driver.prepare_followup(limits()), probe);
+    prepared.unwrap();
+    let prompt = next_prompt(&mut driver, &mut peer).await;
+    assert!(!driver.outside_input(), "the prompt's own command");
+    let mut timer = lifecycle("wake-two", "started");
+    timer["wakeup_source"] = json!("loop_wakeup");
+    event(&mut driver, &mut peer, timer).await.unwrap();
+    assert!(!driver.outside_input(), "a timer of the session");
+    event(&mut driver, &mut peer, lifecycle("peer-two", "started")).await.unwrap();
+    assert!(driver.outside_input());
+    event(&mut driver, &mut peer, lifecycle("peer-two", "completed")).await.unwrap();
+    assert!(driver.outside_input(), "it stays for the rest of the turn");
+    completed(&mut driver, &mut peer, &prompt).await;
+    let probe = async {
+        let probe = read(&mut peer).await;
+        peer.output.write_all(&encoded(json!({"type":"control_response","response":{"subtype":"success","request_id":probe["request_id"],"response":{"mcpServers":[]}}}))).await.unwrap();
+    };
+    let (prepared, ()) = tokio::join!(driver.prepare_followup(limits()), probe);
+    prepared.unwrap();
+    assert!(!driver.outside_input());
 }
 
 #[tokio::test(start_paused = true)]

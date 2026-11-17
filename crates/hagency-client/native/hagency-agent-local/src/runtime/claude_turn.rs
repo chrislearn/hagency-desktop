@@ -49,6 +49,12 @@ pub trait Host: Send {
         arguments: Value,
         directory: &Path,
     ) -> impl Future<Output = ToolAnswer> + Send;
+    /// The open turn holds a message of a peer session on this computer:
+    /// input from outside the conversation. Told before the permission of
+    /// each later tool request of that turn. A host that gives the
+    /// conversation's participants standing trust must not extend it to
+    /// such a turn.
+    fn outside_input(&mut self) {}
 }
 
 /// The original owned stream is attached immediately after system/init. Every
@@ -445,6 +451,9 @@ async fn drive<H: Host, C: Capture>(
                 } else {
                     None
                 };
+                if wire.outside_input() {
+                    host.outside_input();
+                }
                 let question_id = request_id.clone();
                 let question_deadline = wire
                     .approval_deadline(&request_id)

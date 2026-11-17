@@ -69,6 +69,10 @@ impl State {
     pub(super) fn cycle_open(&self) -> bool {
         self.cycle.is_some()
     }
+    /// The command is a steer this host wrote in this turn.
+    pub(super) fn knows(&self, command: &str) -> bool {
+        self.steers.iter().any(|steer| steer.id == command)
+    }
     /// The result just admitted closed a steer cycle.
     pub(super) fn continues(&self) -> bool {
         self.continues
