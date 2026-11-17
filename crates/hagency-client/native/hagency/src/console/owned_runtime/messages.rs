@@ -5,6 +5,9 @@
 #[cfg(test)]
 #[path = "messages_live_tests.rs"]
 mod live_tests;
+#[cfg(test)]
+#[path = "messages_replacement_live_tests.rs"]
+mod replacement_live_tests;
 use crate::agent_run_controls::Card;
 use hagency_runtime::live_text::{MessageError, MessageSink};
 use matrix_sdk_store_encryption::StoreCipher;
