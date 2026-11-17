@@ -521,10 +521,9 @@ impl Controller {
                 card.drain_receipts(false);
                 let _ = card.publish().await;
             }
-            if self.messages.next().ok().flatten().is_some()
-                && fresh_running(transport, lease, &prepared.dispatch, &prepared.execution_id, &mut cancel).await
-            {
-                let _ = self.messages.send_next(&device, prepared.dispatch.body.is_empty()).await;
+            if self.messages.next().ok().flatten().is_some() {
+                let _ = send_personal_message(transport, lease, &prepared.dispatch,
+                    &prepared.execution_id, &self.messages, &device, &mut cancel).await;
             }
             let (Some(card), Some(sender)) = (&self.card, &self.sender) else { continue; };
             if card.pending_receipts() >= 16 {
@@ -587,10 +586,8 @@ impl Controller {
         if messages.next()?.is_none() { return Ok(()); }
         let device = e2ee::device(transport, lease, config, cancel).await.map_err(|_| ())?;
         while messages.next()?.is_some() {
-            if !fresh_running(transport, lease, &prepared.dispatch, &prepared.execution_id, cancel).await {
-                return Err(());
-            }
-            messages.send_next(&device, prepared.dispatch.body.is_empty()).await?;
+            send_personal_message(transport, lease, &prepared.dispatch, &prepared.execution_id,
+                messages, &device, cancel).await?;
         }
         Ok(())
     }

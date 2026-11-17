@@ -2334,6 +2334,38 @@ async fn fresh_running<T: Transport>(
         tokio::select! {biased; _=canceled(cancel)=>return false, _=tokio::time::sleep(Duration::from_secs(2))=>{}}
     }
 }
+
+/// Legacy run messages still require the original running dispatch. A new
+/// report instead obtains fresh delivery-only authority for its exact route;
+/// that proof cannot start or extend the model's work.
+async fn send_personal_message<T: Transport>(
+    transport: &T,
+    lease: &LeaseRef,
+    dispatch: &inbox::Dispatch,
+    execution: &str,
+    messages: &messages::Outbox,
+    device: &e2ee::AgentDevice,
+    cancel: &mut watch::Receiver<bool>,
+) -> Result<bool, ()> {
+    let Some(pending) = messages.next()? else { return Ok(false); };
+    if !pending.is_report() {
+        if !fresh_running(transport, lease, dispatch, execution, cancel).await { return Err(()); }
+        return messages.send_next(device, dispatch.body.is_empty(), None, Some(pending.sequence)).await;
+    }
+    let host = transport.approval_host().ok_or(())?;
+    let puppet = device.approval_client().user_id().ok_or(())?.to_string();
+    let response = operation(transport, cancel, Op::AuthorizeMessage {
+        lease: lease.clone(), binding_id: dispatch.binding_id.clone(),
+        binding_generation: dispatch.binding_generation, room_id: dispatch.room_id.clone(),
+        puppet_mxid: puppet.clone(),
+    }).await.map_err(|_| ())?;
+    let Response::MessageAuthorized(proof) = response else { return Err(()); };
+    let permit = messages::PersonalReportPermit::new(
+        &proof, lease, dispatch, execution, host.pin.generation, &puppet, wall_ms(),
+    )?;
+    if *cancel.borrow() { return Err(()); }
+    messages.send_next(device, dispatch.body.is_empty(), Some(&permit), Some(pending.sequence)).await
+}
 struct LiveToolGate {
     console: PinnedConsole,
     lease: LeaseRef,
@@ -2994,8 +3026,8 @@ async fn flush_record_messages<T: Transport>(
                     Err(_) => return Ok(false),
                 };
                 while messages.next().map_err(|_| RuntimeError::Profile)?.is_some() {
-                    if !fresh_running(console, lease, &record.dispatch, execution, cancel).await
-                        || messages.send_next(&device, record.dispatch.body.is_empty()).await.is_err()
+                    if send_personal_message(console, lease, &record.dispatch, execution,
+                        &messages, &device, cancel).await.is_err()
                     {
                         tracing::warn!(code = "agent_message_delivery_pending", "Native message awaits its original room authority");
                         return Ok(false);

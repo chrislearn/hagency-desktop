@@ -199,6 +199,44 @@ pub(in crate::console) struct Pending {
     pub text: String,
     report_id: Option<String>,
 }
+impl Pending {
+    pub(super) fn is_report(&self) -> bool { self.report_id.is_some() }
+}
+
+/// A short-lived server proof tied to this exact host-owned personal route.
+/// It grants delivery only; it cannot authorize any provider work.
+pub(in crate::console) struct PersonalReportPermit {
+    route_id: String,
+    room_id: String,
+    puppet: String,
+    encrypted: bool,
+    valid_until_ms: i64,
+    deadline: std::time::Instant,
+}
+impl PersonalReportPermit {
+    pub(super) fn new(
+        proof: &crate::console::device_execution::AgentMessageAuthorization,
+        lease: &crate::console::device_execution::LeaseRef,
+        dispatch: &hagency_agent_local::inbox::Dispatch,
+        execution: &str,
+        generation: u64,
+        puppet: &str,
+        now: i64,
+    ) -> Result<Self, ()> {
+        if dispatch.agent_id != lease.agent_id { return Err(()); }
+        proof.validate(lease, &dispatch.binding_id, dispatch.binding_generation,
+            &dispatch.room_id, puppet, generation, now).map_err(|_| ())?;
+        let route = Route::personal(dispatch, execution).ok_or(())?;
+        let remaining = u64::try_from(proof.valid_until_ms.checked_sub(now).ok_or(())?).map_err(|_| ())?;
+        let deadline = std::time::Instant::now().checked_add(std::time::Duration::from_millis(remaining)).ok_or(())?;
+        Ok(Self { route_id: route.id, room_id: route.room_id, puppet: puppet.into(),
+            encrypted: proof.encrypted, valid_until_ms: proof.valid_until_ms, deadline })
+    }
+    fn allows(&self, route: &Route, puppet: &str, now: i64) -> bool {
+        self.route_id == route.id && self.room_id == route.room_id
+            && self.puppet == puppet && self.valid_until_ms > now && std::time::Instant::now() < self.deadline
+    }
+}
 impl Outbox {
     pub fn exists(device_root: &Path, card: &Card) -> bool {
         device_root
@@ -385,10 +423,15 @@ impl Outbox {
         &self,
         device: &super::e2ee::AgentDevice,
         encrypted: bool,
+        permit: Option<&PersonalReportPermit>,
+        expected_sequence: Option<u64>,
     ) -> Result<bool, ()> {
         let Some(pending) = self.next()? else {
             return Ok(false);
         };
+        // Authorization was obtained for the record observed by the caller;
+        // another outbox handle must not advance us to a different record.
+        if expected_sequence.is_some_and(|sequence| sequence != pending.sequence) { return Err(()); }
         if device.is_revoked() {
             return Err(());
         }
@@ -408,8 +451,11 @@ impl Outbox {
         let client = device.approval_client();
         let user = client.user_id().ok_or(())?;
         let device_id = client.device_id().ok_or(())?;
+        let permit = permit.ok_or(())?;
+        if !permit.allows(&self.route, user.as_str(), super::wall_ms()) { return Err(()); }
         let actual_encrypted = device.room_encrypted(&self.route.room_id).await.map_err(|_| ())?;
-        if encrypted && !actual_encrypted { return Err(()); }
+        if (encrypted || permit.encrypted) && !actual_encrypted { return Err(()); }
+        if !permit.allows(&self.route, user.as_str(), super::wall_ms()) { return Err(()); }
         let Some(report_id) = self.begin_send(
             pending.sequence, user.as_str(), device_id.as_str(), actual_encrypted,
         )? else { return Ok(true); };
@@ -421,8 +467,19 @@ impl Outbox {
             &report_id,
         )
         ?;
+        if device.is_revoked() || !permit.allows(&self.route, user.as_str(), super::wall_ms()) {
+            return Err(());
+        }
+        // Do not let a slow room-state check continue into a send after this
+        // proof expires. A request already in flight remains an unknown send.
+        let wall_remaining = u64::try_from(permit.valid_until_ms.checked_sub(super::wall_ms()).ok_or(())?)
+            .map_err(|_| ())?;
+        let timeout = permit.deadline.saturating_duration_since(std::time::Instant::now())
+            .min(std::time::Duration::from_millis(wall_remaining))
+            .min(std::time::Duration::from_secs(30));
+        if timeout.is_zero() { return Err(()); }
         let event = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
+            timeout,
             device.send_room_message_if_state_matches(&self.route.room_id, &pending.txn, content, actual_encrypted),
         )
         .await
@@ -567,6 +624,33 @@ mod tests {
 
         dispatch.thread_root = "!another-room:test".into();
         assert!(Route::personal(&dispatch, "execution").is_none());
+    }
+
+    #[test]
+    fn personal_report_permit_pins_route_device_generation_and_expiry() {
+        use crate::console::device_execution::{AgentMessageAuthorization, LeaseRef};
+        let mut dispatch = hagency_agent_local::inbox::Dispatch {
+            id: "dispatch".into(), binding_id: "binding".into(), agent_id: "agent".into(),
+            event_id: "$request:test".into(), room_id: "!room:test".into(),
+            requester_mxid: "@person:test".into(), thread_root: "$thread:test".into(),
+            body: "question".into(), state: "completed".into(), binding_generation: 4,
+            dispatch_epoch: Some(3), dispatch_device_id: Some("device".into()),
+            execution_id: Some("execution".into()), outcome: None,
+        };
+        let lease = LeaseRef { agent_id: "agent".into(), epoch: 3 };
+        let proof = AgentMessageAuthorization { agent_id: "agent".into(), binding_id: "binding".into(),
+            binding_generation: 4, room_id: "!room:test".into(), puppet_mxid: "@agent:test".into(),
+            encrypted: true, lease_epoch: 3, device_generation: 2, valid_until_ms: 40_000 };
+        let permit = PersonalReportPermit::new(&proof, &lease, &dispatch, "execution", 2,
+            "@agent:test", 10_000).unwrap();
+        let route = Route::personal(&dispatch, "execution").unwrap();
+        assert!(permit.allows(&route, "@agent:test", 10_000));
+        assert!(!permit.allows(&route, "@other:test", 10_000));
+        assert!(!permit.allows(&route, "@agent:test", 40_000));
+        assert!(!permit.allows(&Route::personal(&dispatch, "other").unwrap(), "@agent:test", 10_000));
+        assert!(PersonalReportPermit::new(&proof, &lease, &dispatch, "execution", 3, "@agent:test", 10_000).is_err());
+        dispatch.binding_generation += 1;
+        assert!(PersonalReportPermit::new(&proof, &lease, &dispatch, "execution", 2, "@agent:test", 10_000).is_err());
     }
 
     #[test]
