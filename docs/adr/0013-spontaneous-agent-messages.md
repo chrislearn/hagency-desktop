@@ -2,8 +2,9 @@
 
 - Date: 2026-11-16
 - Amended: 2026-11-17. A replacement device may send a report once when the
-  room's history proves it never arrived (see "Delivery, ordering and
-  recovery").
+  room's history proves it never arrived. It reads what the Agent's earlier
+  devices on the same computer sent with those devices' own stores (see
+  "Delivery, ordering and recovery").
 - Status: Accepted; implementation and end-to-end acceptance are pending.
 - Scope: Hagency Desktop and its embedded Hagency Client, Hagency Server,
   provider adapters, and the Octos OUP protocol where an extension is needed.
@@ -148,6 +149,15 @@ if all of these hold:
 - The last attempt has been quiet for a settle period (five minutes).
 - The sender account is unchanged.
 - The report is not resent in plaintext after an encrypted first attempt.
+
+A replacement device cannot decrypt its predecessors' messages with its own
+keys. Each device generation keeps its own crypto store in the Agent's private
+directory on that computer, so the check reads the expected sender's
+undecryptable events with those stores. It uses only a session that the
+earlier device started itself, never one it received, imported or restored.
+The Megolm signature and the room must both verify. Nothing is imported into
+the new device's store. Messages from the Agent's devices on other computers
+stay unreadable.
 
 If that evidence is unavailable, incomplete or conflicts, retain the unknown
 state instead of blindly sending a second copy from a new device. See the
