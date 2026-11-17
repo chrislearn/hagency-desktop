@@ -42,6 +42,38 @@ fn schedule_retry(
     );
 }
 
+/// What an Agent service does after one pass of its loop.
+///
+/// Only a stop ends it: the owner's consent is gone, the runtime is closing or
+/// another sign-in took this device. So does an Agent moved to another device.
+/// Every other failure is tried again, a little later each time. After a sleep
+/// or a network loss the owner's sign-in has to be renewed before this device
+/// is authorized again, and until then each pass fails with an authorization
+/// error that says nothing about the owner's consent. Ending there kept every
+/// local Agent of a Mac down for 8 hours after its lid was closed (2026-11-16),
+/// while the Agents still read as started. Each pass asks for fresh
+/// authorization, so nothing runs on an older one.
+#[derive(Debug, PartialEq)]
+enum NextPass {
+    After(Duration),
+    End,
+}
+fn next_pass(result: &Result<(), RuntimeError>, failures: &mut u8) -> NextPass {
+    match result {
+        Ok(()) => {
+            *failures = 0;
+            NextPass::After(Duration::from_secs(2))
+        }
+        Err(RuntimeError::Stopped | RuntimeError::ExecutionDevice) => NextPass::End,
+        Err(_) => {
+            *failures = failures.saturating_add(1);
+            NextPass::After(Duration::from_secs(
+                2u64.saturating_pow(u32::from((*failures).min(6))).min(60),
+            ))
+        }
+    }
+}
+
 impl ServiceEntry {
     pub(super) fn profile_matches(&self, pin: &DevicePin) -> bool {
         self.pin.origin == pin.origin
@@ -147,6 +179,19 @@ pub(super) fn owner_error(error: super::super::server_login::OwnerError) -> Runt
         RuntimeError::Authorization
     } else {
         RuntimeError::Transport
+    }
+}
+
+/// A running service asking about its Agent. The server answers 404 when the
+/// Agent is no longer this owner's personal Agent, and that is final: the
+/// Agent does not run on this device any more. Its 401 (the device's
+/// authorization lapsed, as it does in a sleep) and every other refusal can
+/// pass, so the service tries those again.
+fn assignment_error(error: super::super::server_login::OwnerError) -> RuntimeError {
+    if error.status == 404 {
+        RuntimeError::ExecutionDevice
+    } else {
+        owner_error(error)
     }
 }
 
@@ -358,21 +403,27 @@ impl OwnedRuntime {
             let mut retries: BTreeMap<String, RetryState> = BTreeMap::new();
             let mut takeover_consumed = false;
             let mut discovery_failures = 0u8;
+            let mut last_failure: Option<&'static str> = None;
+            // Why a pass returned a stop, for the line logged when the service ends.
+            let mut stop_reason = "stopped";
             let observed = receiver.clone();
-            loop {
+            let reason = loop {
                 let result = tokio::select! { biased;
-                    _ = canceled(&mut receiver) => break,
+                    _ = canceled(&mut receiver) => break "cancelled",
                     result = async {
                         let _gate = task_gate.lock().await;
-                        if *observed.borrow() || !service_enabled(&path, &profile_id, &intent)? { return Err(RuntimeError::Stopped); }
+                        if *observed.borrow() { stop_reason = "cancelled"; return Err(RuntimeError::Stopped); }
+                        if !service_enabled(&path, &profile_id, &intent)? { stop_reason = "service_turned_off"; return Err(RuntimeError::Stopped); }
                         let current = host.authorized_device().await.map_err(device_error)?;
                         current.bearer().map_err(|_| RuntimeError::Authorization)?;
-                        if DevicePin::from(&current) != task_pin { return Err(RuntimeError::Authorization); }
+                        // Another sign-in on this device: the service belonged
+                        // to the one before it, so it ends.
+                        if DevicePin::from(&current) != task_pin { stop_reason = "device_identity_changed"; return Err(RuntimeError::Stopped); }
                         let assigned = host.owner_api_pinned(&task_pin, OwnerOperation::Agent { agent: intent.agent_id.clone() })
-                            .await.map_err(owner_error)?;
+                            .await.map_err(assignment_error)?;
                         verify_execution_device(&assigned.value, &intent.agent_id, &intent.device_id)?;
                         let reply = host.owner_api_pinned(&task_pin, OwnerOperation::Bindings { agent: intent.agent_id.clone() })
-                            .await.map_err(owner_error)?;
+                            .await.map_err(assignment_error)?;
                         let bindings: Vec<Binding> = serde_json::from_value(reply.value["bindings"].clone()).map_err(|_| RuntimeError::Profile)?;
                         let active = active_binding_ids(&bindings, &intent.agent_id);
                         // A paused/removed Room must terminate its worker. No local
@@ -418,7 +469,16 @@ impl OwnedRuntime {
                                         schedule_retry(&mut retries,&binding,"agent_process_closing",Instant::now());
                                     }
                                 }
-                                Err(RuntimeError::Stopped | RuntimeError::Authorization | RuntimeError::ExecutionDevice) => return Err(RuntimeError::Authorization),
+                                // An Agent process that is still closing (its
+                                // lease just lapsed) refuses new rooms with a
+                                // stop; only the runtime closing ends the service.
+                                Err(RuntimeError::Stopped) if manager.tasks.check_open().is_ok() => {
+                                    schedule_retry(&mut retries,&binding,"agent_process_closing",Instant::now());
+                                }
+                                Err(RuntimeError::Stopped) => { stop_reason = "runtime_closing"; return Err(RuntimeError::Stopped); }
+                                // The pass decides: an authorization error is
+                                // tried again, another device ends it.
+                                Err(error @ (RuntimeError::Authorization | RuntimeError::ExecutionDevice)) => return Err(error),
                                 Err(error) => {
                                     let code = failure_code(&Err(error)).unwrap_or("runtime_start_failed");
                                     tracing::warn!(stage = "agent_room_start", code, "An Agent room did not start; it will be retried");
@@ -431,30 +491,45 @@ impl OwnedRuntime {
                         Ok(())
                     } => result
                 };
+                let code = failure_code(&result);
                 if result.is_err() {
                     health.send_replace(ServiceHealth {
                         phase: "disconnected",
-                        last_error: failure_code(&result),
+                        last_error: code,
                         problems: Vec::new(),
                     });
                 }
-                if matches!(
-                    result,
-                    Err(RuntimeError::Authorization
-                        | RuntimeError::ExecutionDevice
-                        | RuntimeError::Stopped)
-                ) {
-                    break;
-                }
-                let seconds = if result.is_err() {
-                    discovery_failures = discovery_failures.saturating_add(1);
-                    2u64.saturating_pow(u32::from(discovery_failures.min(6)))
-                        .min(60)
-                } else {
-                    discovery_failures = 0;
-                    2
+                let delay = match next_pass(&result, &mut discovery_failures) {
+                    NextPass::End => break code.unwrap_or(stop_reason),
+                    NextPass::After(delay) => delay,
                 };
-                tokio::select! { biased; _ = canceled(&mut receiver) => break, _ = tokio::time::sleep(Duration::from_secs(seconds)) => {} }
+                // One line when a pass starts failing or fails differently,
+                // one when the service is serving again.
+                match (code, last_failure) {
+                    (Some(code), previous) if previous != Some(code) => tracing::warn!(
+                        stage = "agent_service",
+                        agent = %intent.agent_id,
+                        code,
+                        retry_in_s = delay.as_secs(),
+                        "Agent service pass failed; it will be retried"
+                    ),
+                    (None, Some(previous)) => tracing::info!(
+                        stage = "agent_service",
+                        agent = %intent.agent_id,
+                        previous,
+                        "Agent service recovered"
+                    ),
+                    _ => {}
+                }
+                last_failure = code;
+                tokio::select! { biased; _ = canceled(&mut receiver) => break "cancelled", _ = tokio::time::sleep(delay) => {} }
+            };
+            // The owner's own stop or a closing runtime is routine; any other
+            // end means this device no longer serves the Agent.
+            if matches!(reason, "cancelled" | "service_turned_off" | "runtime_closing") {
+                tracing::info!(stage = "agent_service", agent = %intent.agent_id, reason, "Agent service ended");
+            } else {
+                tracing::warn!(stage = "agent_service", agent = %intent.agent_id, reason, "Agent service ended");
             }
             let mut final_health = health.borrow().clone();
             final_health.phase = "stopped";
@@ -879,6 +954,74 @@ mod tests {
         assert_eq!(retry.next.duration_since(at), Duration::from_secs(60));
         assert_eq!(retry.error, "agent_lease_busy");
         assert!(retry.next <= at + Duration::from_secs(60));
+    }
+    /// After a sleep the owner's sign-in is renewed again before the device is
+    /// authorized, and until then every pass fails with an authorization
+    /// error. The service keeps trying, slower each time, and serves again as
+    /// soon as a pass succeeds; it used to end at the first such pass.
+    #[test]
+    fn agent_service_keeps_trying_through_lost_authorization_and_serves_again() {
+        let mut failures = 0;
+        let delays: Vec<_> = (0..8)
+            .map(|_| next_pass(&Err(RuntimeError::Authorization), &mut failures))
+            .collect();
+        let seconds = |s| NextPass::After(Duration::from_secs(s));
+        assert_eq!(
+            delays,
+            [2, 4, 8, 16, 32, 60, 60, 60].map(seconds),
+            "an authorization error is tried again, never the end"
+        );
+        assert_eq!(next_pass(&Ok(()), &mut failures), seconds(2));
+        assert_eq!(failures, 0, "a pass that succeeds starts the back-off again");
+        assert_eq!(
+            next_pass(&Err(RuntimeError::Authorization), &mut failures),
+            seconds(2)
+        );
+        for transient in [
+            RuntimeError::Transport,
+            RuntimeError::Profile,
+            RuntimeError::LeaseBusy,
+            RuntimeError::Provider,
+            RuntimeError::Request,
+            RuntimeError::Execution("runtime_start_failed"),
+        ] {
+            let mut failures = 0;
+            assert_eq!(next_pass(&Err(transient), &mut failures), seconds(2));
+        }
+    }
+    /// A stop (consent gone, runtime closing, another sign-in) and an Agent
+    /// moved to another device end the service at once.
+    #[test]
+    fn agent_service_ends_only_on_a_stop_or_another_device() {
+        for end in [RuntimeError::Stopped, RuntimeError::ExecutionDevice] {
+            let mut failures = 3;
+            assert_eq!(next_pass(&Err(end), &mut failures), NextPass::End);
+        }
+    }
+    /// The server's 404 for the Agent is final (no longer this owner's
+    /// personal Agent); its 401 after a sleep and other refusals are not.
+    #[test]
+    fn agent_lookup_ends_on_not_found_and_retries_lapsed_authorization() {
+        use crate::console::server_login::OwnerError;
+        let answer = |status| {
+            assignment_error(OwnerError {
+                status,
+                code: "server_request_failed".into(),
+            })
+        };
+        assert!(matches!(answer(404), RuntimeError::ExecutionDevice));
+        for status in [401, 403, 409] {
+            assert!(matches!(answer(status), RuntimeError::Authorization));
+        }
+        for status in [500, 502, 503] {
+            assert!(matches!(answer(status), RuntimeError::Transport));
+        }
+        let mut failures = 0;
+        assert_eq!(next_pass(&Err(answer(404)), &mut failures), NextPass::End);
+        assert_eq!(
+            next_pass(&Err(answer(401)), &mut failures),
+            NextPass::After(Duration::from_secs(2))
+        );
     }
     #[test]
     fn discovery_excludes_paused_and_foreign_rooms_and_discovers_new_rooms() {
