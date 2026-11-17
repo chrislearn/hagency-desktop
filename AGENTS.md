@@ -1,6 +1,17 @@
 
 # Makepad Project Guide
 
+## Development and release workflow
+
+- Use the pinned Makepad JIT for development, UI checks, and integration tests.
+- Native compilation is for explicitly requested release work. Do not replace
+  JIT testing with `cargo build`, `cargo run`, or `cargo test` builds, and do
+  not rebuild native helpers as part of a development test.
+- Reuse existing runner and helper binaries. If a matching binary is missing,
+  report that dependency instead of silently starting a native build.
+- Preserve existing user JIT processes. Use an isolated profile and daemon
+  home; use an idle host when the shared machine already has a JIT running.
+
 ## Important: When Converting Syntax
 
 **Always search for existing usage patterns in the NEW crates (widgets, code_editor, studio) before making syntax changes.** The old `widgets` and `live_design!` syntax is deprecated. When unsure about the correct syntax for something, grep for similar usage in `widgets/src/` to find the correct pattern.
@@ -37,8 +48,9 @@ patches an edit into the running app instead of rebuilding and restarting it.
 headless instrument, the measured memory and the known gaps. Read it before a
 JIT run. The rules that matter most:
 
-- Build the runner from the pinned checkout and rebuild it whenever the pin
-  moves: it refuses an app whose makepad tree differs from its own.
+- Reuse a runner matching the pinned checkout: it refuses an app whose
+  makepad tree differs from its own. Report a missing matching runner rather
+  than compiling one during development testing.
 - Give the run its own `HAGENCY_DESKTOP_DATA_DIR` and
   `HAGENCY_OWNER_DAEMON_HOME`, and never use hosting Setup from it. Setup
   replaces the owner-daemon LaunchAgent, which on a machine with an installed

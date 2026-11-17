@@ -2,6 +2,9 @@
 //! A Matrix transaction is tied to the run and native message identity. A
 //! lost send response can therefore be retried without producing a second
 //! room event, and no provider call needs to be repeated.
+#[cfg(test)]
+#[path = "messages_live_tests.rs"]
+mod live_tests;
 use crate::agent_run_controls::Card;
 use hagency_runtime::live_text::{MessageError, MessageSink};
 use matrix_sdk_store_encryption::StoreCipher;

@@ -30,6 +30,7 @@ use std::{
 };
 
 const ANSWER: &str = "OFFLINE_ENCRYPTED_DAEMON_ANSWER";
+const REPORT: &str = "OFFLINE_ENCRYPTED_DAEMON_REPORT";
 struct Source(Value);
 impl MatrixTokenSource for Source {
     fn access_token(
@@ -102,14 +103,17 @@ impl DaemonProcess {
             .append(true)
             .open(log)
             .unwrap();
-        let child = tokio::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "isolated_owner_daemon_process",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("HAGENCY_DAEMON_CRYPTO_HOME", home)
+        // Run the actual Desktop daemon, including a JIT launcher when testing.
+        // A JIT launcher must provide an existing native guardian helper.
+        let binary = PathBuf::from(
+            std::env::var_os("HAGENCY_DAEMON_CRYPTO_BINARY")
+                .expect("explicit Desktop daemon executable or JIT launcher"),
+        );
+        assert!(binary.is_absolute() && binary.is_file());
+        let child = tokio::process::Command::new(binary)
+            .args(["daemon", "run", "--home"])
+            .arg(home)
+            .env("HAGENCY_OWNER_DAEMON_HOME", home)
             .env("RUST_LOG", "hagency=debug,matrix_sdk=warn")
             .stdout(file.try_clone().unwrap())
             .stderr(file)
@@ -154,6 +158,20 @@ async fn create_agent(native: &NativeOwner, name: &str) -> Value {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     panic!("agent creation incomplete");
+}
+fn receiver_store(fixture: &Path, role: &str, device: &str) -> PathBuf {
+    assert!(
+        !device.is_empty()
+            && device.len() <= 64
+            && device.bytes().all(|b| b.is_ascii_alphanumeric())
+    );
+    let root = fixture.parent().unwrap().join("crypto-receivers");
+    hagency_store::private::directory(&root).unwrap();
+    let root = root.join(role);
+    hagency_store::private::directory(&root).unwrap();
+    let root = root.join(device);
+    hagency_store::private::directory(&root).unwrap();
+    root
 }
 async fn bindings(native: &NativeOwner, agent: &str, expected: usize) -> Vec<Value> {
     let mut last = json!({});
@@ -324,6 +342,30 @@ async fn real_daemon_encrypted_child() {
         .unwrap()
         .as_nanos();
     let agent = create_agent(&native, &format!("DaemonCrypto{unique:x}")).await;
+    // The current server defaults to a private Agent. The fixture's real owner
+    // explicitly publishes this test Agent through the supported Server API
+    // before the multi-user group case. Desktop's native creation contract
+    // does not expose visibility, so do not silently change that default.
+    let owner_session = http(
+        base,
+        human_token,
+        reqwest::Method::POST,
+        "/hagency/api/v1/sessions/pasion",
+        Some(json!({"accessToken":human_token})),
+    )
+    .await;
+    let published = http(
+        base,
+        owner_session["token"].as_str().unwrap(),
+        reqwest::Method::PUT,
+        &format!(
+            "/hagency/api/v1/agents/{}/visibility",
+            agent["id"].as_str().unwrap()
+        ),
+        Some(json!({"visibility":"public"})),
+    )
+    .await;
+    assert_eq!(published["agent"]["visibility"], "public");
     let id = agent["id"].as_str().unwrap();
     let puppet = agent["puppetMxid"].as_str().unwrap();
     native
@@ -359,8 +401,12 @@ async fn real_daemon_encrypted_child() {
     assert_eq!(models["authenticated"], true);
     let workspace = root.join("work");
     std::fs::create_dir(&workspace).unwrap();
-    let initial = native.execute(local(id, LocalAction::AgentModel, None)).await.unwrap();
-    let initial: Option<hagency_agent_local::ModelProfile> = serde_json::from_value(initial["modelProfile"].clone()).unwrap();
+    let initial = native
+        .execute(local(id, LocalAction::AgentModel, None))
+        .await
+        .unwrap();
+    let initial: Option<hagency_agent_local::ModelProfile> =
+        serde_json::from_value(initial["modelProfile"].clone()).unwrap();
     native.execute(local(id, LocalAction::SaveAgentModel, Some(json!({"expectedProfileDigest":hagency_agent_local::model_profile_digest(initial.as_ref()).unwrap(),"profile":{"model":"fixture","credential_ref":models["credentialRef"],"workspace_root":workspace,"reasoning_effort":"low","web_search":false}})))).await.unwrap();
     let policy = native
         .execute(local(id, LocalAction::AgentPolicy, None))
@@ -450,7 +496,7 @@ async fn real_daemon_encrypted_child() {
     a.execute(local(
         id,
         LocalAction::StartAgentService,
-        Some(json!({"reservation":100,"effort":"low"})),
+        Some(json!({"effort":"low"})),
     ))
     .await
     .unwrap();
@@ -470,7 +516,14 @@ async fn real_daemon_encrypted_child() {
     .await;
     let human = Client::builder()
         .homeserver_url(base)
-        .sqlite_store(root.join("human-sdk"), Some("isolated-fixture-store-key"))
+        .sqlite_store(
+            receiver_store(
+                &fixture_path,
+                "human",
+                human_identity["device_id"].as_str().unwrap(),
+            ),
+            Some("isolated-fixture-store-key"),
+        )
         .build()
         .await
         .unwrap();
@@ -495,13 +548,23 @@ async fn real_daemon_encrypted_child() {
     let output = replies.clone();
     let relations = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
     let related = relations.clone();
+    let reports = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
+    let report_output = reports.clone();
     let expected_sender = puppet.to_owned();
     human.add_event_handler(
         move |event: OriginalSyncRoomMessageEvent, room: matrix_sdk::Room| {
             let output = output.clone();
             let related = related.clone();
             let expected_sender = expected_sender.clone();
+            let report_output = report_output.clone();
             async move {
+                if event.sender.as_str() == expected_sender && event.content.body() == REPORT {
+                    report_output.lock().unwrap().push((
+                        room.room_id().to_string(),
+                        event.event_id.to_string(),
+                        reply_parent(&event.content),
+                    ));
+                }
                 if event.sender.as_str() == expected_sender && event.content.body().contains(ANSWER)
                 {
                     related
@@ -536,7 +599,14 @@ async fn real_daemon_encrypted_child() {
     .await;
     let member = Client::builder()
         .homeserver_url(base)
-        .sqlite_store(root.join("member-sdk"), Some("isolated-member-key"))
+        .sqlite_store(
+            receiver_store(
+                &fixture_path,
+                "member",
+                member_identity["device_id"].as_str().unwrap(),
+            ),
+            Some("isolated-member-key"),
+        )
         .build()
         .await
         .unwrap();
@@ -560,11 +630,20 @@ async fn real_daemon_encrypted_child() {
     let member_replies = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
     let member_output = member_replies.clone();
     let member_sender = puppet.to_owned();
+    let member_reports = Arc::new(Mutex::new(Vec::<String>::new()));
+    let member_report_output = member_reports.clone();
     member.add_event_handler(
         move |event: OriginalSyncRoomMessageEvent, room: matrix_sdk::Room| {
             let output = member_output.clone();
             let sender = member_sender.clone();
+            let member_report_output = member_report_output.clone();
             async move {
+                if event.sender.as_str() == sender && event.content.body() == REPORT {
+                    member_report_output
+                        .lock()
+                        .unwrap()
+                        .push(event.event_id.to_string());
+                }
                 if event.sender.as_str() == sender && event.content.body().contains(ANSWER) {
                     output
                         .lock()
@@ -603,10 +682,13 @@ async fn real_daemon_encrypted_child() {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    assert!(
-        !keys["device_keys"][puppet].as_object().unwrap().is_empty(),
-        "Agent encryption keys were not uploaded"
-    );
+    if keys["device_keys"][puppet].as_object().unwrap().is_empty() {
+        let observer = ControllerClient::new(home.clone(), owner.into(), origin.clone(), 3);
+        let status = observer
+            .execute(local(id, LocalAction::AgentServiceStatus, None))
+            .await;
+        panic!("Agent encryption keys were not uploaded; actual service status: {status:?}");
+    }
     let original_keys = keys["device_keys"][puppet].clone();
     let mut expected_replies = Vec::new();
     let event = send_expected(
@@ -765,7 +847,12 @@ async fn real_daemon_encrypted_child() {
     for (recorded, expected) in turns(&marker).iter().zip(expected_inputs) {
         let inputs = recorded["input"].as_array().expect("provider inputs");
         assert!(
-            inputs.iter().any(|input| input["text"] == expected),
+            inputs.iter().any(
+                |input| input["text"].as_str().is_some_and(|text| text == expected
+                    || text
+                        .rsplit_once("Current request:\n")
+                        .is_some_and(|(_, request)| request == expected))
+            ),
             "exact accepted text must reach provider: {recorded}"
         );
     }
@@ -781,7 +868,59 @@ async fn real_daemon_encrypted_child() {
         current["device_keys"][puppet], original_keys,
         "Agent crypto identity survives daemon process restart"
     );
-    for (room, event) in replies.lock().unwrap().clone() {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if reports.lock().unwrap().len() >= 10 && member_reports.lock().unwrap().len() >= 6 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "independent encrypted reports did not reach both humans"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let report_events = reports.lock().unwrap().clone();
+    assert_eq!(
+        report_events.len(),
+        10,
+        "two equal-text native messages per turn; replay creates no extra event"
+    );
+    let ids: std::collections::BTreeSet<_> = report_events.iter().map(|(_, id, _)| id).collect();
+    assert_eq!(
+        ids.len(),
+        10,
+        "independent native messages retain distinct Matrix event identities"
+    );
+    for (room, root) in &expected_replies {
+        let parent = if room == dm { "" } else { root.as_str() };
+        assert_eq!(
+            report_events
+                .iter()
+                .filter(|(r, _, p)| r == room && p == parent)
+                .count(),
+            if room == dm { 4 } else { 2 }
+        );
+    }
+    let mut group_ids: Vec<_> = report_events
+        .iter()
+        .filter(|(room, _, _)| room == group)
+        .map(|(_, id, _)| id.clone())
+        .collect();
+    group_ids.sort();
+    let mut observed_member = member_reports.lock().unwrap().clone();
+    observed_member.sort();
+    assert_eq!(
+        observed_member, group_ids,
+        "both real users decrypt the same independent group reports"
+    );
+    let all_events: Vec<_> = replies
+        .lock()
+        .unwrap()
+        .clone()
+        .into_iter()
+        .chain(report_events.into_iter().map(|(room, id, _)| (room, id)))
+        .collect();
+    for (room, event) in all_events {
         let wire = http(
             base,
             human_token,
@@ -803,13 +942,29 @@ async fn real_daemon_encrypted_child() {
     let _ = sync.await;
     let _ = member_sync.await;
     println!(
-        "PASS: actual daemon process, two controller detaches, real encrypted DM/group, no-mention suppression, crypto identity restart and two real humans and exactly five offline model turns"
+        "PASS: actual daemon process, two controller detaches, real encrypted DM/group, ten independent reports with replay deduplication, no-mention suppression, crypto identity restart and two real humans and exactly five offline model turns"
     );
-    hagency_store::private::write_new(
-        &fixture_path.parent().unwrap().join("client-done.json"),
-        b"{\"passed\":true}",
-    )
-    .unwrap();
+    if std::env::var("HAGENCY_DAEMON_CRYPTO_DEFER_DONE").as_deref() == Ok("1") {
+        // A cooperating hidden Desktop checks these real events before the
+        // server harness may shut down. This file carries no credentials.
+        hagency_store::private::write_new(
+            &fixture_path
+                .parent()
+                .unwrap()
+                .join("daemon-crypto-result.json"),
+            &serde_json::to_vec(&json!({"passed":true,"roomId":dm,
+                "groupRoomId":group,"agentName":agent["displayName"],
+                "independentReports":10}))
+            .unwrap(),
+        )
+        .unwrap();
+    } else {
+        hagency_store::private::write_new(
+            &fixture_path.parent().unwrap().join("client-done.json"),
+            b"{\"passed\":true}",
+        )
+        .unwrap();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

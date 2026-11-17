@@ -1,5 +1,13 @@
 # Hagency Desktop on the makepad JIT line: port notes
 
+Development and test policy: use JIT. Native compilation is reserved for
+explicitly requested release work. Reuse existing matching runner and native
+helper binaries; do not run Cargo builds to prepare a development test. Cargo
+commands and timings below document release/CI behavior and earlier runs,
+and do not override this policy. If a test driver cannot run under the JIT,
+report the limitation or reuse an existing driver while the actual product
+UI and daemon run under JIT.
+
 The desktop app (package `rinx`) builds against the makepad JIT line: upstream makepad `work`
 (the HAL rewrite with the relax JIT) plus the fixes on OctoSense-org/makepad branch `main`.
 That branch was named `hagency-jit` until 13 Nov 2026; the fork's earlier line is now
