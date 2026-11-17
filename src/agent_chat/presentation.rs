@@ -9,7 +9,7 @@
 
 use std::borrow::Cow;
 
-use matrix_sdk::ruma::{events::room::message::FormattedBody, UserId};
+use matrix_sdk::ruma::{events::room::message::FormattedBody, RoomId, UserId};
 
 use super::agents::{is_agent_localpart, AgentRole};
 
@@ -136,6 +136,13 @@ impl AgentMessagePresentation {
         let localpart = sender.localpart();
         let legacy = is_agent_localpart(localpart);
         Self::for_sender_with_registration(sender, legacy || crate::agent_access::is_registered_agent(sender))
+    }
+
+    /// Room roster identities are authenticated observations, never inferred
+    /// from message contents or account display names.
+    pub fn for_sender_in_room(sender: &UserId, room: &RoomId) -> Option<Self> {
+        Self::for_sender(sender).or_else(||
+            Self::for_sender_with_registration(sender, crate::agent_access::room_roster::contains(room, sender)))
     }
 
     fn for_sender_with_registration(sender: &UserId, registered: bool) -> Option<Self> {

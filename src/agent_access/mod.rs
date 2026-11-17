@@ -2,6 +2,8 @@
 pub mod model;
 pub mod commands;
 pub mod routing;
+#[cfg(feature = "agent_chat")]
+pub(crate) mod room_roster;
 pub mod ui;
 pub use ui::{AgentAccessAction, AgentAccessPanelWidgetRefExt, script_mod};
 
