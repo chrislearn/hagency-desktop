@@ -23,7 +23,10 @@ env:
 jobs:
   libraries:
     name: Hagency library workspace
-    runs-on: macos-15
+    # The project's own Mac runs this job for pushes, manual runs and pull
+    # requests from this repository. A pull request from a fork stays on a
+    # GitHub machine: a fork never chooses what runs on the project's hardware.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","ARM64","hagency-mac"]') || 'macos-15' }}
     # The serial all-target and feature-enabled suites can exceed two hours.
     timeout-minutes: 180
     env:
@@ -45,8 +48,14 @@ jobs:
         with:
           toolchain: 1.98.0
       - uses: Swatinem/rust-cache@v2
+        # The project's own Mac keeps its cargo home between runs, and this
+        # action would empty that home's bin folder.
+        if: runner.environment == 'github-hosted'
         with:
           workspaces: crates/hagency-client -> target
+      - name: Build with every core of the project's own Mac
+        if: runner.environment == 'self-hosted'
+        run: echo "CARGO_BUILD_JOBS=$(sysctl -n hw.ncpu)" >> "$GITHUB_ENV"
       - run: brew install cmake
       - name: Check Linux qualification helper refusals without provisioning
         run: python3 native/scripts/test-qualify-linux-cgroup.py
@@ -66,7 +75,8 @@ jobs:
           cargo test --locked -p hagency-store --features shared-budget-execution,resource-adoption --lib domain::owner_resources::adoption::empty_device::tests:: -- --test-threads=1
   native:
     name: Native build and unit tests
-    runs-on: macos-15
+    # As for the library workspace: the project's own Mac, except for forks.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","ARM64","hagency-mac"]') || 'macos-15' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
@@ -78,6 +88,7 @@ jobs:
         with:
           toolchain: 1.98.0
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           workspaces: |
             . -> target
