@@ -363,6 +363,26 @@ fn credential_vault_parent_sync_unknown_reopens_authenticated_v2_without_plainte
     assert_eq!(std::fs::read(&path).unwrap(), encoded);
 }
 #[test]
+fn credential_vault_installation_retry_confirms_original_marker() {
+    let root = tempfile::tempdir().unwrap();
+    let fail_sync = |_: &cap_std::fs::Dir| Err(crate::Error::PlatformUnavailable);
+    assert_eq!(
+        document::installation_with_sync(root.path(), true, fail_sync),
+        Err(Error::DurabilityUnknown)
+    );
+
+    let original = document::installation_with_sync(root.path(), false, |_| {
+        panic!("read-only marker lookup must not flush")
+    })
+    .unwrap();
+    assert_eq!(
+        document::installation_with_sync(root.path(), true, fail_sync),
+        Err(Error::DurabilityUnknown)
+    );
+    assert_eq!(document::installation(root.path(), true).unwrap(), original);
+}
+
+#[test]
 fn credential_vault_grant_leases_exclude_same_grant_but_allow_another() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("private");

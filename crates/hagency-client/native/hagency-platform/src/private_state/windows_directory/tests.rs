@@ -127,17 +127,26 @@ fn native_windows_directory_rejects_identity_and_flush() {
 
 #[test]
 fn native_windows_directory_production_profile_flags() {
-    assert!(supported_profile(7, 0x20));
-    assert!(supported_profile(7, 0x20020));
+    let unexpected_probe = || panic!("fixed drive probe is only for the observed NTFS bit");
+    assert!(supported_profile(7, 0x20, unexpected_probe));
+    assert!(supported_profile(7, 0x20020, unexpected_probe));
+    assert!(supported_profile(7, 0x220020, || true));
+    assert!(!supported_profile(7, 0x220020, || false));
     for device in [0, 1, 6, 8, u32::MAX] {
-        assert!(!supported_profile(device, 0x20));
+        assert!(!supported_profile(device, 0x20, unexpected_probe));
+        assert!(!supported_profile(device, 0x220020, unexpected_probe));
     }
-    for flags in [0, 0x20000, u32::MAX] {
-        assert!(!supported_profile(7, flags));
+    for flags in [0, 0x20000, 0x220000, u32::MAX] {
+        assert!(!supported_profile(7, flags, unexpected_probe));
     }
     for bit in 0..32 {
-        if bit != 5 && bit != 17 {
-            assert!(!supported_profile(7, 0x20 | (1 << bit)));
+        if ![5, 17, 21].contains(&bit) {
+            assert!(!supported_profile(7, 0x20 | (1 << bit), unexpected_probe));
+            assert!(!supported_profile(
+                7,
+                0x220020 | (1 << bit),
+                unexpected_probe
+            ));
         }
     }
 }

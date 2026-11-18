@@ -3157,6 +3157,8 @@
   "Local sign-out is not durably confirmed. Sync and sending remain stopped; keep this account's local data and retry after credential storage is available.": "本机退出状态尚未确认保存。同步和发送仍已停止；请保留此账号的本地数据，待凭据存储恢复可用后重试。",
   "Continue in your browser": "在浏览器中继续",
   "Finish signing in with Pasion in your browser, then return to Hagency.": "请在浏览器中完成 Pasion 登录，然后返回 Hagency。",
+  "Hagency could not verify local credential storage before opening the browser.": "Hagency 无法确认本地凭据可以保存，浏览器登录尚未开始。",
+  "Browser authorization completed, but Hagency could not confirm that the local session was saved.": "浏览器授权已完成，但 Hagency 无法确认本地会话已保存。",
   "Logout cancelled by user": "已取消退出登录",
   "Local session cleanup remains incomplete": "本地会话尚未清理完成",
   "You do not have permission to invite people to this room.": "你没有邀请他人加入此聊天室的权限。",

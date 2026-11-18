@@ -651,6 +651,14 @@ fn classify(error: std::io::Error) -> Error {
 /// encrypted documents MUST pass allow_create=false; losing this marker is not
 /// permission to silently adopt a new namespace or replace database secrets.
 pub fn installation(root: &Path, allow_create: bool) -> Result<String, Error> {
+    installation_with_sync(root, allow_create, crate::private::sync_directory)
+}
+
+pub(super) fn installation_with_sync(
+    root: &Path,
+    allow_create: bool,
+    sync_directory: impl FnOnce(&Dir) -> Result<(), crate::Error>,
+) -> Result<String, Error> {
     let key_directory = root.join("credentials-v1");
     if !allow_create && !key_directory.exists() {
         return Err(Error::Missing);
@@ -658,30 +666,38 @@ pub fn installation(root: &Path, allow_create: bool) -> Result<String, Error> {
     crate::private::directory(&key_directory).map_err(|_| Error::Storage)?;
     let retained = Dir::open_ambient_dir(&key_directory, cap_std::ambient_authority())
         .map_err(|_| Error::Storage)?;
-    let file = match open(&retained, "installation") {
-        Ok(file) => file,
+    let (file, created_id) = match open(&retained, "installation") {
+        Ok(file) => (file, None),
         Err(Error::Missing) if allow_create => {
             let id = random_id()?;
             match create(&retained, "installation") {
                 Ok(mut file) => {
                     file.write_all(id.as_bytes()).map_err(|_| Error::Storage)?;
-                    file.sync_all().map_err(|_| Error::Storage)?;
-                    crate::private::sync_directory(&retained)
-                        .map_err(|_| Error::DurabilityUnknown)?;
-                    return Ok(id);
+                    (file, Some(id))
                 }
-                Err(Error::Conflict) => open(&retained, "installation")?,
+                Err(Error::Conflict) => (open(&retained, "installation")?, None),
                 Err(error) => return Err(error),
             }
         }
         Err(error) => return Err(error),
     };
-    let bytes = read(&file, 32)?;
-    let id = std::str::from_utf8(&bytes).map_err(|_| Error::Invalid)?;
-    if !super::valid_id(id) {
-        return Err(Error::Invalid);
+    let id = if let Some(id) = created_id {
+        id
+    } else {
+        let bytes = read(&file, 32)?;
+        let id = std::str::from_utf8(&bytes).map_err(|_| Error::Invalid)?;
+        if !super::valid_id(id) {
+            return Err(Error::Invalid);
+        }
+        id.into()
+    };
+    if allow_create {
+        // A previous attempt can leave a complete marker without a durable
+        // directory entry. A retry must confirm the same marker before use.
+        file.sync_all().map_err(|_| Error::Storage)?;
+        sync_directory(&retained).map_err(|_| Error::DurabilityUnknown)?;
     }
-    Ok(id.into())
+    Ok(id)
 }
 
 /// A retained process lease for one authentication grant. A retired UI observer

@@ -3157,6 +3157,8 @@
   "Local sign-out is not durably confirmed. Sync and sending remain stopped; keep this account's local data and retry after credential storage is available.": "Local sign-out is not durably confirmed. Sync and sending remain stopped; keep this account's local data and retry after credential storage is available.",
   "Continue in your browser": "Continue in your browser",
   "Finish signing in with Pasion in your browser, then return to Hagency.": "Finish signing in with Pasion in your browser, then return to Hagency.",
+  "Hagency could not verify local credential storage before opening the browser.": "Hagency could not verify local credential storage before opening the browser.",
+  "Browser authorization completed, but Hagency could not confirm that the local session was saved.": "Browser authorization completed, but Hagency could not confirm that the local session was saved.",
   "Logout cancelled by user": "Logout cancelled by user",
   "Local session cleanup remains incomplete": "Local session cleanup remains incomplete",
   "You do not have permission to invite people to this room.": "You do not have permission to invite people to this room.",

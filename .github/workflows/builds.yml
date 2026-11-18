@@ -138,6 +138,10 @@ jobs:
         with:
           key: windows-build-${{ hashFiles('Cargo.lock') }}
 
+      - name: Test Windows directory durability
+        working-directory: crates/hagency-client
+        run: cargo test --locked -p hagency-platform --lib native_windows_directory -- --test-threads=1
+
       - name: Build
         env:
           RUSTFLAGS: "-D warnings"
