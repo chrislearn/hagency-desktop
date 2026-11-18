@@ -3,6 +3,9 @@ use super::crypto_settings::CryptoSettingsWidgetExt;
 #[cfg(test)]
 #[path = "account_settings/profile_retry_tests.rs"]
 mod profile_retry_tests;
+#[cfg(test)]
+#[path = "account_settings/layout_tests.rs"]
+mod layout_tests;
 use std::cell::RefCell;
 
 use makepad_widgets::{text::selection::Cursor, *};
@@ -18,7 +21,7 @@ script_mod! {
 
     // The view containing all user account-related settings.
     mod.widgets.AccountSettings = #(AccountSettings::register_widget(vm)) {
-        width: Fill, height: Fit
+        width: Fill{max: mod.widgets.RINX_READING_WIDTH}, height: Fit
         flow: Down
 
         TitleLabel {
@@ -28,7 +31,7 @@ script_mod! {
         // Verification banners. Both stay hidden until we know the state.
         verification_banner_verified := RoundedView {
             visible: false
-            width: Fill {max: 450},
+            width: Fill,
             height: Fit
             flow: Right
             align: Align {y: 0.5}
@@ -54,7 +57,7 @@ script_mod! {
 
         verification_banner_unverified := RoundedView {
             visible: false
-            width: Fill {max: 478},
+            width: Fill,
             height: Fit
             flow: Down,
             align: Align {y: 0.5}

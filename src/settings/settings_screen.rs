@@ -123,6 +123,7 @@ script_mod! {
                 flow: Flow.Right{wrap: true}
                 align: Align{y: 0.5}
                 spacing: (mod.widgets.SPACE_SM)
+                wrap_spacing: (mod.widgets.SPACE_SM)
                 margin: Inset{left: (mod.widgets.SPACE_XS), right: (mod.widgets.SPACE_XS), bottom: (mod.widgets.SPACE_SM)}
 
                 category_account_button := mod.widgets.SettingsCategoryTab { text: #(crate::i18n::tr("Account")) i18n_text: "Account" }

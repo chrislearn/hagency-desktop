@@ -48,7 +48,7 @@ script_mod! {
                 text: #(crate::i18n::tr("Save the recovery key privately before enabling recovery. Anyone with this key can recover your encrypted messages. Keep a copy outside this device.")) i18n_text: "Save the recovery key privately before enabling recovery. Anyone with this key can recover your encrypted messages. Keep a copy outside this device."
             }
             View {
-                width: Fill height: Fit flow: Flow.Right{wrap: true} spacing: 10 align: Align{y: 0.5}
+                width: Fill height: Fit flow: Flow.Right{wrap: true, row_align: RowAlign.Center} spacing: 10 wrap_spacing: 10
                 save := RinxButton {width: Fit height: SETTINGS_BUTTON_HEIGHT text: #(crate::i18n::tr("Save recovery key…")) i18n_text: "Save recovery key…"}
                 load_pending := RinxButton {width: Fit height: SETTINGS_BUTTON_HEIGHT text: #(crate::i18n::tr("Load saved key to resume…")) i18n_text: "Load saved key to resume…"}
                 discard := RinxButton {width: Fit height: SETTINGS_BUTTON_HEIGHT text: #(crate::i18n::tr("Discard unfinished setup")) i18n_text: "Discard unfinished setup"}
@@ -61,7 +61,7 @@ script_mod! {
         }
         restore_section := View {
             width: Fill height: Fit flow: Down spacing: 10 visible: false
-            RinxLabel {
+            restore_description := RinxLabel {
                 width: Fill height: Fit flow: Flow.Right{wrap: true}
                 text: #(crate::i18n::tr("Restore your existing recovery key to recover identity and backup keys. This does not reset your identity or create a replacement backup.")) i18n_text: "Restore your existing recovery key to recover identity and backup keys. This does not reset your identity or create a replacement backup."
             }
@@ -71,7 +71,7 @@ script_mod! {
                 empty_text: #(crate::i18n::tr("Recovery key or security phrase")) i18n_empty_text: "Recovery key or security phrase"
             }
             View {
-                width: Fill height: Fit flow: Flow.Right{wrap: true} spacing: 10 align: Align{y: 0.5}
+                width: Fill height: Fit flow: Flow.Right{wrap: true, row_align: RowAlign.Center} spacing: 10 wrap_spacing: 10
                 restore := RinxButton {width: Fit height: SETTINGS_BUTTON_HEIGHT text: #(crate::i18n::tr("Restore with key")) i18n_text: "Restore with key"}
                 restore_file := RinxButton {width: Fit height: SETTINGS_BUTTON_HEIGHT text: #(crate::i18n::tr("Restore from key file…")) i18n_text: "Restore from key file…"}
                 upload := RinxButton {width: Fit height: SETTINGS_BUTTON_HEIGHT text: #(crate::i18n::tr("Back up pending room keys")) i18n_text: "Back up pending room keys"}
@@ -112,7 +112,7 @@ script_mod! {
                     empty_text: #(crate::i18n::tr("Account password")) i18n_empty_text: "Account password"
                 }
                 View {
-                    width: Fill height: Fit flow: Flow.Right{wrap: true} spacing: 10 align: Align{y: 0.5}
+                    width: Fill height: Fit flow: Flow.Right{wrap: true, row_align: RowAlign.Center} spacing: 10 wrap_spacing: 10
                     reset_now := RinxButton {
                         width: Fit height: SETTINGS_BUTTON_HEIGHT
                         draw_bg +: {border_color: mod.widgets.RINX_DANGER_FG border_color_hover: mod.widgets.RINX_DANGER_FG border_color_down: mod.widgets.RINX_DANGER_FG}
