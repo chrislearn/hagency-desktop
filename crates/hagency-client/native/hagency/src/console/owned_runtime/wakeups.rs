@@ -156,6 +156,15 @@ fn prompt(timer: &Timer, now: i64) -> String {
             timer.id
         ));
     }
+    // The room shows nothing of a turn that was cut off, and the model
+    // cannot know of it either unless it is told.
+    if timer.attempts > 1 {
+        text.push_str(
+            " An earlier turn for this timer was cut off before it ended, because the host \
+             restarted; nothing it may have answered reached the chat. Check what it already did \
+             before you repeat a command or a change.",
+        );
+    }
     text
 }
 
@@ -571,6 +580,9 @@ mod tests {
         assert!(text.starts_with("[Hagency timer] A timer you set in this chat 10 minutes ago is due now."));
         assert!(text.contains("\n\nReport the build result.\n\n"));
         assert!(text.contains("cancel_wakeup (id wk_00000000000000aa)"));
-        assert!(!prompt(&Timer { repeat: None, ..timer }, 1_000_600).contains("cancel_wakeup"));
+        assert!(!text.contains("cut off"));
+        let again = prompt(&Timer { repeat: None, attempts: 2, ..timer }, 1_000_600);
+        assert!(!again.contains("cancel_wakeup"));
+        assert!(again.contains("An earlier turn for this timer was cut off"));
     }
 }
