@@ -69,6 +69,10 @@ impl State {
     pub(super) fn cycle_open(&self) -> bool {
         self.cycle.is_some()
     }
+    /// The command is a steer this host wrote in this turn.
+    pub(super) fn knows(&self, command: &str) -> bool {
+        self.steers.iter().any(|steer| steer.id == command)
+    }
     /// The result just admitted closed a steer cycle.
     pub(super) fn continues(&self) -> bool {
         self.continues
@@ -225,6 +229,9 @@ impl<R, W, E> SessionDriver<R, W, E> {
             || self.phase != Phase::Running
             || self.awaiting_init
             || self.completion.snapshot_requested()
+            // A turn the CLI started by itself has no prompt of this host to
+            // correlate an added message with. The message waits its turn.
+            || self.completion.self_started()
             || self.interrupt.outstanding()
             || self.wire.write_progress().is_some()
         {

@@ -1,7 +1,7 @@
 //! Desktop runtime bridge. Native sessions may span many independently admitted
 //! calls. Accounts remain provider-owned; each call has its own ledger and approvals.
 use crate::codex::{self, ApprovalQueue, BudgetMode, Completed, Error, Profile, Result, TurnStatus};
-use crate::{Ledger, Reservation, Scope, ToolPolicy, ToolProposal, Usage};
+use crate::{Ledger, RequestPolicy, Reservation, Scope, ToolPolicy, ToolProposal, Usage};
 use hagency_runtime::{claude, octos};
 use serde_json::Value;
 use std::{
@@ -416,9 +416,10 @@ async fn spawn_inner(
                 command.env("CLAUDE_CONFIG_DIR", &profile.codex_home);
             }
             command.args(
-                claude::interactive_arguments(&profile.model, &profile.effort)
+                claude::local_interactive_arguments(&profile.model, &profile.effort)
                     .map_err(|_| Error::Profile("Claude model or effort"))?,
             );
+            command.args(["--append-system-prompt", CLAUDE_ROOM_NOTE]);
             // The Agent's web search switch, as a shared Claude run reads it.
             if !profile.web_search {
                 command.args(["--disallowedTools", "WebSearch,WebFetch"]);
@@ -553,6 +554,46 @@ async fn spawn_inner(
     })
 }
 
+/// The Claude tools that set, list and remove timers for the session's own
+/// later turns: one wake-up, and the schedules of the same session.
+const SELF_TIMER_TOOLS: [&str; 4] = [
+    "claude.ScheduleWakeup",
+    "claude.CronCreate",
+    "claude.CronList",
+    "claude.CronDelete",
+];
+/// Added to the CLI's own instructions for a local Agent. Without it a model
+/// asked to do something later waits inside the turn (a `sleep` command):
+/// that asks the owner for a command and keeps the Agent busy meanwhile.
+/// The risk named on a tool request of a turn that holds a peer session's
+/// message; see `claude_turn::Host::outside_input`.
+pub const PEER_SESSION_RISK: &str = "peer_session";
+/// The CLI may offer its timer tools by name only; the model then loads one
+/// with `ToolSearch` before it can set a timer (seen live on 2.1.323,
+/// 2026-11-17: the owner was asked for `select:ScheduleWakeup`). Loading the
+/// description of a timer tool does nothing; any other lookup is asked for
+/// like every tool.
+fn timer_tool_lookup(tool: &str, arguments: &Value) -> bool {
+    tool == "claude.ToolSearch"
+        && arguments["query"]
+            .as_str()
+            .and_then(|query| query.strip_prefix("select:"))
+            .is_some_and(|names| {
+                names.split(',').all(|name| {
+                    let name = name.trim();
+                    SELF_TIMER_TOOLS
+                        .iter()
+                        .any(|timer| timer.strip_prefix("claude.") == Some(name))
+                        || name.strip_prefix("mcp__hagency_matrix__").is_some_and(|timer| {
+                            hagency_runtime::room_tools::ROOM_TIMER_TOOLS.contains(&timer)
+                        })
+                })
+            })
+}
+const CLAUDE_ROOM_NOTE: &str = "You answer in a chat room through Hagency. To do something later, or to report on a schedule, set a timer with the schedule_wakeup tool of the hagency_matrix server (mcp__hagency_matrix__schedule_wakeup) and end your answer. When the timer fires you run again, and what you answer then is posted to the same chat by itself. That timer is kept by Hagency and survives a restart; ScheduleWakeup lives only as long as this process, so use it only when you are asked for it by name. Do not pass time with sleep or another waiting command.";
+/// How long the confirmation recorded for a self-started turn lasts: the
+/// longest a confirmation may last, which is also the longest a turn may run.
+const SELF_STARTED_CONFIRMED_SECS: i64 = 3600;
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
@@ -671,6 +712,31 @@ impl Session {
             Self::Octos { .. } => false,
         }
     }
+    /// Look, without waiting, at what a retained idle Claude process wrote
+    /// since its last turn. `true`: the CLI started a turn by itself (a timer
+    /// the session set, a message from a peer session) and that turn is now
+    /// open. The caller runs it with `run_self_started` or stops the process;
+    /// until then the session can neither continue nor be looked at again.
+    /// An error means the process can no longer be reused. Codex and Octos
+    /// sessions have nothing to look at here.
+    pub async fn poll_self_started(&mut self) -> Result<bool> {
+        match self {
+            Self::Claude { wire, reusable, .. } => {
+                if !*reusable || !wire.can_followup() {
+                    return Err(Error::Protocol("native session cannot continue"));
+                }
+                let started = wire
+                    .poll_idle(claude::session::Limits::default())
+                    .await
+                    .map_err(|_| Error::Protocol("retained Claude process unavailable"))?;
+                if started {
+                    *reusable = false;
+                }
+                Ok(started)
+            }
+            _ => Ok(false),
+        }
+    }
     /// Revalidate durable scope and the retained native process before a new
     /// reservation. A failed probe has not transmitted this turn's model input.
     pub async fn continue_context(
@@ -775,12 +841,95 @@ impl Session {
         started: Option<tokio::sync::oneshot::Sender<()>>,
         observer: Option<&(dyn Fn(&Usage) + Send + Sync)>,
     ) -> Result<Completed> {
+        self.run_admitted(
+            ledger, owner, scope, call, dispatch, Some(input), mode, queue, started, observer,
+        )
+        .await
+    }
+    /// Run the turn `poll_self_started` found open. It is charged and settled
+    /// exactly like a requested turn, under `call` and a `dispatch` identity
+    /// of the host's own. It continues a conversation that was already
+    /// admitted, so nobody is asked: where the scope's requests need the
+    /// owner's confirmation, that confirmation is recorded here. A scope that
+    /// denies requests, or a spent budget, still refuses it, and a refusal
+    /// leaves the caller to stop the process. Its tool requests go through
+    /// `queue` like any other turn's.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_self_started(
+        &mut self,
+        ledger: &mut Ledger,
+        owner: &str,
+        scope: &Scope,
+        call: &str,
+        dispatch: &str,
+        mode: BudgetMode,
+        queue: &ApprovalQueue,
+        observer: Option<&(dyn Fn(&Usage) + Send + Sync)>,
+    ) -> Result<Completed> {
+        if !matches!(self, Self::Claude { wire, .. } if wire.self_started_turn()) {
+            return Err(Error::Protocol("no self-started turn is open"));
+        }
+        if ledger.request_disposition(scope, dispatch)? == RequestPolicy::AskOwner {
+            let now = now();
+            ledger.approve_request(owner, scope, dispatch, now + SELF_STARTED_CONFIRMED_SECS, now)?;
+        }
+        self.run_admitted(
+            ledger, owner, scope, call, dispatch, None, mode, queue, None, observer,
+        )
+        .await
+    }
+    /// Run a turn the host starts for a timer the conversation's Agent set
+    /// with the host (`schedule_wakeup`). Like a turn the CLI started by
+    /// itself it continues a conversation that was already admitted: where
+    /// the scope's requests need the owner's confirmation, it is recorded
+    /// here, and a denying scope or a spent budget refuses the turn. Every
+    /// runtime can run one; `input` is what the host tells the model.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_host_started(
+        &mut self,
+        ledger: &mut Ledger,
+        owner: &str,
+        scope: &Scope,
+        call: &str,
+        dispatch: &str,
+        input: &str,
+        mode: BudgetMode,
+        queue: &ApprovalQueue,
+        observer: Option<&(dyn Fn(&Usage) + Send + Sync)>,
+    ) -> Result<Completed> {
+        if ledger.request_disposition(scope, dispatch)? == RequestPolicy::AskOwner {
+            let now = now();
+            ledger.approve_request(owner, scope, dispatch, now + SELF_STARTED_CONFIRMED_SECS, now)?;
+        }
+        self.run_admitted(
+            ledger, owner, scope, call, dispatch, Some(input), mode, queue, None, observer,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    async fn run_admitted(
+        &mut self,
+        ledger: &mut Ledger,
+        owner: &str,
+        scope: &Scope,
+        call: &str,
+        dispatch: &str,
+        input: Option<&str>,
+        mode: BudgetMode,
+        queue: &ApprovalQueue,
+        started: Option<tokio::sync::oneshot::Sender<()>>,
+        observer: Option<&(dyn Fn(&Usage) + Send + Sync)>,
+    ) -> Result<Completed> {
         if let Self::Codex(session) = self {
+            let input = input.ok_or(Error::Protocol("no self-started turn is open"))?;
             return session
                 .run_with_started_observed(
                     ledger, owner, scope, call, dispatch, input, mode, queue, started, observer,
                 )
                 .await;
+        }
+        if input.is_none() && !matches!(self, Self::Claude { .. }) {
+            return Err(Error::Protocol("no self-started turn is open"));
         }
         ledger.owner(owner)?;
         let bound = match self {
@@ -790,7 +939,7 @@ impl Session {
         if bound != Some(scope) {
             return Err(Error::Protocol("run scope differs from opened context"));
         }
-        if input.is_empty() || input.len() > 65536 {
+        if input.is_some_and(|input| input.is_empty() || input.len() > 65536) {
             return Err(Error::Profile("input size"));
         }
         let controls = queue
@@ -846,7 +995,8 @@ impl Session {
                     scope,
                     call,
                     dispatch,
-                    input,
+                    // Only a Claude session reaches here without an input.
+                    input.unwrap_or_default(),
                     queue,
                     started,
                     controls,
@@ -1078,7 +1228,8 @@ async fn permission(
     cwd: &Path,
     queue: &ApprovalQueue,
 ) -> claude_turn::ToolAnswer {
-    permission_within(ledger, owner, scope, dispatch, tool, arguments, cwd, queue, 280).await
+    permission_within(ledger, owner, scope, dispatch, tool, arguments, cwd, queue, 280, false)
+        .await
 }
 /// The owner's policy for one tool request, asking the owner when the policy
 /// says so and waiting at most `wait_secs` for the answer.
@@ -1093,6 +1244,9 @@ async fn permission_within(
     cwd: &Path,
     queue: &ApprovalQueue,
     wait_secs: u64,
+    // Saved rules and full trust do not answer for this request: where they
+    // would allow it, the owner is asked. A denying rule still denies.
+    ask_where_allowed: bool,
 ) -> claude_turn::ToolAnswer {
     use claude_turn::ToolAnswer;
     let Ok(versions) = ledger.policy_snapshot(scope) else {
@@ -1104,11 +1258,17 @@ async fn permission_within(
         tool,
         arguments,
         canonical_directory: cwd.to_string_lossy().into(),
-        risk: "high".into(),
+        // The owner is shown where the request comes from: a card that
+        // looks like their own conversation's request gets approved.
+        risk: if ask_where_allowed { PEER_SESSION_RISK } else { "high" }.into(),
         policy_revision: versions.map(|v| v.revision),
         expires: now() + wait_secs as i64,
     };
-    match ledger.tool_disposition(&proposal, now()) {
+    let disposition = match ledger.tool_disposition(&proposal, now()) {
+        Ok(ToolPolicy::AllowWithRules { .. }) if ask_where_allowed => Ok(ToolPolicy::AskOwner),
+        other => other,
+    };
+    match disposition {
         Ok(ToolPolicy::AllowWithRules { .. }) => {
             ToolAnswer::allowed(ledger.authorize_tool(&proposal, now()).is_ok())
         }
@@ -1153,9 +1313,21 @@ struct PersonalClaudeHost<'a> {
     context: &'a str,
     dispatch: &'a str,
     queue: &'a ApprovalQueue,
+    /// The CLI started this turn by itself; there is no input to write.
+    self_started: bool,
+    /// The turn holds a message of a peer session (`outside_input`).
+    outside: bool,
 }
 impl claude_turn::Host for PersonalClaudeHost<'_> {
     async fn start(&mut self, process: &mut Claude, input: &str) -> Result<()> {
+        if self.self_started {
+            // The driver already holds the turn open (`poll_self_started`).
+            return if process.self_started_turn() {
+                Ok(())
+            } else {
+                Err(Error::Protocol("Claude self-started turn"))
+            };
+        }
         // The owner's own slash command runs as one. Anyone else's text, and
         // any text the host wrapped, is a prompt and can never be a command.
         let written = if owner_command(self.owner, self.scope, input) {
@@ -1210,7 +1382,21 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
         arguments: Value,
         directory: &Path,
     ) -> claude_turn::ToolAnswer {
-        permission(
+        // The owner's tool rules decide what a tool may do on this computer.
+        // A timer for the session's own later turn does nothing here and
+        // reaches nobody, so nobody is asked for it.
+        if !self.outside
+            && (SELF_TIMER_TOOLS.iter().any(|timer| *timer == tool)
+                || timer_tool_lookup(&tool, &arguments))
+        {
+            return claude_turn::ToolAnswer::Allow;
+        }
+        // A turn that holds a peer session's message acts on text from
+        // outside the room. The trust saved for the people of this
+        // conversation, the owner's full trust included, was not given to
+        // that text: every tool of such a turn is put to the owner, a timer
+        // too, since its later turn would run as the session's own.
+        permission_within(
             self.ledger,
             self.owner,
             self.scope,
@@ -1219,8 +1405,13 @@ impl claude_turn::Host for PersonalClaudeHost<'_> {
             arguments,
             directory,
             self.queue,
+            280,
+            self.outside,
         )
         .await
+    }
+    fn outside_input(&mut self) {
+        self.outside = true;
     }
 }
 // Personal accounting is retained by its original session ledger and native
@@ -1254,7 +1445,7 @@ async fn run_claude(
     call: &str,
     context: &str,
     dispatch: &str,
-    input: &str,
+    input: Option<&str>,
     queue: &ApprovalQueue,
     started: Option<tokio::sync::oneshot::Sender<()>>,
     stream: Option<crate::run_controls::Stream>,
@@ -1267,13 +1458,15 @@ async fn run_claude(
         context,
         dispatch,
         queue,
+        self_started: input.is_none(),
+        outside: false,
     };
     claude_turn::run(
         wire,
         profile,
         scope,
         dispatch,
-        input,
+        input.unwrap_or(""),
         queue,
         started,
         stream,

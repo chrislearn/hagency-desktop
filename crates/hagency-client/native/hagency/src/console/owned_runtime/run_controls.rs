@@ -413,6 +413,10 @@ pub(super) struct Controller {
     card: Option<CardHost>,
     messages: Arc<super::messages::Outbox>,
     text: hagency_runtime::live_text::LiveText,
+    /// The card belongs to a turn nobody requested. No dispatch runs for it
+    /// on the server, so an action on it is not checked against one, and the
+    /// only action it takes is Stop.
+    own_turn: bool,
 }
 /// Pauses between attempts to open the Agent device for a run card: 20 s,
 /// 60 s, 180 s, then every 6 minutes, which stays under the homeserver's
@@ -467,12 +471,44 @@ impl Controller {
             messages: card.messages().ok_or(())?,
             text: card.live_text(),
             card: Some(card),
+            own_turn: false,
         })
     }
     pub(super) fn messages_only(route: super::messages::Route, root: &Path) -> Result<Self, ()> {
         let messages = Arc::new(super::messages::Outbox::open_route(root, route)?);
         let text = hagency_runtime::live_text::LiveText::with_messages(messages.clone());
-        Ok(Self { sender: None, card: None, messages, text })
+        Ok(Self { sender: None, card: None, messages, text, own_turn: false })
+    }
+    /// Delivery for a turn nobody requested (one the native CLI started by
+    /// itself, or one the host started for a timer): every message is
+    /// recorded as a report on `route`, the route of the run the session
+    /// last answered.
+    ///
+    /// With `control` the turn also gets a card of its own on the message
+    /// of that run, so the room sees that the Agent is working and the
+    /// requester of that run or the owner can stop it. Without it there is
+    /// no card and nobody can stop the turn from the room.
+    pub(super) fn self_started(
+        route: super::messages::Route,
+        root: &Path,
+        turn: &str,
+        control: Option<(native::Sender, Card)>,
+    ) -> Result<Self, ()> {
+        let messages = Arc::new(super::messages::Outbox::open_route(root, route)?);
+        let text = hagency_runtime::live_text::LiveText::with_messages(Arc::new(
+            super::messages::SelfStartedReports::new(messages.clone(), turn),
+        ));
+        let (sender, card) = match control {
+            Some((sender, card)) => {
+                // The card shows the turn's live text; what is settled goes
+                // out as reports, not through an outbox of the card's own.
+                let mut card = CardHost::new(card);
+                card.text = text.clone();
+                (Some(sender), Some(card))
+            }
+            None => (None, None),
+        };
+        Ok(Self { sender, card, messages, text, own_turn: true })
     }
     pub(super) fn finish(&self, state: CardState) {
         if let Some(card) = &self.card { card.finish(state); }
@@ -530,18 +566,35 @@ impl Controller {
                 continue;
             }
             for (received, action) in card.actions().await.unwrap_or_default() {
-                if !fresh_running(
-                    transport,
-                    lease,
-                    &prepared.dispatch,
-                    &prepared.execution_id,
-                    &mut cancel,
-                )
-                .await
+                // A requested run's action needs its dispatch still running
+                // on the server. A turn nobody requested has none: the card
+                // itself says who may act (`Card::permits`, checked on the
+                // authenticated sender), and it takes Stop only.
+                if !self.own_turn
+                    && !fresh_running(
+                        transport,
+                        lease,
+                        &prepared.dispatch,
+                        &prepared.execution_id,
+                        &mut cancel,
+                    )
+                    .await
                 {
                     return;
                 }
                 let (action, stop) = match action {
+                    // Words added to such a turn would be a request nobody
+                    // admitted, run under the confirmation the turn recorded
+                    // for itself. They are refused; the app keeps the text.
+                    Action::Steer { .. } if self.own_turn => {
+                        let _ = card.receipt(
+                            &received.event_id,
+                            &received.sender,
+                            "unsupported",
+                            false,
+                        );
+                        continue;
+                    }
                     Action::Steer { text } => (native::Action::Steer { text }, false),
                     Action::Interrupt {} => (native::Action::Interrupt, true),
                     Action::Queue { .. } => {

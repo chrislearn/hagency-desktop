@@ -37,22 +37,78 @@ impl SessionKey {
         }
     }
 }
+/// The run a retained session answered last. A turn the native CLI starts by
+/// itself while the session is parked reports to that run's room and thread
+/// (`idle_turns`).
+#[derive(Clone)]
+pub(super) struct Anchor {
+    pub dispatch: inbox::Dispatch,
+    pub execution: String,
+}
+impl Anchor {
+    /// Whether the run's request reached this host as ciphertext. Every send
+    /// path reads that from the request record: an empty body is a request
+    /// only the Agent's device could read, and what is reported for it goes
+    /// out encrypted or not at all.
+    pub fn encrypted(&self) -> bool {
+        self.dispatch.body.is_empty()
+    }
+    /// An anchor read back from the ledger, for a run that ended earlier. The
+    /// stored record gives up its body once the answer is proved sent, so an
+    /// empty body no longer tells anything; `encrypted` is what was noted
+    /// while the body was still there. The record is put back into the form
+    /// the send paths read: no body for an encrypted request, and a
+    /// one-character stand-in for a plain one. The stand-in is never shown
+    /// or sent; only its presence is read.
+    pub fn restored(mut dispatch: inbox::Dispatch, execution: String, encrypted: bool) -> Self {
+        if encrypted {
+            dispatch.body.clear();
+        } else if dispatch.body.is_empty() {
+            dispatch.body.push('-');
+        }
+        Self { dispatch, execution }
+    }
+}
 /// Only idle, settled providers enter this bounded LRU. Eviction and host stop
 /// use the same whole-process-tree custody as a cancelled active call. Durable
 /// native context remains on disk when an idle process is evicted.
 #[derive(Default)]
-pub(super) struct Sessions(std::collections::VecDeque<(SessionKey, Provider)>);
+pub(super) struct Sessions(std::collections::VecDeque<(SessionKey, Provider, Anchor)>);
 impl Sessions {
     pub fn take(&mut self, key: &SessionKey) -> Option<Provider> {
-        let index = self.0.iter().position(|(saved, _)| saved == key)?;
-        self.0.remove(index).map(|(_, provider)| provider)
+        let index = self.0.iter().position(|(saved, _, _)| saved == key)?;
+        self.0.remove(index).map(|(_, provider, _)| provider)
     }
-    pub fn retain(&mut self, key: SessionKey, mut provider: Provider) {
+    pub fn retain(&mut self, key: SessionKey, mut provider: Provider, anchor: Anchor) {
         provider.session.park();
         if self.0.len() == 8 {
             self.0.pop_front();
         }
-        self.0.push_back((key, provider));
+        self.0.push_back((key, provider, anchor));
+    }
+    /// Look once, without waiting, at every parked session. The first one
+    /// whose native CLI started a turn by itself leaves the cache with that
+    /// turn open: the caller runs it or stops the process. A session that can
+    /// no longer be reused is stopped here, as the reuse check of its next
+    /// request would have done; its conversation resumes from disk.
+    pub async fn take_self_started(&mut self) -> Option<(SessionKey, Provider, Anchor)> {
+        let mut index = 0;
+        while index < self.0.len() {
+            match self.0[index].1.session.poll_self_started().await {
+                Ok(false) => index += 1,
+                Ok(true) => return self.0.remove(index),
+                Err(error) => {
+                    let (kind, detail) = error.diagnostic();
+                    tracing::warn!(code = "agent_parked_session_closed", kind, detail,
+                        event = error.diagnostic_event(),
+                        "A parked native session can no longer be reused; it is stopped");
+                    if let Some((_, mut provider, _)) = self.0.remove(index) {
+                        let _ = provider.stop().await;
+                    }
+                }
+            }
+        }
+        None
     }
 }
 

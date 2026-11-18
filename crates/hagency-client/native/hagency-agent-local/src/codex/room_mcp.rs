@@ -250,7 +250,12 @@ fn identity(params: &Value) -> Option<(Key, String)> {
     let thread = valid(&source["thread_id"])?;
     let turn = valid(&source["turn_id"])?;
     let call = valid(&meta["callId"])?;
-    if meta["threadId"] != thread || meta["itemId"] != call {
+    // Codex 0.167 gave the call's id as its item id as well. Since 0.169 the
+    // item id is the model's own name for the call and differs from it, so
+    // every room tool was refused there. Nothing rests on the item id: a call
+    // is bound to a turn observed on this process's stream, and its call id
+    // is accepted once.
+    if meta["threadId"] != thread {
         return None;
     }
     Some(((thread, turn), call))

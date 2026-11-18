@@ -11,7 +11,7 @@ async fn claude_inert_startup_frames_and_extra_acknowledgement_keys_do_not_fail_
         &f.reference,
         &mut f.ledger,
         &f.scope,
-        Some(&PathBuf::from(env!("CARGO_BIN_EXE_hagency-local-probe"))),
+        Some(&guardian()),
     )
     .await
     .unwrap();

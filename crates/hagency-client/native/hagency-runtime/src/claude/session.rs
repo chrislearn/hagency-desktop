@@ -299,6 +299,7 @@ impl<R, W, E> SessionDriver<R, W, E> {
                         }
                         self.session_id = Some(session_id.clone());
                         self.awaiting_init = false;
+                        self.completion.judge_start();
                         self.wire.read_resets(false);
                     }
                     Some(bound) if bound == session_id && !init && !self.awaiting_init => {}
@@ -314,6 +315,8 @@ impl<R, W, E> SessionDriver<R, W, E> {
                     self.completion
                         .steers
                         .lifecycle(payload, &self.wire, stopped)?;
+                    self.completion
+                        .note_command(payload, self.prompt_id.as_deref());
                 }
                 if *kind == EventKind::Result
                     && self
@@ -634,6 +637,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin, E: AsyncRead + Unpin> SessionD
             {
                 return Err(Error::Identity);
             }
+        }
+        if self.awaiting_init && *kind == EventKind::CommandLifecycle {
+            self.completion
+                .note_command(payload, self.prompt_id.as_deref());
         }
         // A local command reports its own progress before init (`/compact`:
         // status frames; `/clear`: the emptied task list). For the owner's

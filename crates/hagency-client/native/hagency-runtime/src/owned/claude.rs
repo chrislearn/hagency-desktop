@@ -208,6 +208,23 @@ impl OwnedClaudeSession {
         let result = operation.runner.session.prepare_followup(limits).await;
         operation.finish(result)
     }
+    /// See `SessionDriver::poll_idle`. A shared process serves other people's
+    /// admitted calls only and never runs a turn of its own.
+    pub async fn poll_idle(&mut self, limits: Limits) -> Result<bool, Error> {
+        if self.shared.is_some() || !self.session.can_followup() {
+            return Err(Error::State);
+        }
+        let operation = Operation::new(self)?;
+        let result = operation.runner.session.poll_idle(limits).await;
+        operation.finish(result)
+    }
+    pub fn self_started_turn(&self) -> bool {
+        self.session.self_started_turn()
+    }
+    /// See `SessionDriver::outside_input`.
+    pub fn outside_input(&self) -> bool {
+        self.session.outside_input()
+    }
     pub fn usage_snapshot_requested(&self) -> bool {
         self.session.usage_snapshot_requested()
     }

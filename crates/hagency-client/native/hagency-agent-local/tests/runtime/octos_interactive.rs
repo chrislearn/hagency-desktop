@@ -59,9 +59,7 @@ fn file_gate() -> Arc<FileGate> {
 #[tokio::test]
 async fn octos_refuses_a_kernel_that_cannot_confirm_scoped_startup() {
     let mut f = Fixture::new(Kind::Octos, "octos_scope_legacy", ToolPolicy::Deny);
-    let guardian = std::env::var_os("HAGENCY_TEST_GUARDIAN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_hagency-local-probe")));
+    let guardian = guardian();
     let mut process = spawn_for_scope_with_guardian(
         &f.profile, &f.reference, &mut f.ledger, &f.scope, Some(&guardian),
     ).await.unwrap();

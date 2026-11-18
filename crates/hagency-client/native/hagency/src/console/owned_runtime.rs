@@ -1,5 +1,6 @@
 //! Explicit owner-started, chat-only Codex host. No legacy execution fallback.
 mod drain;
+mod idle_turns;
 pub(in crate::console) mod messages;
 pub(in crate::console) mod e2ee;
 mod provider_custody;
@@ -7,6 +8,7 @@ pub(in crate::console) mod questions;
 mod room_tools;
 pub(in crate::console) mod run_controls;
 mod service;
+mod wakeups;
 #[cfg(unix)]
 mod working_directory;
 use super::lifecycle::{RetainedTask, TaskCustody};
@@ -1902,6 +1904,9 @@ async fn execution_loop_with_gate<T: Transport>(
 ) -> Result<(), RuntimeError> {
     let mut reported = BTreeSet::new();
     let mut sessions = provider_custody::Sessions::default();
+    // Runs that hold reports of a turn the native CLI started by itself.
+    let mut undelivered = idle_turns::recover(console, lease, ledger, owner, config);
+    let mut timers = wakeups::Clock::new();
     let mut reply_cursor = String::new();
     let mut finish_cursors = [String::new(), String::new(), String::new()];
     loop {
@@ -1993,6 +1998,21 @@ async fn execution_loop_with_gate<T: Transport>(
         if console.supports_group_crypto() {
             e2ee::pump_candidates(console, lease, config, cancel).await?;
         }
+        // A parked session may have started a turn by itself (a timer, a peer
+        // message). It runs before the next request is taken, so a request
+        // never meets a session that is in the middle of such a turn.
+        idle_turns::pump(
+            console, lease, ledger, owner, config, cancel, status, &mut sessions, &mut undelivered,
+        )
+        .await?;
+        // A timer the Agent set with the host is due: its turn runs here,
+        // between requests, like the turn above.
+        wakeups::pump(
+            console, lease, ledger, owner, config, cancel, status, &mut sessions, &mut undelivered,
+            &mut timers,
+        )
+        .await?;
+        idle_turns::deliver(console, lease, config, cancel, &mut undelivered).await?;
         let events = match operation(
             console,
             cancel,
@@ -2353,19 +2373,28 @@ async fn send_personal_message<T: Transport>(
         if !fresh_running(transport, lease, dispatch, execution, cancel).await { return Err(()); }
         return messages.send_next(device, encrypted, None, Some(pending.sequence)).await;
     }
+    // A report that stays in custody says at which step it was held. The
+    // step is the host's own word; nothing of the report is logged.
+    let held = |stage: &'static str| {
+        tracing::warn!(code = "agent_report_held", stage,
+            "A report of an Agent's own turn was not sent at this step; it stays in custody");
+    };
     let host = transport.approval_host().ok_or(())?;
     let puppet = device.approval_client().user_id().ok_or(())?.to_string();
     let response = operation(transport, cancel, Op::AuthorizeMessage {
         lease: lease.clone(), binding_id: dispatch.binding_id.clone(),
         binding_generation: dispatch.binding_generation, room_id: dispatch.room_id.clone(),
         puppet_mxid: puppet.clone(),
-    }).await.map_err(|_| ())?;
-    let Response::MessageAuthorized(proof) = response else { return Err(()); };
+    }).await.map_err(|error| {
+        if !matches!(error, RuntimeError::Stopped) { held("authority_request"); }
+    })?;
+    let Response::MessageAuthorized(proof) = response else { held("authority_answer"); return Err(()); };
     let permit = messages::PersonalReportPermit::new(
         &proof, lease, dispatch, execution, host.pin.generation, &puppet, wall_ms(),
-    )?;
+    ).inspect_err(|_| held("authority_proof"))?;
     if *cancel.borrow() { return Err(()); }
     messages.send_next(device, encrypted, Some(&permit), Some(pending.sequence)).await
+        .inspect_err(|_| if !*cancel.borrow() { held(if encrypted { "send_encrypted" } else { "send" }) })
 }
 struct LiveToolGate {
     console: PinnedConsole,
@@ -2905,7 +2934,7 @@ async fn run_turn<T: Transport>(
             provider.session.verify_host_environment().await.inspect_err(|error|{provider_failure("provider_environment", error);})?;
             provider.session.require_local_account().await.inspect_err(|error|{provider_failure("provider_account", error);})?;
             if room_tools {
-                provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files()).await
+                provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files().with_timers()).await
                     .inspect_err(|error|{provider_failure("provider_room_tools", error);})?;
             }
             provider.session.open_context(ledger,&scope,&profile).await.inspect_err(|error|{provider_failure("provider_context", error);})?;
@@ -3007,7 +3036,12 @@ async fn run_turn<T: Transport>(
         &prepared.execution_id,
         reply,
     ))?;
-    if retain { sessions.retain(session_key, provider); }
+    if retain {
+        sessions.retain(session_key, provider, provider_custody::Anchor {
+            dispatch: prepared.dispatch.clone(),
+            execution: prepared.execution_id.clone(),
+        });
+    }
     Ok(None)
 }
 

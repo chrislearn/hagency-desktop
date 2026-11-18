@@ -19,6 +19,8 @@ mod steer;
 mod owner_reset;
 #[path = "claude_session/prompt_reply_race.rs"]
 mod prompt_reply_race;
+#[path = "claude_session/self_started.rs"]
+mod self_started;
 
 struct FlushProbe {
     fail: bool,

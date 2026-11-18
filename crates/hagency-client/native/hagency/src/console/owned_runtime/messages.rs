@@ -20,6 +20,11 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
+/// Leads the identity of every message of a turn the native CLI started by
+/// itself (`idle_turns`). Like an Octos report, such a message has no running
+/// dispatch to be sent under: it is recorded as a report (version 2) and each
+/// send obtains its own delivery-only authority.
+const SELF_STARTED_PREFIX: &str = "self-started:";
 const MAX_RECORDS: usize = 16_384;
 const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
 // JSON escaping and encrypted serialization can exceed the original UTF-8.
@@ -724,6 +729,186 @@ impl Outbox {
         Ok(())
     }
 }
+/// Records every message of one self-started turn as a report on the route
+/// of the run its session last answered. `turn` keeps the identities of two
+/// such turns apart.
+pub(super) struct SelfStartedReports {
+    outbox: std::sync::Arc<Outbox>,
+    turn: String,
+}
+impl SelfStartedReports {
+    pub(super) fn new(outbox: std::sync::Arc<Outbox>, turn: &str) -> Self {
+        Self { outbox, turn: turn.into() }
+    }
+}
+impl MessageSink for SelfStartedReports {
+    fn record(&self, id: &str, text: &str) -> Result<(), MessageError> {
+        self.outbox.record(&format!("{SELF_STARTED_PREFIX}{}:{id}", self.turn), text)
+    }
+}
+/// Runs whose outbox may hold reports of a self-started turn that are not
+/// delivered yet. Such a run ended long before, so nothing else returns to
+/// its outbox after a restart; these sealed notes say where to look. A note
+/// names the run only (its dispatch and execution) and is removed once the
+/// outbox has nothing pending.
+pub(super) mod undelivered {
+    use super::{Path, PathBuf};
+    const MAX_NOTES: usize = 1024;
+    fn directory(device_root: &Path) -> Result<(PathBuf, super::StoreCipher), ()> {
+        let root = device_root.join("outgoing-messages");
+        hagency_store::private::directory(&root).map_err(|_| ())?;
+        let cipher = super::cipher(&root)?;
+        let directory = root.join("self-started-pending");
+        hagency_store::private::directory(&directory).map_err(|_| ())?;
+        Ok((directory, cipher))
+    }
+    fn name(dispatch: &str, execution: &str) -> Result<String, ()> {
+        Ok(format!("{}.sealed", super::hash(serde_json::to_vec(&(dispatch, execution)).map_err(|_| ())?)))
+    }
+    /// `encrypted`: the run's request came as ciphertext. It is noted here
+    /// because the ledger's record of the run cannot tell once its answer is
+    /// sent, and a restart must not then hold back, or send in the clear,
+    /// what the run still has to deliver.
+    pub(in crate::console::owned_runtime) fn note(device_root: &Path, dispatch: &str, execution: &str, encrypted: bool) -> Result<(), ()> {
+        let (directory, cipher) = directory(device_root)?;
+        let path = directory.join(name(dispatch, execution)?);
+        if path.exists() {
+            return Ok(());
+        }
+        if std::fs::read_dir(&directory).map_err(|_| ())?.count() >= MAX_NOTES {
+            return Err(());
+        }
+        let bytes = cipher.encrypt_value(&(dispatch, execution, encrypted)).map_err(|_| ())?;
+        hagency_store::private::write_new(&path, &bytes).map_err(|_| ())
+    }
+    /// Every noted run. A note that cannot be read is skipped, not removed.
+    /// An Agent that never had a note gets no folder and no key from a look.
+    /// A note from before the third field existed is read as encrypted: its
+    /// reports are then sent encrypted or stay in custody.
+    pub(in crate::console::owned_runtime) fn list(device_root: &Path) -> Vec<(String, String, bool)> {
+        if !device_root.join("outgoing-messages").join("self-started-pending").is_dir() {
+            return Vec::new();
+        }
+        let Ok((directory, cipher)) = directory(device_root) else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(&directory) else { return Vec::new() };
+        entries
+            .take(MAX_NOTES)
+            .filter_map(|entry| {
+                let bytes = super::read(&entry.ok()?.path(), 16 * 1024).ok()?;
+                cipher.decrypt_value::<(String, String, bool)>(&bytes).ok().or_else(|| {
+                    let (dispatch, execution) = cipher.decrypt_value::<(String, String)>(&bytes).ok()?;
+                    Some((dispatch, execution, true))
+                })
+            })
+            .collect()
+    }
+    pub(in crate::console::owned_runtime) fn forget(device_root: &Path, dispatch: &str, execution: &str) {
+        if let Ok(name) = name(dispatch, execution) {
+            let _ = std::fs::remove_file(
+                device_root.join("outgoing-messages").join("self-started-pending").join(name),
+            );
+        }
+    }
+}
+/// Timers a local Agent set for its conversation (`wakeups`), sealed with the
+/// outbox key of the Agent's device. A host that does not know them leaves
+/// the folder alone.
+pub(super) mod timers {
+    use super::{Path, PathBuf};
+    use serde::{Deserialize, Serialize};
+    const MAX_TIMERS: usize = 512;
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(in crate::console::owned_runtime) struct Timer {
+        pub version: u8,
+        pub id: String,
+        /// The run the Agent answered when it set the timer. The turn the
+        /// timer starts reports to that run's room and thread.
+        pub dispatch: String,
+        pub execution: String,
+        pub room: String,
+        pub thread: String,
+        /// The request of that run came as ciphertext: what the timer's turn
+        /// reports is sent encrypted or not at all. Kept here because the
+        /// ledger's record of the run cannot tell once its answer is sent.
+        #[serde(default = "unknown_is_encrypted")]
+        pub encrypted: bool,
+        /// Unix seconds.
+        pub due: i64,
+        pub created: i64,
+        pub note: String,
+        pub repeat: Option<u64>,
+        /// Turns started for the current due time. Written before a turn
+        /// starts, so a restart in the middle of it is counted.
+        pub attempts: u8,
+        /// Turns that ran to their end.
+        pub fired: u32,
+    }
+    fn unknown_is_encrypted() -> bool {
+        true
+    }
+    fn directory(device_root: &Path) -> Result<(PathBuf, super::StoreCipher), ()> {
+        let root = device_root.join("outgoing-messages");
+        hagency_store::private::directory(&root).map_err(|_| ())?;
+        let cipher = super::cipher(&root)?;
+        let directory = root.join("timers");
+        hagency_store::private::directory(&directory).map_err(|_| ())?;
+        Ok((directory, cipher))
+    }
+    fn name(id: &str) -> Result<String, ()> {
+        // The id came from this host; it is still never a path.
+        if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Err(());
+        }
+        Ok(format!("{id}.sealed"))
+    }
+    /// True where a timer may have been saved: a look creates no folder and
+    /// no key for an Agent that never set one.
+    pub(in crate::console::owned_runtime) fn any(device_root: &Path) -> bool {
+        device_root.join("outgoing-messages").join("timers").is_dir()
+    }
+    pub(in crate::console::owned_runtime) fn save(device_root: &Path, timer: &Timer) -> Result<(), ()> {
+        let (directory, cipher) = directory(device_root)?;
+        let path = directory.join(name(&timer.id)?);
+        let bytes = cipher.encrypt_value(timer).map_err(|_| ())?;
+        if path.exists() {
+            return hagency_store::private::replace(&path, &bytes).map_err(|_| ());
+        }
+        if std::fs::read_dir(&directory).map_err(|_| ())?.count() >= MAX_TIMERS {
+            return Err(());
+        }
+        hagency_store::private::write_new(&path, &bytes).map_err(|_| ())
+    }
+    /// Every saved timer. One that cannot be read is skipped, not removed.
+    pub(in crate::console::owned_runtime) fn list(device_root: &Path) -> Vec<Timer> {
+        if !any(device_root) {
+            return Vec::new();
+        }
+        let Ok((directory, cipher)) = directory(device_root) else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(&directory) else { return Vec::new() };
+        entries
+            .take(MAX_TIMERS)
+            .filter_map(|entry| {
+                let bytes = super::read(&entry.ok()?.path(), 64 * 1024).ok()?;
+                cipher.decrypt_value::<Timer>(&bytes).ok().filter(|timer| timer.version == 1)
+            })
+            .collect()
+    }
+    /// The saved timer `id`, if it is still set.
+    pub(in crate::console::owned_runtime) fn get(device_root: &Path, id: &str) -> Option<Timer> {
+        if !any(device_root) {
+            return None;
+        }
+        let (directory, cipher) = directory(device_root).ok()?;
+        let bytes = super::read(&directory.join(name(id).ok()?), 64 * 1024).ok()?;
+        cipher.decrypt_value::<Timer>(&bytes).ok().filter(|timer| timer.version == 1 && timer.id == id)
+    }
+    pub(in crate::console::owned_runtime) fn remove(device_root: &Path, id: &str) {
+        if let Ok(name) = name(id) {
+            let _ = std::fs::remove_file(device_root.join("outgoing-messages").join("timers").join(name));
+        }
+    }
+}
 impl MessageSink for Outbox {
     fn record(&self, id: &str, text: &str) -> Result<(), MessageError> {
         if id.is_empty() || id.len() > 2048 || id.chars().any(char::is_control)
@@ -756,9 +941,10 @@ impl MessageSink for Outbox {
             .checked_add(1)
             .ok_or(MessageError)?;
         // Ordinary run replies keep their v1 format and recovery behavior.
-        // Only host-constructed, explicitly attributed Octos report IDs opt
-        // into the new durable-message contract.
-        let is_report = id.starts_with("octos:report:");
+        // Only host-constructed, explicitly attributed Octos report IDs and
+        // the messages of a self-started turn opt into the new
+        // durable-message contract.
+        let is_report = id.starts_with("octos:report:") || id.starts_with(SELF_STARTED_PREFIX);
         let report_id = if is_report {
             let mut random = [0u8; 32];
             getrandom::fill(&mut random).map_err(|_| MessageError)?;

@@ -34,7 +34,8 @@ async fn installed_claude_delivers_progress_before_waiting_for_a_question() {
     let port: u16 = port.trim().parse().unwrap();
     let binary = serde_json::to_string(&executable).unwrap();
     fs::write(&f.profile.executable, format!("#!/usr/bin/env python3\nimport os,sys\nos.environ['ANTHROPIC_API_KEY']='offline-contract'\nos.environ['ANTHROPIC_BASE_URL']='http://127.0.0.1:{port}'\nos.environ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1'\nos.execv({binary}, [{binary}]+sys.argv[1:])\n")).unwrap();
-    let guardian = std::path::Path::new(env!("CARGO_BIN_EXE_hagency-local-probe"));
+    let guardian = guardian();
+    let guardian = guardian.as_path();
     let mut process = spawn_for_scope_with_guardian(
         &f.profile, &f.reference, &mut f.ledger, &f.scope, Some(guardian),
     ).await.unwrap();
@@ -89,7 +90,8 @@ async fn installed_claude_answers_first_and_reports_its_background_result_separa
     let port: u16 = port.trim().parse().unwrap();
     let binary = serde_json::to_string(&executable).unwrap();
     fs::write(&f.profile.executable, format!("#!/usr/bin/env python3\nimport os,sys\nos.environ['ANTHROPIC_API_KEY']='offline-contract'\nos.environ['ANTHROPIC_BASE_URL']='http://127.0.0.1:{port}'\nos.environ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']='1'\nos.execv({binary}, [{binary}]+sys.argv[1:])\n")).unwrap();
-    let guardian = std::path::Path::new(env!("CARGO_BIN_EXE_hagency-local-probe"));
+    let guardian = guardian();
+    let guardian = guardian.as_path();
     let mut process = spawn_for_scope_with_guardian(
         &f.profile, &f.reference, &mut f.ledger, &f.scope, Some(guardian),
     ).await.unwrap();
