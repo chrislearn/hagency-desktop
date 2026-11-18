@@ -601,6 +601,182 @@ impl ::hagency::native_owner::MatrixTokenSource for SdkSource {
     }
 }
 
+
+async fn authorize(
+    client: &Client,
+    device: Arc<Mutex<Option<String>>>,
+    code: &'static str,
+) -> anyhow::Result<()> {
+    oauth_browser_login(client, false, move |authorization| async move {
+        let url = Url::parse(&authorization)?;
+        let params: std::collections::HashMap<_, _> = url
+            .query_pairs()
+            .map(|(a, b)| (a.into_owned(), b.into_owned()))
+            .collect();
+        *device.lock().unwrap() = Some(
+            params["scope"]
+                .split_whitespace()
+                .find_map(|s| s.split_once("device:").map(|(_, d)| d.to_owned()))
+                .unwrap(),
+        );
+        let mut redirect = Url::parse(&params["redirect_uri"])?;
+        redirect
+            .query_pairs_mut()
+            .append_pair("code", code)
+            .append_pair("state", &params["state"]);
+        crate::http::client_builder()
+            .build()?
+            .get(redirect)
+            .send()
+            .await?;
+        Ok(())
+    })
+    .await
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+#[tokio::test]
+async fn oauth_signin_with_missing_history_keys_preserves_old_data_and_saves_new_session() {
+    use crate::persistence::{self, credential_state as credentials};
+    const NAME: &str = "login::homeserver::oauth_tests::oauth_signin_with_missing_history_keys_preserves_old_data_and_saves_new_session";
+    if credentials::tests::isolated_case(NAME, "HAGENCY_MISSING_HISTORY_CHILD") {
+        return;
+    }
+
+    let fixture = Fixture::new();
+    let root = crate::app_data_dir();
+    let user = matrix_sdk::ruma::user_id!("@fixture:localhost");
+    let path = persistence::session_file_path(user);
+    let state = path.parent().unwrap();
+    hagency_store::private::directory(state.parent().unwrap()).unwrap();
+    hagency_store::private::directory(state).unwrap();
+    let mut old = credentials::tests::session_fixture();
+    old.user_session = serde_json::from_value(json!({
+        "user_id": user, "device_id": "OLD", "access_token": "old-token"
+    }))
+    .unwrap();
+    old.client_session.homeserver = format!("{}/", fixture.origin);
+    let retained = path.with_file_name("retained_db.json");
+    hagency_store::private::write_new(
+        &retained,
+        &serde_json::to_vec(&[&old.client_session]).unwrap(),
+    )
+    .unwrap();
+    hagency_store::private::write_new(&path, &serde_json::to_vec(&old).unwrap()).unwrap();
+    let original = credentials::tests::fake_service(root);
+    credentials::test_load(original.clone(), path.clone())
+        .await
+        .unwrap();
+    assert!(credentials::test_shutdown(&original));
+    drop(original);
+    let old_session = std::fs::read(&path).unwrap();
+    let old_list = std::fs::read(&retained).unwrap();
+    let old_db = root.join(&old.client_session.db_path);
+    std::fs::create_dir_all(&old_db).unwrap();
+    std::fs::write(old_db.join("history"), b"preserved history").unwrap();
+
+    // The same installation and files survive, but its native store lost the keys.
+    let service = credentials::tests::install_empty_store(root);
+    let candidate = Client::builder()
+        .homeserver_url(&fixture.origin)
+        .build()
+        .await
+        .unwrap();
+    let fresh = persistence::ClientSessionPersisted {
+        homeserver: format!("{}/", fixture.origin),
+        db_path: "db_new".into(),
+        passphrase: "new-database-secret".into(),
+    };
+    credentials::register_preauth(&candidate, fresh.clone())
+        .await
+        .unwrap();
+    authorize(&candidate, fixture.device.clone(), "fixture-code")
+        .await
+        .unwrap();
+    let (active, _) = crate::sliding_sync::finish_oauth_login(
+        candidate,
+        fresh.clone(),
+        crate::account_session::epoch(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(active.whoami().await.unwrap().user_id, user);
+    let saved = credentials::test_load(service, path.clone()).await.unwrap();
+    assert_eq!(saved.client_session.db_path, fresh.db_path);
+    assert_eq!(saved.client_session.passphrase, fresh.passphrase);
+    assert_eq!(
+        saved.user_session.meta().device_id.as_str(),
+        active.device_id().unwrap().as_str()
+    );
+    assert!(root.join(&fresh.db_path).is_dir());
+    assert_eq!(
+        std::fs::read(old_db.join("history")).unwrap(),
+        b"preserved history"
+    );
+    assert_eq!(std::fs::read(retained).unwrap(), old_list);
+    let archive = std::fs::read_dir(state)
+        .unwrap()
+        .flatten()
+        .find(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("session.unavailable-")
+        })
+        .unwrap();
+    assert_eq!(std::fs::read(archive.path()).unwrap(), old_session);
+    let requests = fixture.requests.lock().unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|(_, b)| b["grant_type"] == "authorization_code")
+            .count(),
+        1
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|(route, _)| route.contains("/auth/revoke "))
+    );
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+#[tokio::test]
+async fn oauth_signin_reports_local_save_failure_and_allows_retry() {
+    use crate::persistence::{self, credential_state as credentials};
+    const NAME: &str = "login::homeserver::oauth_tests::oauth_signin_reports_local_save_failure_and_allows_retry";
+    if credentials::tests::isolated_case(NAME, "HAGENCY_SIGNIN_RETRY_CHILD") {
+        return;
+    }
+    let fixture = Fixture::new();
+    credentials::tests::install_empty_store(crate::app_data_dir());
+    let user = matrix_sdk::ruma::user_id!("@fixture:localhost");
+    let path = persistence::session_file_path(user);
+    let state = path.parent().unwrap();
+    hagency_store::private::directory(state.parent().unwrap()).unwrap();
+    hagency_store::private::directory(state).unwrap();
+    let lock = hagency_store::credential_vault::document::Document::open(&path, 1024).unwrap();
+
+    let signin = || async {
+        let client = Client::builder().homeserver_url(&fixture.origin).build().await.unwrap();
+        let fresh = persistence::ClientSessionPersisted {
+            homeserver: format!("{}/", fixture.origin),
+            db_path: format!("db_{:016x}", rand::random::<u64>()).into(),
+            passphrase: "new-database-secret".into(),
+        };
+        credentials::register_preauth(&client, fresh.clone()).await.unwrap();
+        authorize(&client, fixture.device.clone(), "fixture-code").await.unwrap();
+        crate::sliding_sync::finish_oauth_login(client, fresh, crate::account_session::epoch()).await
+    };
+    let error = signin().await.unwrap_err();
+    assert!(error.to_string().contains("could not save your sign-in"));
+    assert!(!path.exists());
+    drop(lock);
+    let (client, _) = signin().await.unwrap();
+    assert_eq!(client.whoami().await.unwrap().user_id, user);
+    assert!(path.is_file());
+}
+
 #[tokio::test]
 async fn oauth_reauthentication_mismatch_revokes_only_new_grant_and_retains_previous_session() {
     let fixture = Fixture::new();
@@ -610,37 +786,6 @@ async fn oauth_reauthentication_mismatch_revokes_only_new_grant_and_retains_prev
         .build()
         .await
         .unwrap();
-    async fn authorize(
-        client: &Client,
-        device: Arc<Mutex<Option<String>>>,
-        code: &'static str,
-    ) -> anyhow::Result<()> {
-        oauth_browser_login(client, false, move |authorization| async move {
-            let url = Url::parse(&authorization)?;
-            let params: std::collections::HashMap<_, _> = url
-                .query_pairs()
-                .map(|(a, b)| (a.into_owned(), b.into_owned()))
-                .collect();
-            *device.lock().unwrap() = Some(
-                params["scope"]
-                    .split_whitespace()
-                    .find_map(|s| s.split_once("device:").map(|(_, d)| d.to_owned()))
-                    .unwrap(),
-            );
-            let mut redirect = Url::parse(&params["redirect_uri"])?;
-            redirect
-                .query_pairs_mut()
-                .append_pair("code", code)
-                .append_pair("state", &params["state"]);
-            crate::http::client_builder()
-                .build()?
-                .get(redirect)
-                .send()
-                .await?;
-            Ok(())
-        })
-        .await
-    }
     authorize(&initial, fixture.device.clone(), "fixture-code")
         .await
         .unwrap();

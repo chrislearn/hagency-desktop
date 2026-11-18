@@ -411,7 +411,8 @@ async fn credential_migration_retained_facade_matches_actual_device_without_reis
     let puts = *fake.puts.lock().unwrap();
     for (device, matches) in [(expected.device.as_str(), true), ("NEW_DEVICE", false)] {
         let client = sdk_client(&server.uri(), expected.owner.clone(), device).await;
-        let selected = retained_session_on(service.clone(), &client).await.unwrap();
+        let (selected, unavailable) = retained_session_on(service.clone(), &client).await.unwrap();
+        assert!(!unavailable);
         if matches {
             let selected = selected
                 .expect("the exact original SDK device must recover its data-only material");
@@ -434,6 +435,12 @@ async fn credential_migration_retained_facade_matches_actual_device_without_reis
             reference
         );
     }
+    fake.remove(&reference).unwrap();
+    let client = sdk_client(&server.uri(), expected.owner.clone(), "NEW_DEVICE").await;
+    let (selected, unavailable) = retained_session_on(service.clone(), &client).await.unwrap();
+    assert!(selected.is_none() && unavailable);
+    assert_eq!(classify(service.retained_database(&expected).unwrap_err()), Error::Missing);
+    assert_eq!(*fake.puts.lock().unwrap(), puts);
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert!(service.worker.shutdown(std::time::Duration::from_secs(2)));
 }
@@ -557,6 +564,7 @@ async fn credential_migration_retained_old_absolute_path_preserves_relocated_dat
     let selected = retained_session_on(service.clone(), &client)
         .await
         .unwrap()
+        .0
         .expect("same actual SDK identity must preserve relocated original material");
     assert_eq!(selected.db_path, old_absolute);
     assert_eq!(selected.passphrase, session.client_session.passphrase);

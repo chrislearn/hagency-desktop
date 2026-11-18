@@ -80,6 +80,7 @@ impl Service {
         bytes: &[u8],
         account_hash: &str,
         installation: &str,
+        allow_missing: bool,
     ) -> Result<Vec<RetainedEntry>> {
         let mut retained: Retained = serde_json::from_slice(bytes)?;
         ensure!(
@@ -97,11 +98,14 @@ impl Service {
             entry
                 .identity
                 .validate(&self.root, account_hash, &entry.database)?;
-            let secret = self.vault.load(
+            match self.vault.load(
                 &entry.database.reference,
                 &entry.identity.scope(installation)?,
-            )?;
-            ensure!(!secret.is_empty(), "credential_original_secret_missing");
+            ) {
+                Ok(secret) => ensure!(!secret.is_empty(), "credential_original_secret_missing"),
+                Err(Error::Missing) if allow_missing => (),
+                Err(error) => return Err(error.into()),
+            }
             if let RetainedIdentity::LegacyDatabase { account_hash, .. } = &entry.identity {
                 entry.database.legacy_account = Some(account_hash.clone());
             }
@@ -211,7 +215,8 @@ impl Service {
         incoming: Option<ClientSessionPersisted>,
         epoch: u64,
     ) -> Result<Vec<PathBuf>> {
-        self.retain_worker_with(path, owner, incoming, epoch, false)
+        let allow_missing = incoming.is_some();
+        self.retain_worker_with(path, owner, incoming, epoch, false, allow_missing)
     }
     /// `session_held`: the caller holds this account's session document, which
     /// is absent or still in the legacy form.
@@ -222,6 +227,7 @@ impl Service {
         incoming: Option<ClientSessionPersisted>,
         epoch: u64,
         session_held: bool,
+        allow_missing: bool,
     ) -> Result<Vec<PathBuf>> {
         ensure!(
             crate::account_session::epoch() == epoch,
@@ -258,7 +264,12 @@ impl Service {
             if is_legacy {
                 legacy = serde_json::from_slice(source.bytes())?;
             } else {
-                entries = self.retained_entries(source.bytes(), &hash, &installation)?;
+                entries = self.retained_entries(
+                    source.bytes(),
+                    &hash,
+                    &installation,
+                    allow_missing && !has_journal,
+                )?;
             }
         }
         let pending = doc.pending(&scope)?;
@@ -275,7 +286,7 @@ impl Service {
             } else {
                 let verified = doc.begin(&scope, source.as_ref(), journal.references.clone())?;
                 let (prepared, bytes) = doc.resume_candidate(&verified)?;
-                let recovered = self.retained_entries(&bytes, &hash, &installation)?;
+                let recovered = self.retained_entries(&bytes, &hash, &installation, false)?;
                 ensure!(
                     verified.references
                         == recovered
@@ -321,7 +332,14 @@ impl Service {
                 );
                 drop(_gate);
                 drop(doc);
-                return self.retain_worker_with(path, owner, incoming, epoch, session_held);
+                return self.retain_worker_with(
+                    path,
+                    owner,
+                    incoming,
+                    epoch,
+                    session_held,
+                    allow_missing,
+                );
             }
         }
         if let Some(incoming) = incoming {
@@ -528,11 +546,24 @@ impl Service {
         identity: &Identity,
         installation: &str,
     ) -> Result<Zeroizing<String>> {
+        let scope = self.database_reference_scope(database, identity, installation)?;
+        let bytes = self.vault.load(&database.reference, &scope)?;
+        ensure!(!bytes.is_empty(), "credential_original_secret_missing");
+        Ok(Zeroizing::new(
+            String::from_utf8(bytes.to_vec()).map_err(|_| Error::Integrity)?,
+        ))
+    }
+    pub(super) fn database_reference_scope(
+        &self,
+        database: &Database,
+        identity: &Identity,
+        installation: &str,
+    ) -> Result<Scope> {
         ensure!(
             database.homeserver == identity.homeserver && database.db_path == identity.db_path,
             "credential_database_identity_invalid"
         );
-        let scope = if let Some(legacy) = &database.legacy_account {
+        if let Some(legacy) = &database.legacy_account {
             ensure!(
                 legacy == &account_hash(&self.root, &identity.owner)?,
                 "credential_database_identity_invalid"
@@ -542,15 +573,10 @@ impl Service {
                 homeserver: database.homeserver.clone(),
                 db_path: database.db_path.clone(),
             }
-            .scope(installation)?
+            .scope(installation)
         } else {
-            database_scope(installation, identity)?
-        };
-        let bytes = self.vault.load(&database.reference, &scope)?;
-        ensure!(!bytes.is_empty(), "credential_original_secret_missing");
-        Ok(Zeroizing::new(
-            String::from_utf8(bytes.to_vec()).map_err(|_| Error::Integrity)?,
-        ))
+            database_scope(installation, identity)
+        }
     }
     /// Only an actual pre-creation receipt may bypass this guard in the caller.
     /// A new OAuth grant alone is not evidence that an existing DB is fresh.
@@ -572,46 +598,47 @@ impl Service {
         );
         Ok(())
     }
-    fn candidates(
-        &self,
-        owner: &OwnedUserId,
-        homeserver: &str,
-        epoch: u64,
-    ) -> Result<Vec<(Database, Zeroizing<String>)>> {
-        self.candidates_with(owner, homeserver, epoch, false)
-    }
     fn candidates_with(
         &self,
         owner: &OwnedUserId,
         homeserver: &str,
         epoch: u64,
         session_held: bool,
-    ) -> Result<Vec<(Database, Zeroizing<String>)>> {
+    ) -> Result<DatabaseCandidates> {
         let path = crate::accounts::account_dir(&self.root, owner)
             .join("persistent_state/retained_db.json");
         match std::fs::symlink_metadata(&path) {
             Ok(_) => (),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(DatabaseCandidates::default());
+            }
             Err(error) => return Err(error.into()),
         }
-        self.retain_worker_with(&path, Some(owner.clone()), None, epoch, session_held)?;
+        self.retain_worker_with(&path, Some(owner.clone()), None, epoch, session_held, true)?;
         let installation = self.existing_installation()?;
         let doc = Document::open(&path, MAX_SESSION)?;
         let source = doc.read()?.ok_or(Error::Missing)?;
         let hash = account_hash(&self.root, owner)?;
-        let entries = self.retained_entries(source.bytes(), &hash, &installation)?;
-        let mut result = Vec::new();
+        let entries = self.retained_entries(source.bytes(), &hash, &installation, true)?;
+        let mut result = DatabaseCandidates::default();
         for entry in entries {
             ensure!(
                 crate::account_session::epoch() == epoch,
                 "credential_operation_retired"
             );
-            // Validate every entry/key before selecting one, so an unrelated
-            // corrupt record is not hidden by a successful earlier match.
-            let bytes = self.vault.load(
+            let bytes = match self.vault.load(
                 &entry.database.reference,
                 &entry.identity.scope(&installation)?,
-            )?;
+            ) {
+                Ok(bytes) => bytes,
+                Err(Error::Missing) => {
+                    result
+                        .unavailable
+                        .push(resolve_database_path(&self.root, &entry.database.db_path)?);
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             let secret =
                 Zeroizing::new(String::from_utf8(bytes.to_vec()).map_err(|_| Error::Integrity)?);
             ensure!(!secret.is_empty(), "credential_original_secret_missing");
@@ -621,7 +648,7 @@ impl Service {
                     RetainedIdentity::LegacyDatabase { account_hash, .. } => Some(account_hash),
                     RetainedIdentity::Session { .. } => None,
                 };
-                result.push((database, secret));
+                result.available.push((database, secret));
             }
         }
         Ok(result)
@@ -639,12 +666,17 @@ impl Service {
         session_held: bool,
     ) -> Result<Option<Database>> {
         let mut result = None;
-        for (database, _) in self.candidates_with(
+        let candidates = self.candidates_with(
             &identity.owner,
             &identity.homeserver,
             crate::account_session::epoch(),
             session_held,
-        )? {
+        )?;
+        let target = resolve_database_path(&self.root, &identity.db_path)?;
+        if candidates.unavailable.contains(&target) {
+            return Err(Error::Missing.into());
+        }
+        for (database, _) in candidates.available {
             if database.db_path != identity.db_path || database.homeserver != identity.homeserver {
                 continue;
             }
@@ -773,15 +805,21 @@ pub(super) async fn verify_retained_identity(
         .await?
 }
 
+#[derive(Default)]
+struct DatabaseCandidates {
+    available: Vec<(Database, Zeroizing<String>)>,
+    unavailable: Vec<PathBuf>,
+}
+
 pub(crate) async fn retained_session(
     client: &matrix_sdk::Client,
-) -> Result<Option<ClientSessionPersisted>> {
+) -> Result<(Option<ClientSessionPersisted>, bool)> {
     retained_session_on(global()?.clone(), client).await
 }
 async fn retained_session_on(
     service: Arc<Service>,
     client: &matrix_sdk::Client,
-) -> Result<Option<ClientSessionPersisted>> {
+) -> Result<(Option<ClientSessionPersisted>, bool)> {
     let epoch = crate::account_session::epoch();
     let owner = client.user_id().ok_or(Error::Invalid)?.to_owned();
     let device = client.device_id().ok_or(Error::Invalid)?.to_string();
@@ -796,12 +834,13 @@ async fn retained_session_on(
                 return Err(Error::Retired);
             }
             original
-                .candidates(&lookup_owner, &lookup_home, epoch)
+                .candidates_with(&lookup_owner, &lookup_home, epoch, false)
                 .map_err(classify)
         })
         .await?;
     let mut result = None;
-    for (database, secret) in candidates {
+    let unavailable = !candidates.unavailable.is_empty();
+    for (database, secret) in candidates.available {
         ensure!(
             crate::account_session::epoch() == epoch,
             "credential_operation_retired"
@@ -834,5 +873,5 @@ async fn retained_session_on(
             && client.homeserver().as_str() == homeserver,
         "credential_operation_retired"
     );
-    Ok(result)
+    Ok((result, unavailable))
 }
