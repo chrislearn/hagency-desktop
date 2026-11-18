@@ -81,13 +81,19 @@ async fn flush<T: Transport>(
     let Some(route) = messages::Route::personal(&anchor.dispatch, &anchor.execution) else {
         return Ok(true);
     };
+    let held = |stage: &'static str| {
+        tracing::warn!(code = "agent_report_held", stage,
+            "A report of an Agent's own turn was not sent at this step; it stays in custody");
+    };
     let Ok(root) = e2ee::message_root(transport, lease, config) else {
+        held("message_root");
         return Ok(false);
     };
     if !messages::Outbox::exists_for_route(&root, &route) {
         return Ok(true);
     }
     let Ok(outbox) = messages::Outbox::open_route(&root, route) else {
+        held("outbox");
         return Ok(false);
     };
     if matches!(outbox.next(), Ok(None)) {
@@ -96,7 +102,10 @@ async fn flush<T: Transport>(
     let device = match e2ee::device(transport, lease, config, cancel).await {
         Ok(device) => device,
         Err(RuntimeError::Stopped) => return Err(RuntimeError::Stopped),
-        Err(_) => return Ok(false),
+        Err(_) => {
+            held("device");
+            return Ok(false);
+        }
     };
     for _ in 0..64 {
         if matches!(outbox.next(), Ok(None)) {

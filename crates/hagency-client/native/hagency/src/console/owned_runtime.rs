@@ -2372,19 +2372,28 @@ async fn send_personal_message<T: Transport>(
         if !fresh_running(transport, lease, dispatch, execution, cancel).await { return Err(()); }
         return messages.send_next(device, dispatch.body.is_empty(), None, Some(pending.sequence)).await;
     }
+    // A report that stays in custody says at which step it was held. The
+    // step is the host's own word; nothing of the report is logged.
+    let held = |stage: &'static str| {
+        tracing::warn!(code = "agent_report_held", stage,
+            "A report of an Agent's own turn was not sent at this step; it stays in custody");
+    };
     let host = transport.approval_host().ok_or(())?;
     let puppet = device.approval_client().user_id().ok_or(())?.to_string();
     let response = operation(transport, cancel, Op::AuthorizeMessage {
         lease: lease.clone(), binding_id: dispatch.binding_id.clone(),
         binding_generation: dispatch.binding_generation, room_id: dispatch.room_id.clone(),
         puppet_mxid: puppet.clone(),
-    }).await.map_err(|_| ())?;
-    let Response::MessageAuthorized(proof) = response else { return Err(()); };
+    }).await.map_err(|error| {
+        if !matches!(error, RuntimeError::Stopped) { held("authority_request"); }
+    })?;
+    let Response::MessageAuthorized(proof) = response else { held("authority_answer"); return Err(()); };
     let permit = messages::PersonalReportPermit::new(
         &proof, lease, dispatch, execution, host.pin.generation, &puppet, wall_ms(),
-    )?;
+    ).inspect_err(|_| held("authority_proof"))?;
     if *cancel.borrow() { return Err(()); }
     messages.send_next(device, dispatch.body.is_empty(), Some(&permit), Some(pending.sequence)).await
+        .inspect_err(|_| if !*cancel.borrow() { held(if dispatch.body.is_empty() { "send_encrypted" } else { "send" }) })
 }
 struct LiveToolGate {
     console: PinnedConsole,

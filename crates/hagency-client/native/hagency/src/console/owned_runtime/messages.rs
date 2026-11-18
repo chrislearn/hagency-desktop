@@ -861,6 +861,15 @@ pub(super) mod timers {
             })
             .collect()
     }
+    /// The saved timer `id`, if it is still set.
+    pub(in crate::console::owned_runtime) fn get(device_root: &Path, id: &str) -> Option<Timer> {
+        if !any(device_root) {
+            return None;
+        }
+        let (directory, cipher) = directory(device_root).ok()?;
+        let bytes = super::read(&directory.join(name(id).ok()?), 64 * 1024).ok()?;
+        cipher.decrypt_value::<Timer>(&bytes).ok().filter(|timer| timer.version == 1 && timer.id == id)
+    }
     pub(in crate::console::owned_runtime) fn remove(device_root: &Path, id: &str) {
         if let Ok(name) = name(id) {
             let _ = std::fs::remove_file(device_root.join("outgoing-messages").join("timers").join(name));

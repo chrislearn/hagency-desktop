@@ -194,6 +194,14 @@ fn advance(root: &std::path::Path, mut timer: Timer, now: i64) {
     }
 }
 
+/// The turn of timer `id` ended. The timer is read again first: the Agent
+/// may have removed it in that very turn, and then it stays removed.
+fn settle(root: &std::path::Path, id: &str, now: i64) {
+    if let Some(timer) = timers::get(root, id) {
+        advance(root, timer, now);
+    }
+}
+
 enum Failure {
     Stopped,
     /// No process could be made ready for this turn.
@@ -465,7 +473,7 @@ pub(super) async fn pump<T: Transport>(
         {
             // The attempt stays counted: after a restart the turn starts once more.
             Err(error) => return Err(error),
-            Ok(()) => advance(&root, timer, now()),
+            Ok(()) => settle(&root, &timer.id, now()),
         }
     }
     Ok(())
@@ -491,7 +499,7 @@ mod tests {
 
     #[test]
     fn a_chat_sets_lists_and_cancels_only_its_own_timers() {
-        let directory = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         assert!(!timers::any(root));
         let here = dispatch("!room:example.test", "$thread:example.test");
@@ -538,7 +546,7 @@ mod tests {
 
     #[test]
     fn a_chat_holds_a_bounded_number_of_timers() {
-        let directory = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let here = dispatch("!room:example.test", "$thread:example.test");
         for index in 0..MAX_PER_CHAT {
@@ -551,7 +559,7 @@ mod tests {
 
     #[test]
     fn a_timer_that_fired_is_removed_and_a_repeating_one_waits_for_its_next_time() {
-        let directory = hagency_platform::legacy_writer::test_support::initialized_tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let here = dispatch("!room:example.test", "$thread:example.test");
         call(root, &here, set(60, "once", None));
@@ -575,6 +583,32 @@ mod tests {
         old.created = now - REPEAT_MAX_SECS;
         advance(root, old, now);
         assert!(timers::list(root).is_empty());
+    }
+
+    /// Seen live: the Agent removed its repeating timer in the timer's own
+    /// turn, the host saved it again when the turn ended, and it kept firing.
+    #[test]
+    fn a_timer_removed_in_its_own_turn_stays_removed() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let here = dispatch("!room:example.test", "$thread:example.test");
+        let kept = call(root, &here, set(60, "keeps going", Some(60)));
+        let removed = call(root, &here, set(60, "twice is enough", Some(60)));
+        let (kept, removed) = (kept["wakeup_id"].as_str().unwrap(), removed["wakeup_id"].as_str().unwrap());
+        assert_eq!(timers::get(root, removed).unwrap().note, "twice is enough");
+        // Its turn runs, and removes it.
+        assert_eq!(
+            call(root, &here, RoomTimerOperation::CancelWakeup { wakeup_id: removed.into() })["status"],
+            "cancelled"
+        );
+        let now = now();
+        settle(root, removed, now);
+        settle(root, kept, now);
+        let left = timers::list(root);
+        assert_eq!(left.len(), 1);
+        assert_eq!((left[0].id.as_str(), left[0].due, left[0].fired), (kept, now + 60, 1));
+        assert!(timers::get(root, removed).is_none());
+        assert!(timers::get(root, "wk_../../x").is_none());
     }
 
     #[test]
