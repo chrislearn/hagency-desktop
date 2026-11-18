@@ -57,6 +57,44 @@ async fn old_turn_and_cross_thread_cannot_use_new_dispatch_authority() {
     );
     assert!(next.try_recv().is_err());
 }
+/// What Codex 0.169 sends with a call (measured with the installed CLI): the
+/// item id is the model's id of the call, not the call id, and the turn's
+/// metadata has more fields. The call is still bound to its observed turn and
+/// accepted once.
+#[tokio::test]
+async fn a_call_whose_item_id_is_not_its_call_id_reaches_the_host_once() {
+    let bridge = Bridge::new(RoomTools::history_and_files().with_timers()).await.unwrap();
+    let (queue, mut receives) = queue("first");
+    let _active = bridge.begin(&queue, "native", "one").unwrap();
+    let shaped = |thread: &str, turn: &str| {
+        json!({"name":"list_wakeups","arguments":{},"_meta":{
+            "callId":"call-0001","itemId":"ctc_0a1b2c3d","threadId":"native",
+            "sessionId":"native","windowId":"window","progressToken":1,
+            "x-codex-turn-metadata":{"session_id":"native","thread_id":thread,"turn_id":turn,
+                "model":"fixture","codex_version":"0.169.0"}
+        }})
+    };
+    for bad in [shaped("foreign", "one"), shaped("native", "old")] {
+        assert_eq!(call(&bridge.state, bridge.tools, &bad).await["isError"], true);
+        assert!(receives.try_recv().is_err());
+    }
+    let good = shaped("native", "one");
+    let request = call(&bridge.state, bridge.tools, &good);
+    tokio::pin!(request);
+    let pending = tokio::select! { _ = &mut request => panic!("must await host"), p = receives.recv() => p.unwrap() };
+    assert!(matches!(
+        pending.operation,
+        hagency_runtime::room_tools::RoomOperation::Timer(
+            hagency_runtime::room_tools::RoomTimerOperation::ListWakeups {}
+        )
+    ));
+    pending.reply(RoomReply::new("{\"wakeups\":[]}".into(), false).unwrap());
+    assert_eq!(request.await["content"][0]["text"], "{\"wakeups\":[]}");
+    // The same call id is not accepted a second time.
+    assert_eq!(call(&bridge.state, bridge.tools, &good).await["isError"], true);
+    assert!(receives.try_recv().is_err());
+    assert_eq!(bridge.config["tools"].as_object().unwrap().len(), 8);
+}
 #[tokio::test]
 async fn native_descendant_and_each_call_are_bound_to_original_observation() {
     let bridge = Bridge::new(RoomTools::history_and_files()).await.unwrap();
