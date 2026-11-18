@@ -162,9 +162,9 @@ mod tests {
         assert!(!roles::any(root));
         assert_eq!(result(&tool(root, &owner_asks, OWNER, &RoomRoleOperation::Get {}))["roles"], json!([]));
 
-        let saved = result(&tool(root, &owner_asks, OWNER, &set("You are the reviewer of this project.")));
-        assert_eq!((saved["status"].as_str(), saved["applies_to"].as_str()), (Some("saved"), Some(EVERYONE)));
-        assert!(saved.get("note").is_none());
+        let first = result(&tool(root, &owner_asks, OWNER, &set("You are the reviewer of this project.")));
+        assert_eq!((first["status"].as_str(), first["applies_to"].as_str()), (Some("saved"), Some(EVERYONE)));
+        assert!(first.get("note").is_none());
         // The next top-level message, by the owner and by anybody else.
         for asking in [OWNER, GUEST, OTHER] {
             let next = standing(root, &dispatch(ROOM, "$two:example.test", asking), OWNER);
