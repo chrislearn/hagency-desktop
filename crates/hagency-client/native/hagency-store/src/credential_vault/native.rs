@@ -63,6 +63,22 @@ fn classify(error: keyring::Error) -> Error {
         _ => Error::Unavailable,
     }
 }
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn classify_write(error: keyring::Error) -> Error {
+    #[cfg(windows)]
+    if let keyring::Error::PlatformFailure(source) | keyring::Error::NoStorageAccess(source) =
+        &error
+        && source
+            .downcast_ref::<keyring::windows::Error>()
+            .is_some_and(|status| {
+                status.0 == windows_sys::Win32::Foundation::ERROR_NOT_ENOUGH_MEMORY
+            })
+    {
+        return Error::WriteResourcesExhausted;
+    }
+    classify(error)
+}
+
 fn native_access() -> Result<(), Error> {
     if std::env::var_os("HAGENCY_NATIVE_CREDENTIAL_IO").as_deref()
         == Some(std::ffi::OsStr::new("deny"))
@@ -98,7 +114,9 @@ impl SecretStore for NativeStore {
         }
         #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         {
-            Self::entry(reference)?.set_secret(bytes).map_err(classify)
+            Self::entry(reference)?
+                .set_secret(bytes)
+                .map_err(classify_write)
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
@@ -126,6 +144,19 @@ impl SecretStore for NativeStore {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_windows_error_eight_identifies_a_credential_write_failure() {
+        let error = || keyring::Error::PlatformFailure(Box::new(keyring::windows::Error(8)));
+        assert_eq!(classify_write(error()), Error::WriteResourcesExhausted);
+        assert_eq!(classify(error()), Error::Unavailable);
+        assert_eq!(
+            classify_write(keyring::Error::PlatformFailure(Box::new(
+                keyring::windows::Error(5)
+            ))),
+            Error::Denied
+        );
+    }
 
     #[test]
     fn native_windows_denial_classification_preserves_other_failures() {

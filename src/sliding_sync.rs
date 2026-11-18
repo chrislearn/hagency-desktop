@@ -6,7 +6,6 @@ use clap::Parser;
 use eyeball::Subscriber;
 use eyeball_im::VectorDiff;
 use futures_util::{future::{Abortable, join_all}, pin_mut, stream, StreamExt};
-use hagency_store::credential_vault::Error as CredentialError;
 use imbl::Vector;
 use makepad_widgets::{error, image_cache::image_size_by_data, log, warning, Cx, SignalToUI, WidgetUid};
 use matrix_sdk_base::crypto::{DecryptionSettings, TrustRequirement};
@@ -318,10 +317,8 @@ async fn login(
             finish_oauth_login(client, client_session, epoch)
                 .await
                 .map_err(|error| {
-                    if error.downcast_ref::<CredentialError>() == Some(&CredentialError::DurabilityUnknown) {
-                        error.context(crate::i18n::tr(
-                            "Browser authorization completed, but Hagency could not confirm that the local session was saved.",
-                        ))
+                    if let Some(message) = crate::login::browser_credential_error_message(&error, true) {
+                        error.context(message)
                     } else {
                         error
                     }
@@ -2482,12 +2479,9 @@ async fn matrix_worker_task(
                         }
                         Err(error) => {
                             Cx::post_action(LoginAction::SsoPending(false));
-                            let message = if error.downcast_ref::<CredentialError>()
-                                == Some(&CredentialError::DurabilityUnknown)
-                            {
-                                crate::i18n::tr(
-                                    "Hagency could not verify local credential storage before opening the browser.",
-                                ).to_owned()
+                            let message = if let Some(message) = crate::login::browser_credential_error_message(&error, false) {
+                                warning!("Local credential check failed before browser sign-in: {error}");
+                                message.to_owned()
                             } else {
                                 format!("Browser sign-in failed: {error}")
                             };
