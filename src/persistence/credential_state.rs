@@ -286,23 +286,26 @@ impl Service {
         Ok(vault::document::installation(&self.root, false)?)
     }
     fn read_original(&self, stored: &Stored) -> Result<Original> {
+        self.read_original_in(stored, &self.existing_installation()?)
+    }
+    fn read_original_in(&self, stored: &Stored, installation: &str) -> Result<Original> {
         ensure!(stored.version == VERSION, "credential_schema_unsupported");
-        let installation = self.existing_installation()?;
         let context = serde_json::to_vec(&stored.identity)?;
-        let auth_scope = Scope::new(&installation, Purpose::Session, &context)?;
-        let revocation_scope = Scope::new(&installation, Purpose::Revocations, &context)?;
-        ensure!(
-            stored.database.homeserver == stored.identity.homeserver
-                && stored.database.db_path == stored.identity.db_path,
-            "credential_identity_changed"
-        );
+        let auth_scope = Scope::new(installation, Purpose::Session, &context)?;
+        let revocation_scope = Scope::new(installation, Purpose::Revocations, &context)?;
+        // Check every binding before an absent entry can be classified as lost history.
+        stored.authentication.reference().validate(&auth_scope)?;
+        stored.revocation_key.validate(&revocation_scope)?;
+        stored.database.reference.validate(
+            &self.database_reference_scope(&stored.database, &stored.identity, installation)?
+        )?;
         let key = self
             .vault
             .unlock(stored.authentication.reference(), &auth_scope)?;
         let revocation = self
             .vault
             .unlock(&stored.revocation_key, &revocation_scope)?;
-        let secret = self.resolve_database(&stored.database, &stored.identity, &installation)?;
+        let secret = self.resolve_database(&stored.database, &stored.identity, installation)?;
         let authenticated: Authentication = key.open(&stored.authentication)?;
         ensure!(
             authenticated.database == stored.database
@@ -1823,6 +1826,67 @@ impl Service {
         }
     }
 }
+/// Only a newly authorized sign-in may set aside an unreadable published session.
+pub(crate) async fn archive_missing_session(
+    user: OwnedUserId,
+    homeserver: String,
+    new_database: PathBuf,
+    epoch: u64,
+) -> Result<()> {
+    let service = global()?.clone();
+    let original = service.clone();
+    service
+        .worker
+        .call(move || {
+            original
+                .archive_missing_session(&user, &homeserver, &new_database, epoch)
+                .map_err(classify)
+        })
+        .await?;
+    Ok(())
+}
+
+impl Service {
+    fn archive_missing_session(
+        &self,
+        user: &OwnedUserId,
+        homeserver: &str,
+        new_database: &Path,
+        epoch: u64,
+    ) -> Result<()> {
+        let state = crate::accounts::account_dir(&self.root, user).join("persistent_state");
+        let doc = Document::open(&state.join("session"), MAX_SESSION)?;
+        let source = doc.read()?.ok_or(Error::Conflict)?;
+        let stored: Stored = serde_json::from_slice(source.bytes())?;
+        let installation = self.existing_installation()?;
+        ensure!(
+            &stored.identity.owner == user
+                && url::Url::parse(&stored.identity.homeserver)? == url::Url::parse(homeserver)?,
+            Error::Invalid
+        );
+        ensure!(
+            retained::resolve_database_path(&self.root, &stored.database.db_path)?
+                != retained::resolve_database_path(&self.root, new_database)?,
+            Error::Conflict
+        );
+        // Recheck under the document lock. NoEntry is distinct from a locked
+        // keychain, a corrupt envelope, or a missing installation namespace.
+        match self.read_original_in(&stored, &installation) {
+            Err(error) if error.downcast_ref::<Error>() == Some(&Error::Missing) => (),
+            Err(error) => return Err(error),
+            Ok(_) => return Err(Error::Conflict.into()),
+        }
+        let _lease = vault::document::GrantLease::acquire(
+            &state.join("credential-recovery-v1"),
+            stored.authentication.reference(),
+        )?;
+        let _guard = super::SESSION_IO.lock().map_err(|_| Error::Storage)?;
+        ensure!(crate::account_session::epoch() == epoch, Error::Retired);
+        doc.archive_unavailable(&source)?;
+        Ok(())
+    }
+}
+
 pub(crate) async fn existing_database(path: PathBuf) -> Result<ExistingDatabase> {
     let service = global()?.clone();
     let original = service.clone();

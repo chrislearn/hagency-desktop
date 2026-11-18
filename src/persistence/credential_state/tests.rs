@@ -93,6 +93,11 @@ impl SecretStore for FakeStore {
 pub(crate) fn fake_service(root: &Path) -> Arc<Service> {
     Arc::new(Service::new(root.into(), Vault::new(Arc::new(FakeStore::default()))).unwrap())
 }
+pub(crate) fn install_empty_store(root: &Path) -> Arc<Service> {
+    let service = fake_service(root);
+    assert!(SERVICE.set(Ok(service.clone())).is_ok());
+    service
+}
 pub(crate) fn session_fixture() -> FullSessionPersisted {
     serde_json::from_value(serde_json::json!({
         "client_session":{"homeserver":"https://example.org","db_path":"db_original","passphrase":"DB_SECRET_MARKER"},

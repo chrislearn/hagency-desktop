@@ -340,49 +340,123 @@ async fn login(
 }
 
 
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn missing_local_credential(error: &anyhow::Error) -> bool {
+    use hagency_store::credential_vault::Error;
+    error.downcast_ref::<Error>() == Some(&Error::Missing)
+}
+
 /// Complete only a newly authorized OAuth candidate, never a restored grant.
-pub(crate) async fn finish_oauth_login(client:Client,mut client_session:ClientSessionPersisted,epoch:u64)->Result<(Client,Option<String>)> {
+pub(crate) async fn finish_oauth_login(
+    client: Client,
+    mut client_session: ClientSessionPersisted,
+    epoch: u64,
+) -> Result<(Client, Option<String>)> {
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    let mut history_unavailable = false;
+    let save_error = crate::i18n::tr(
+        "Your identity was verified, but this device could not save your sign-in. Check local storage and try signing in again.",
+    );
     let saved = async {
-            if epoch != crate::account_session::epoch() { bail!("Matrix account changed during sign-in"); }
-            if client.oauth().full_session().is_none() { bail!("OAuth did not install an SDK session"); }
-            let user = client.user_id().ok_or_else(|| anyhow!("OAuth has no Matrix identity"))?;
-            let path = persistence::session_file_path(user);
-            if path.exists() {
-                let old = persistence::credential_state::existing_database(path).await?;
-                if epoch!=crate::account_session::epoch(){bail!("Matrix account changed during sign-in");}
-                if old.client_session.homeserver.trim_end_matches('/') != client.homeserver().as_str().trim_end_matches('/') {
-                    bail!("This Matrix identity is saved with another homeserver origin");
+        if epoch != crate::account_session::epoch() {
+            bail!("Matrix account changed during sign-in");
+        }
+        if client.oauth().full_session().is_none() {
+            bail!("OAuth did not install an SDK session");
+        }
+        let user = client
+            .user_id()
+            .ok_or_else(|| anyhow!("OAuth has no Matrix identity"))?;
+        let path = persistence::session_file_path(user);
+        if path.try_exists()? {
+            match persistence::credential_state::existing_database(path).await {
+                Ok(old) => {
+                    if epoch != crate::account_session::epoch() {
+                        bail!("Matrix account changed during sign-in");
+                    }
+                    if old.client_session.homeserver.trim_end_matches('/')
+                        != client.homeserver().as_str().trim_end_matches('/')
+                    {
+                        bail!("This Matrix identity is saved with another homeserver origin");
+                    }
+                    if old.identity.device
+                        != client
+                            .device_id()
+                            .ok_or_else(|| anyhow!("OAuth has no device"))?
+                            .as_str()
+                    {
+                        crate::accounts::retain_database(app_data_dir(), user, old.client_session)
+                            .await?;
+                    }
                 }
-                if old.identity.device != client.device_id().ok_or_else(|| anyhow!("OAuth has no device"))?.as_str() {
-                    crate::accounts::retain_database(app_data_dir(), user, old.client_session).await?;
-                    if epoch!=crate::account_session::epoch(){bail!("Matrix account changed during sign-in");}
+                #[cfg(not(any(target_os = "ios", target_os = "android")))]
+                Err(error) if missing_local_credential(&error) => {
+                    persistence::credential_state::archive_missing_session(
+                        user.to_owned(),
+                        client.homeserver().to_string(),
+                        client_session.db_path.clone(),
+                        epoch,
+                    )
+                    .await?;
+                    history_unavailable = true;
                 }
+                Err(error) => return Err(error),
             }
-            #[cfg(not(any(target_os = "ios", target_os = "android")))]
-            if let Some(retained) = persistence::credential_state::retained_session(&client).await? {
+        }
+        if epoch != crate::account_session::epoch() {
+            bail!("Matrix account changed during sign-in");
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        {
+            let (retained, unavailable) =
+                persistence::credential_state::retained_session(&client).await?;
+            if let Some(retained) = retained {
                 client_session = retained;
             }
-            persistence::save_oauth_session(&client, client_session.clone(),epoch).await?;
-        Ok::<(),anyhow::Error>(())
-    }.await;
-    if let Err(error)=saved {
+            history_unavailable |= unavailable;
+        }
+        persistence::save_oauth_session(&client, client_session, epoch)
+            .await
+            .map_err(|error| error.context(save_error))
+    }
+    .await;
+    if let Err(error) = saved {
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         if persistence::credential_state::has_owner(&client) {
             let _ = persistence::credential_state::retire_candidate(&client).await;
         } else {
-            let _=tokio::time::timeout(Duration::from_secs(8),crate::login::homeserver::logout_sdk(&client)).await;
+            let _ = tokio::time::timeout(
+                Duration::from_secs(8),
+                crate::login::homeserver::logout_sdk(&client),
+            )
+            .await;
         }
         #[cfg(any(target_os = "ios", target_os = "android"))]
-        let _=tokio::time::timeout(Duration::from_secs(8),crate::login::homeserver::logout_sdk(&client)).await;
+        let _ = tokio::time::timeout(
+            Duration::from_secs(8),
+            crate::login::homeserver::logout_sdk(&client),
+        )
+        .await;
         return Err(error);
     }
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     let client = if persistence::credential_state::needs_handoff(&client)? {
-        persistence::credential_state::handoff_client(&client).await?
-    } else { client };
+        persistence::credential_state::handoff_client(&client)
+            .await
+            .map_err(|error| error.context(save_error))?
+    } else {
+        client
+    };
     crate::hagency::backend::Service::record_explicit_oauth_signin(&client, epoch);
     OAUTH_REAUTH.lock().unwrap().take();
-    Ok((client,None))
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    if history_unavailable {
+        crate::shared::popup_list::enqueue_scoped_popup_notification(
+            epoch, crate::i18n::tr("Signed in. Older chats on this device have been preserved, but their local key is missing. You can continue using Hagency.").into(),
+            PopupKind::Info, Some(10.0),
+        );
+    }
+    Ok((client, None))
 }
 
 /// Which direction to paginate in.
@@ -6426,9 +6500,13 @@ async fn run_registration(
 async fn run_sso_login(homeserver_url: String, provider_id: Option<String>, register: bool) -> Result<(Client, ClientSessionPersisted)> {
     let reauth = OAUTH_REAUTH.lock().unwrap().clone().filter(|(origin,_)| !register && origin.trim_end_matches('/')==homeserver_url.trim_end_matches('/'));
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
-    if let Some((_, owner)) = reauth {
-        let saved = persistence::credential_state::existing_database(persistence::session_file_path(&owner)).await?;
-        if let Some(id) = saved.identity.oauth_client_id.as_ref() {
+    if let Some((_, owner)) = reauth.as_ref() {
+        let saved = match persistence::credential_state::existing_database(persistence::session_file_path(owner)).await {
+            Ok(saved) => Some(saved),
+            Err(error) if missing_local_credential(&error) => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(saved) = saved && let Some(id) = saved.identity.oauth_client_id.as_ref() {
             // Public registration and expected device are sufficient for PKCE.
             // Old access/refresh credentials never enter this memory-only SDK.
             let client = Client::builder().homeserver_url(&homeserver_url)
@@ -6438,7 +6516,7 @@ async fn run_sso_login(homeserver_url: String, provider_id: Option<String>, regi
             persistence::credential_state::register_preauth(&client, saved.client_session.clone()).await?;
             client.oauth().restore_registered_client(matrix_sdk::authentication::oauth::ClientId::new(id.clone()));
             crate::login::homeserver::oauth_browser_login_expected(&client, false,
-                Some((owner, saved.identity.device.into())), |url| async move {
+                Some((owner.clone(), saved.identity.device.into())), |url| async move {
                     crate::login::homeserver::open_login_url(&url)
                 }).await?;
             return Ok((client, saved.client_session));
@@ -6476,6 +6554,11 @@ async fn run_sso_login(homeserver_url: String, provider_id: Option<String>, regi
             });
             crate::login::homeserver::open_login_url(&url)
         }).await?;
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        if let Some((_, owner)) = reauth.as_ref() && client.user_id() != Some(owner.as_ref()) {
+            let _ = persistence::credential_state::retire_candidate(&client).await;
+            bail!("Pasion returned another Matrix account");
+        }
         return Ok((client, session));
     }
     if !methods.sso {

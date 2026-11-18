@@ -519,6 +519,21 @@ impl Document {
             .map_err(|_| Error::DurabilityUnknown)?;
         crate::private::sync_directory(&self.directory).map_err(|_| Error::DurabilityUnknown)
     }
+    /// Move the locked original to a recovery name in the same private directory.
+    /// A journal must be resolved with its original name and source identity.
+    pub fn archive_unavailable(&self, expected: &Snapshot) -> Result<(), Error> {
+        self.check_parent()?;
+        if self.read_pending()?.is_some() {
+            return Err(Error::Conflict);
+        }
+        self.matches(Some(expected))?;
+        let archive = format!("{}.unavailable-{}", self.name, random_id()?);
+        self.directory
+            .rename(&self.name, &self.directory, archive)
+            .map_err(classify)?;
+        crate::private::sync_directory(&self.directory).map_err(|_| Error::DurabilityUnknown)
+    }
+
     pub fn remove_original(
         &self,
         expected: &Snapshot,

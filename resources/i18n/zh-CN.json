@@ -3147,6 +3147,8 @@
   "Do you wish to verify {user}?": "是否验证 {user}？",
   "The verified identity of {name} was reset.": "{name} 的已验证身份已重置。",
   "The identity of {name} was reset.": "{name} 的身份已重置。",
+  "Signed in. Older chats on this device have been preserved, but their local key is missing. You can continue using Hagency.": "已登录。此设备上的旧聊天数据已保留，但缺少本地密钥，暂时无法打开。你可以继续使用 Hagency。",
+  "Your identity was verified, but this device could not save your sign-in. Check local storage and try signing in again.": "身份验证已通过，但此设备未能保存本次登录。请检查本地存储，然后重试登录。",
   "Session refreshed, but credentials could not be saved. Keep this session open and check local storage.": "会话已刷新，但凭据保存失败。请保持当前会话打开，并检查本地存储。",
   "Signed out locally. Remote token revocation remains pending.": "已在本机退出登录，服务器端令牌仍待撤销。",
   "Signed out locally. Remote token revocation is pending and will be retried.": "已在本机退出登录，将继续重试撤销服务器端令牌。",

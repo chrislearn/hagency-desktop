@@ -3147,6 +3147,8 @@
   "Do you wish to verify {user}?": "Do you wish to verify {user}?",
   "The verified identity of {name} was reset.": "The verified identity of {name} was reset.",
   "The identity of {name} was reset.": "The identity of {name} was reset.",
+  "Signed in. Older chats on this device have been preserved, but their local key is missing. You can continue using Hagency.": "Signed in. Older chats on this device have been preserved, but their local key is missing. You can continue using Hagency.",
+  "Your identity was verified, but this device could not save your sign-in. Check local storage and try signing in again.": "Your identity was verified, but this device could not save your sign-in. Check local storage and try signing in again.",
   "Session refreshed, but credentials could not be saved. Keep this session open and check local storage.": "Session refreshed, but credentials could not be saved. Keep this session open and check local storage.",
   "Signed out locally. Remote token revocation remains pending.": "Signed out locally. Remote token revocation remains pending.",
   "Signed out locally. Remote token revocation is pending and will be retried.": "Signed out locally. Remote token revocation is pending and will be retried.",
