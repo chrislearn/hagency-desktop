@@ -285,7 +285,11 @@ mod retention_tests {
             tokio::time::timeout(Duration::from_secs(5), async {
                 while old_controller.upgrade().is_some() { tokio::task::yield_now().await; }
             }).await.expect("original subscriber/auxiliary tasks retained an evicted SDK controller");
-            assert!(auxiliary.is_finished());
+            // Tokio drops an aborted task's future (and the controller it held) before it marks the
+            // task finished, on another worker thread, so the task can read as running for a moment.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !auxiliary.is_finished() { tokio::task::yield_now().await; }
+            }).await.expect("eviction did not abort the auxiliary task");
             assert_eq!(ALL_JOINED_ROOMS.lock().unwrap().values().filter(|room| room.main_timeline.is_some()).count(), 16);
             old.update_sender.send(TimelineUpdate::AttachmentDownloadReset("mxc://example.org/late".into())).unwrap();
             assert!(old.update_sender.send(TimelineUpdate::FirstUpdate {initial_items: Vector::new()}).is_err(), "evicted subscribers cannot republish late snapshots");

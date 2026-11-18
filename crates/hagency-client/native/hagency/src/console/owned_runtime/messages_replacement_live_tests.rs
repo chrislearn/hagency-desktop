@@ -3,7 +3,9 @@
 //! again on the same computer. Registering the same installation again keeps
 //! the Hagency device and raises its generation, so the Agent gets a new Matrix
 //! device with a new crypto store while its outbox stays where it was. The new
-//! device settles each report from the room's history (ADR 0013). No model runs.
+//! device settles each report from the room's history, and reads what the
+//! earlier devices sent with their own stores on this computer (ADR 0013). No
+//! model runs.
 use super::*;
 use crate::console::device_execution::{
     DeviceIdentity, DeviceOperation as Op, DeviceResponse as Response, LeaseRef, Takeover,
@@ -22,6 +24,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 const QUIET: &str = "REPLACEMENT_QUIET_REPORT";
 const RECENT: &str = "REPLACEMENT_RECENT_REPORT";
 const LANDED: &str = "REPLACEMENT_LANDED_REPORT";
+const ANSWER: &str = "REPLACEMENT_EARLIER_ANSWER";
 
 /// The host's SDK sign-in. `reenroll` is the host's one-time permission for a
 /// new sign-in to register this installation again.
@@ -449,6 +452,18 @@ async fn real_palpo_signing_in_again_settles_unknown_reports_from_room_history()
             Ok(Begin::Send(_))
         ));
     }
+    // Generation 1 also answered in the room, with no report ID.
+    let answer_event = first
+        .device
+        .send_room_message_if_state_matches(
+            room,
+            "replacement_earlier_answer",
+            e2ee::native_message_content(room, &quiet.thread_root, ANSWER).unwrap(),
+            true,
+        )
+        .await
+        .unwrap();
+    wait_for_copy(&observed, ANSWER).await;
     let first_pin = first.pin.clone();
     let first_root = first.message_root.clone();
     first.end().await;
@@ -462,7 +477,21 @@ async fn real_palpo_signing_in_again_settles_unknown_reports_from_room_history()
     assert_ne!(second_device, first_device, "a new generation gets a new Agent Matrix device");
     wait_replaced(base, human_token, puppet, &first_device, &second_device).await;
 
-    // The quiet attempt: the history holds no copy, so the new device sends it once.
+    // The quiet attempt. The new device's own keys cannot read generation 1's
+    // answer, but generation 1's store can, and it carries no report ID: the
+    // history holds no possible copy, so the new device sends the report once.
+    let own_view = second.device.history_request(room, &answer_event).await.unwrap().unwrap();
+    assert_eq!(own_view["status"], "unavailable_encrypted_message");
+    let scan = second
+        .device
+        .report_scan(room, puppet, now - 6 * 60 * 1000 - CLOCK_MARGIN_MS)
+        .await
+        .unwrap();
+    assert!(scan.complete, "the scan reaches back before the first attempt");
+    assert!(
+        scan.events.iter().all(|trace| trace.readable.is_some() && trace.event_id != answer_event),
+        "every Agent message reads, and the answer is no possible copy: {scan:?}"
+    );
     let outbox = Outbox::open_route(&second.message_root, route(&quiet)).unwrap();
     assert!(
         send_personal_message(&second.transport, &second.lease, &quiet, &execution(&quiet),
@@ -519,8 +548,10 @@ async fn real_palpo_signing_in_again_settles_unknown_reports_from_room_history()
     assert_eq!(third.message_root, first_root);
     wait_replaced(base, human_token, puppet, &second_device, &third_device).await;
 
-    // The new device cannot decrypt what the earlier one sent, and an unreadable
-    // message from the Agent may be this report: it stays pending, unsent.
+    // The new device cannot decrypt the report generation 2 sent, but
+    // generation 2's own store on this computer can: it is recorded as sent.
+    let own_view = third.device.history_request(room, &landed_event).await.unwrap().unwrap();
+    assert_eq!(own_view["status"], "unavailable_encrypted_message");
     let outbox = Outbox::open_route(&third.message_root, route(&landed)).unwrap();
     let pending = outbox.next().unwrap().unwrap();
     let Ok(Begin::Reconcile(unsettled)) =
@@ -530,24 +561,26 @@ async fn real_palpo_signing_in_again_settles_unknown_reports_from_room_history()
     };
     let (sender, since) = unsettled.scan().unwrap();
     let scan = third.device.report_scan(room, sender, since).await.unwrap();
+    assert!(scan.complete);
     assert!(
-        scan.events.iter().any(|trace| trace.event_id == landed_event && trace.readable.is_none()),
-        "the new device cannot read the earlier device's report"
+        scan.events.iter().any(|trace| trace.event_id == landed_event && trace.readable.is_some()),
+        "the earlier device's report reads through its own store: {scan:?}"
     );
-    assert_eq!(verdict(&scan, &report_id, &hash(LANDED)), Verdict::Unknown("history_unreadable"));
+    assert_eq!(verdict(&scan, &report_id, &hash(LANDED)), Verdict::Sent(landed_event.as_str()));
     assert!(
         send_personal_message(&third.transport, &third.lease, &landed, &execution(&landed),
-            &outbox, &third.device, &mut cancel).await.is_err(),
-        "an unreadable possible copy keeps the report pending"
+            &outbox, &third.device, &mut cancel).await == Ok(true),
+        "a landed report from an earlier device is recorded, not sent again"
     );
-    assert!(outbox.next().unwrap().is_some());
+    assert!(outbox.next().unwrap().is_none(), "the report is recorded as sent");
 
     // Nothing was sent twice, and nothing went out in plaintext.
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert_eq!(copies(&observed, QUIET).len(), 1);
     assert_eq!(copies(&observed, RECENT).len(), 0);
     assert_eq!(copies(&observed, LANDED), vec![landed_event.clone()]);
-    for id in copies(&observed, QUIET).iter().chain([&landed_event]) {
+    assert_eq!(copies(&observed, ANSWER), vec![answer_event.clone()]);
+    for id in copies(&observed, QUIET).iter().chain([&landed_event, &answer_event]) {
         let wire = matrix(
             base,
             human_token,
@@ -564,6 +597,6 @@ async fn real_palpo_signing_in_again_settles_unknown_reports_from_room_history()
     let _ = sync.await;
     native.suspend().await.unwrap();
     println!(
-        "PASS: signing in again on the same owner root keeps the Hagency device, raises its generation and replaces the Agent's Matrix device; the outbox stays; a quiet unlanded attempt is sent once from the new device, a recent one stays pending, and a landed but unrecorded report stays pending because the new device cannot read it; no duplicates, no plaintext, no model execution"
+        "PASS: signing in again on the same owner root keeps the Hagency device, raises its generation and replaces the Agent's Matrix device; the outbox stays; the new device reads its earlier devices' messages with their own stores; a quiet unlanded attempt is sent once from the new device, a recent one stays pending, and a landed but unrecorded report is recorded as sent without a second copy; no duplicates, no plaintext, no model execution"
     );
 }

@@ -283,6 +283,9 @@ pub(in crate::console) struct Outbox {
     cipher: StoreCipher,
     state: Mutex<State>,
     lock_path: PathBuf,
+    /// The ledger says the run's request came in the clear; see
+    /// `request_came_in_clear`.
+    plain_request: bool,
 }
 pub(in crate::console) struct Pending {
     pub sequence: u64,
@@ -420,7 +423,20 @@ impl Outbox {
             cipher,
             state: Mutex::new(state),
             lock_path,
+            plain_request: false,
         })
+    }
+    /// A finished run's ledger record no longer holds its request text, and an
+    /// empty text otherwise marks a request that came encrypted. Told by the
+    /// ledger (`Record::request_encrypted`) that this run's request came in
+    /// the clear, its messages are sent as a plain request's are.
+    pub(super) fn request_came_in_clear(&mut self) {
+        self.plain_request = true;
+    }
+    /// Whether the request of this run came as ciphertext, for `dispatch`
+    /// read from the run or from its ledger record.
+    pub(super) fn request_encrypted(&self, dispatch: &hagency_agent_local::inbox::Dispatch) -> bool {
+        dispatch.body.is_empty() && !self.plain_request
     }
     fn path(&self, sequence: u64) -> PathBuf {
         self.directory.join(format!("{sequence:020}.sealed"))
@@ -1000,6 +1016,37 @@ mod tests {
 
         dispatch.thread_root = "!another-room:test".into();
         assert!(Route::personal(&dispatch, "execution").is_none());
+    }
+
+    /// A finished run's ledger record has lost its request text. Its messages
+    /// are sent as a plain request's only when the ledger says the request
+    /// came in the clear; an empty text otherwise still means ciphertext.
+    #[test]
+    fn a_finished_runs_messages_keep_the_encryption_its_request_came_with() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut dispatch = hagency_agent_local::inbox::Dispatch {
+            id: "dispatch".into(),
+            binding_id: "binding".into(),
+            agent_id: "agent".into(),
+            event_id: "$request:test".into(),
+            room_id: "!room:test".into(),
+            requester_mxid: "@person:test".into(),
+            thread_root: "$thread:test".into(),
+            body: "question".into(),
+            state: "running".into(),
+            binding_generation: 1,
+            dispatch_epoch: Some(1),
+            dispatch_device_id: Some("device".into()),
+            execution_id: Some("execution".into()),
+            outcome: None,
+        };
+        let route = Route::personal(&dispatch, "execution").unwrap();
+        let mut outbox = Outbox::open_route(directory.path(), route).unwrap();
+        assert!(!outbox.request_encrypted(&dispatch), "a running plain request");
+        dispatch.body.clear();
+        assert!(outbox.request_encrypted(&dispatch), "an empty text alone reads as ciphertext");
+        outbox.request_came_in_clear();
+        assert!(!outbox.request_encrypted(&dispatch), "the ledger's word for a cleared text");
     }
 
     #[test]

@@ -149,6 +149,10 @@ pub struct Record {
     pub state: State,
     pub execution_id: Option<String>,
     pub reply: Option<String>,
+    /// The request came as ciphertext: its body was empty when it arrived.
+    /// A finished request's body is cleared, so an empty body alone does not
+    /// say this; the digest kept from its arrival does.
+    pub request_encrypted: bool,
 }
 /// Created only after a durable insert/identity check. The host may now send ACK.
 #[derive(Debug)]
@@ -427,19 +431,27 @@ impl Ledger {
     pub fn inbox_record(&self, owner: &str, id: &str) -> Result<Record> {
         self.owner(owner)?;
         key(id)?;
-        let (event, state, execution_id, reply): (String, String, Option<String>, Option<String>) =
-            self.db.query_row(
-                "SELECT envelope,state,execution_id,reply FROM local_inbox WHERE id=?",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )?;
+        let (event, state, execution_id, reply, immutable): (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+        ) = self.db.query_row(
+            "SELECT envelope,state,execution_id,reply,immutable_digest FROM local_inbox WHERE id=?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )?;
         let dispatch: Dispatch = serde_json::from_str(&event)?;
         verify(&self.db, &dispatch.scope())?;
+        // A cleared body no longer hashes to the digest the request arrived with.
+        let request_encrypted = dispatch.body.is_empty() && dispatch.digest()? == immutable;
         Ok(Record {
             dispatch,
             state: State::parse(&state)?,
             execution_id,
             reply,
+            request_encrypted,
         })
     }
     /// Persist stable execution identity BEFORE posting server start. Never prepares

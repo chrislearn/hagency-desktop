@@ -1547,6 +1547,10 @@ pub(super) enum OwnerOperation {
     Bindings {
         agent: String,
     },
+    /// Lets the owner's Agent serve project Rooms.
+    MakePublic {
+        agent: String,
+    },
     Binding {
         binding: String,
     },
@@ -1791,6 +1795,14 @@ impl OwnerOperation {
             Self::Bindings { agent } => {
                 operation_id(&agent)?;
                 (Method::GET, format!("agents/{agent}/bindings"), None)
+            }
+            Self::MakePublic { agent } => {
+                operation_id(&agent)?;
+                (
+                    Method::PUT,
+                    format!("agents/{agent}/visibility"),
+                    Some(json!({"visibility":"public"})),
+                )
             }
             Self::Binding { .. }
             | Self::PauseBinding { .. }

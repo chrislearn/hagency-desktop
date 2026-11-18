@@ -2368,9 +2368,10 @@ async fn send_personal_message<T: Transport>(
     cancel: &mut watch::Receiver<bool>,
 ) -> Result<bool, ()> {
     let Some(pending) = messages.next()? else { return Ok(false); };
+    let encrypted = messages.request_encrypted(dispatch);
     if !pending.is_report() {
         if !fresh_running(transport, lease, dispatch, execution, cancel).await { return Err(()); }
-        return messages.send_next(device, dispatch.body.is_empty(), None, Some(pending.sequence)).await;
+        return messages.send_next(device, encrypted, None, Some(pending.sequence)).await;
     }
     // A report that stays in custody says at which step it was held. The
     // step is the host's own word; nothing of the report is logged.
@@ -2392,8 +2393,8 @@ async fn send_personal_message<T: Transport>(
         &proof, lease, dispatch, execution, host.pin.generation, &puppet, wall_ms(),
     ).inspect_err(|_| held("authority_proof"))?;
     if *cancel.borrow() { return Err(()); }
-    messages.send_next(device, dispatch.body.is_empty(), Some(&permit), Some(pending.sequence)).await
-        .inspect_err(|_| if !*cancel.borrow() { held(if dispatch.body.is_empty() { "send_encrypted" } else { "send" }) })
+    messages.send_next(device, encrypted, Some(&permit), Some(pending.sequence)).await
+        .inspect_err(|_| if !*cancel.borrow() { held(if encrypted { "send_encrypted" } else { "send" }) })
 }
 struct LiveToolGate {
     console: PinnedConsole,
@@ -3060,7 +3061,11 @@ async fn flush_record_messages<T: Transport>(
         let Some(route) = messages::Route::personal(&record.dispatch, execution) else { return Ok(true) };
         let root = e2ee::message_root(console, lease, config)?;
         if messages::Outbox::exists_for_route(&root, &route) {
-            let messages = messages::Outbox::open_route(&root, route).map_err(|_| RuntimeError::Profile)?;
+            let mut messages = messages::Outbox::open_route(&root, route).map_err(|_| RuntimeError::Profile)?;
+            // A failed or unknown run's settled record has lost its body by now.
+            if !record.request_encrypted {
+                messages.request_came_in_clear();
+            }
             if messages.next().map_err(|_| RuntimeError::Profile)?.is_some() {
                 let device = match e2ee::device(console, lease, config, cancel).await {
                     Ok(device) => device,
