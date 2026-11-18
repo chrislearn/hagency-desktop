@@ -55,7 +55,7 @@ pub(super) fn recover<T: Transport>(
     let Ok(root) = e2ee::message_root(transport, lease, config) else {
         return pending;
     };
-    for (dispatch, execution) in messages::undelivered::list(&root) {
+    for (dispatch, execution, encrypted) in messages::undelivered::list(&root) {
         let Ok(record) = ledger.inbox_record(owner, &dispatch) else {
             continue;
         };
@@ -64,7 +64,7 @@ pub(super) fn recover<T: Transport>(
             && record.dispatch.agent_id == lease.agent_id
             && record.execution_id.as_deref() == Some(execution.as_str())
         {
-            remember(&mut pending, &Anchor { dispatch: record.dispatch, execution });
+            remember(&mut pending, &Anchor::restored(record.dispatch, execution, encrypted));
         }
     }
     pending
@@ -260,7 +260,9 @@ pub(super) async fn run<T: Transport>(
     };
     // Noted before the first message can be recorded: a restart in the
     // middle of this turn still finds what it left to deliver.
-    if messages::undelivered::note(&root, &anchor.dispatch.id, &anchor.execution).is_err() {
+    if messages::undelivered::note(&root, &anchor.dispatch.id, &anchor.execution, anchor.encrypted())
+        .is_err()
+    {
         return refuse(provider, "local_state_unavailable").await;
     }
     let Ok(controls) = run_controls::Controller::self_started(route, &root, &turn) else {

@@ -45,6 +45,30 @@ pub(super) struct Anchor {
     pub dispatch: inbox::Dispatch,
     pub execution: String,
 }
+impl Anchor {
+    /// Whether the run's request reached this host as ciphertext. Every send
+    /// path reads that from the request record: an empty body is a request
+    /// only the Agent's device could read, and what is reported for it goes
+    /// out encrypted or not at all.
+    pub fn encrypted(&self) -> bool {
+        self.dispatch.body.is_empty()
+    }
+    /// An anchor read back from the ledger, for a run that ended earlier. The
+    /// stored record gives up its body once the answer is proved sent, so an
+    /// empty body no longer tells anything; `encrypted` is what was noted
+    /// while the body was still there. The record is put back into the form
+    /// the send paths read: no body for an encrypted request, and a
+    /// one-character stand-in for a plain one. The stand-in is never shown
+    /// or sent; only its presence is read.
+    pub fn restored(mut dispatch: inbox::Dispatch, execution: String, encrypted: bool) -> Self {
+        if encrypted {
+            dispatch.body.clear();
+        } else if dispatch.body.is_empty() {
+            dispatch.body.push('-');
+        }
+        Self { dispatch, execution }
+    }
+}
 /// Only idle, settled providers enter this bounded LRU. Eviction and host stop
 /// use the same whole-process-tree custody as a cancelled active call. Durable
 /// native context remains on disk when an idle process is evicted.

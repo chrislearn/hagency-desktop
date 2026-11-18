@@ -94,6 +94,8 @@ pub(super) fn tool(
                 execution: execution.into(),
                 room: dispatch.room_id.clone(),
                 thread: dispatch.thread_root.clone(),
+                // Read while the run's record still has its body (see `Anchor`).
+                encrypted: dispatch.body.is_empty(),
                 due: now.saturating_add(delay),
                 created: now,
                 note: note.clone(),
@@ -419,7 +421,7 @@ pub(super) async fn pump<T: Transport>(
             timers::remove(&root, &timer.id);
             continue;
         }
-        let anchor = Anchor { dispatch: record.dispatch, execution: timer.execution.clone() };
+        let anchor = Anchor::restored(record.dispatch, timer.execution.clone(), timer.encrypted);
         let scope = anchor.dispatch.scope();
         if timer.attempts >= MAX_ATTEMPTS {
             tracing::warn!(code = "agent_timer_given_up", attempts = timer.attempts,
@@ -489,6 +491,41 @@ mod tests {
             "state":"running","bindingGeneration":1
         }))
         .unwrap()
+    }
+
+    /// Seen live: a timer's report for a chat that is not encrypted stayed in
+    /// custody, because the ledger's record of a run has no body once its
+    /// answer is sent and an empty body reads as "came as ciphertext".
+    #[test]
+    fn a_timer_remembers_whether_its_run_was_encrypted() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let sealed = dispatch("!room:example.test", "$thread:example.test");
+        let mut plain = dispatch("!open:example.test", "$thread:example.test");
+        plain.body = "remind me in a minute".into();
+        call(root, &sealed, set(60, "sealed chat", None));
+        call(root, &plain, set(60, "open chat", None));
+        let saved = timers::list(root);
+        let of = |note: &str| saved.iter().find(|timer| timer.note == note).unwrap().encrypted;
+        assert!(of("sealed chat"));
+        assert!(!of("open chat"));
+        // When the timer is due the record has given up its body.
+        let mut stored = plain.clone();
+        stored.body.clear();
+        let anchor = Anchor::restored(stored.clone(), "exe_one".into(), false);
+        assert!(!anchor.encrypted());
+        assert!(!anchor.dispatch.body.is_empty());
+        assert!(Anchor::restored(stored, "exe_one".into(), true).encrypted());
+        // What was noted wins over a body that is still there.
+        assert!(Anchor::restored(plain, "exe_one".into(), true).dispatch.body.is_empty());
+        // A timer saved before the field existed is read as encrypted.
+        let old: Timer = serde_json::from_value(json!({
+            "version":1,"id":"wk_00000000000000aa","dispatch":"dsp_one","execution":"exe_one",
+            "room":"!open:example.test","thread":"$thread:example.test","due":1,"created":1,
+            "note":"n","repeat":null,"attempts":0,"fired":0
+        }))
+        .unwrap();
+        assert!(old.encrypted);
     }
     fn call(root: &std::path::Path, dispatch: &inbox::Dispatch, operation: RoomTimerOperation) -> serde_json::Value {
         serde_json::from_str(&tool(root, dispatch, "exe_one", &operation)).unwrap()
@@ -616,7 +653,7 @@ mod tests {
         let timer = Timer {
             version: 1, id: "wk_00000000000000aa".into(), dispatch: "dsp_one".into(),
             execution: "exe_one".into(), room: "!room:example.test".into(),
-            thread: "$thread:example.test".into(), due: 1_000_600, created: 1_000_000,
+            thread: "$thread:example.test".into(), encrypted: true, due: 1_000_600, created: 1_000_000,
             note: "Report the build result.".into(), repeat: Some(600), attempts: 1, fired: 0,
         };
         let text = prompt(&timer, 1_000_600);

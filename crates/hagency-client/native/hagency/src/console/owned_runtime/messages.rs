@@ -749,7 +749,11 @@ pub(super) mod undelivered {
     fn name(dispatch: &str, execution: &str) -> Result<String, ()> {
         Ok(format!("{}.sealed", super::hash(serde_json::to_vec(&(dispatch, execution)).map_err(|_| ())?)))
     }
-    pub(in crate::console::owned_runtime) fn note(device_root: &Path, dispatch: &str, execution: &str) -> Result<(), ()> {
+    /// `encrypted`: the run's request came as ciphertext. It is noted here
+    /// because the ledger's record of the run cannot tell once its answer is
+    /// sent, and a restart must not then hold back, or send in the clear,
+    /// what the run still has to deliver.
+    pub(in crate::console::owned_runtime) fn note(device_root: &Path, dispatch: &str, execution: &str, encrypted: bool) -> Result<(), ()> {
         let (directory, cipher) = directory(device_root)?;
         let path = directory.join(name(dispatch, execution)?);
         if path.exists() {
@@ -758,12 +762,14 @@ pub(super) mod undelivered {
         if std::fs::read_dir(&directory).map_err(|_| ())?.count() >= MAX_NOTES {
             return Err(());
         }
-        let bytes = cipher.encrypt_value(&(dispatch, execution)).map_err(|_| ())?;
+        let bytes = cipher.encrypt_value(&(dispatch, execution, encrypted)).map_err(|_| ())?;
         hagency_store::private::write_new(&path, &bytes).map_err(|_| ())
     }
     /// Every noted run. A note that cannot be read is skipped, not removed.
     /// An Agent that never had a note gets no folder and no key from a look.
-    pub(in crate::console::owned_runtime) fn list(device_root: &Path) -> Vec<(String, String)> {
+    /// A note from before the third field existed is read as encrypted: its
+    /// reports are then sent encrypted or stay in custody.
+    pub(in crate::console::owned_runtime) fn list(device_root: &Path) -> Vec<(String, String, bool)> {
         if !device_root.join("outgoing-messages").join("self-started-pending").is_dir() {
             return Vec::new();
         }
@@ -773,7 +779,10 @@ pub(super) mod undelivered {
             .take(MAX_NOTES)
             .filter_map(|entry| {
                 let bytes = super::read(&entry.ok()?.path(), 16 * 1024).ok()?;
-                cipher.decrypt_value::<(String, String)>(&bytes).ok()
+                cipher.decrypt_value::<(String, String, bool)>(&bytes).ok().or_else(|| {
+                    let (dispatch, execution) = cipher.decrypt_value::<(String, String)>(&bytes).ok()?;
+                    Some((dispatch, execution, true))
+                })
             })
             .collect()
     }
@@ -803,6 +812,11 @@ pub(super) mod timers {
         pub execution: String,
         pub room: String,
         pub thread: String,
+        /// The request of that run came as ciphertext: what the timer's turn
+        /// reports is sent encrypted or not at all. Kept here because the
+        /// ledger's record of the run cannot tell once its answer is sent.
+        #[serde(default = "unknown_is_encrypted")]
+        pub encrypted: bool,
         /// Unix seconds.
         pub due: i64,
         pub created: i64,
@@ -813,6 +827,9 @@ pub(super) mod timers {
         pub attempts: u8,
         /// Turns that ran to their end.
         pub fired: u32,
+    }
+    fn unknown_is_encrypted() -> bool {
+        true
     }
     fn directory(device_root: &Path) -> Result<(PathBuf, super::StoreCipher), ()> {
         let root = device_root.join("outgoing-messages");
