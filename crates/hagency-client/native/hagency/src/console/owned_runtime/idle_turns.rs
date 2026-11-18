@@ -10,10 +10,13 @@
 //!
 //! Only a Claude session starts a turn by itself; a Codex or Octos session is
 //! not looked at. A timer the Agent set with the host (`wakeups`) runs its
-//! turn through the same `run`, for every runtime. In both kinds of turn the
-//! room's history and file tools answer "unavailable" (they act for a
-//! running request), questions to the requester go unanswered, and the room
-//! cannot steer or stop the turn.
+//! turn through the same `run`, for every runtime.
+//!
+//! The turn shows a card of its own on the message of that run, where the
+//! run's requester or the owner can stop it, and a question the model asks
+//! goes to the same two. Words cannot be added to the turn from the room,
+//! and the room's history and file tools answer "unavailable": they act for
+//! a request that is running on the server.
 use super::provider_custody::{Anchor, Provider, SessionKey, Sessions};
 use super::*;
 
@@ -196,19 +199,20 @@ pub(super) async fn pump<T: Transport>(
     Ok(())
 }
 
-async fn refuse(mut provider: Provider, reason: &'static str) -> Result<(), RuntimeError> {
+async fn refuse(mut provider: Provider, reason: &'static str) -> Result<bool, RuntimeError> {
     // The turn already runs inside the CLI. Without admission its process is
     // stopped; the conversation resumes from disk with the next request.
     tracing::warn!(code = "agent_self_started_turn_refused", reason,
         "A turn the native CLI started by itself was not admitted; its process is stopped");
     let _ = provider.stop().await;
-    Ok(())
+    Ok(false)
 }
 
 /// Run a turn nobody requested and report it to the room of `anchor`.
 /// `input` is `None` for the turn the native CLI already started in
 /// `provider`, and the host's own words for a turn the host starts for a
-/// timer (`wakeups`). Only a stop of the runtime is an error.
+/// timer (`wakeups`). Only a stop of the runtime is an error. `true` says
+/// that someone in the room stopped the turn.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run<T: Transport>(
     transport: &T,
@@ -224,7 +228,7 @@ pub(super) async fn run<T: Transport>(
     mut provider: Provider,
     anchor: Anchor,
     input: Option<String>,
-) -> Result<(), RuntimeError> {
+) -> Result<bool, RuntimeError> {
     let scope = anchor.dispatch.scope();
     let Some(host) = transport.approval_host() else {
         return refuse(provider, "no_message_host").await;
@@ -265,10 +269,30 @@ pub(super) async fn run<T: Transport>(
     {
         return refuse(provider, "local_state_unavailable").await;
     }
-    let Ok(controls) = run_controls::Controller::self_started(route, &root, &turn) else {
+    let Ok((queue, mut receiver)) = codex::approval_queue(1) else {
         return refuse(provider, "local_state_unavailable").await;
     };
-    let Ok((queue, mut receiver)) = codex::approval_queue(1) else {
+    // A question of the model goes to the requester of the run this turn
+    // reports to and to the owner, on that run's message.
+    let (question_queue, question_receiver) = hagency_agent_local::questions::question_queue();
+    let mut queue = queue.with_questions(question_queue);
+    // The turn gets a card of its own on that message: the room sees that
+    // the Agent works, and the same two people can stop it. A run whose
+    // requester cannot hold a card (another Agent) goes without one.
+    let kind = runtime::kind(&config.credential_ref).name();
+    let control = match run_controls::optional_card(&anchor.dispatch, &turn, owner, kind) {
+        Some(card) => {
+            let Ok((sender, inbox)) =
+                hagency_agent_local::run_controls::channel(&scope, &turn, &turn)
+            else {
+                return refuse(provider, "local_state_unavailable").await;
+            };
+            queue = queue.with_run_controls(inbox);
+            Some((sender, card))
+        }
+        None => None,
+    };
+    let Ok(controls) = run_controls::Controller::self_started(route, &root, &turn, control) else {
         return refuse(provider, "local_state_unavailable").await;
     };
     let mut queue = queue.with_live_text(controls.live_text());
@@ -361,7 +385,14 @@ pub(super) async fn run<T: Transport>(
         dispatch: anchor.dispatch.clone(),
         execution_id: anchor.execution.clone(),
     };
+    // A question carries this turn's own identity; its card is put where
+    // the anchor run's request is.
+    let asked = inbox::Prepared {
+        dispatch: inbox::Dispatch { id: turn.clone(), ..anchor.dispatch.clone() },
+        execution_id: turn.clone(),
+    };
     let control_cancel = cancel.clone();
+    let question_cancel = cancel.clone();
     let (room_host, room_receiver) = room_bridge;
     let result = tokio::select! { biased;
         _ = canceled(cancel) => Err(RuntimeError::Stopped),
@@ -380,6 +411,7 @@ pub(super) async fn run<T: Transport>(
                     }
                 } => result,
                 _ = room_host.serve(room_receiver) => Err(codex::Error::Protocol("room bridge closed")),
+                _ = questions::serve(transport, lease, config, owner, &asked, question_cancel, question_receiver) => Err(codex::Error::Protocol("question bridge closed")),
                 _ = async {
                     controls.serve(transport, lease, config, &prepared, control_cancel).await;
                     // Delivery that cannot start now does not end a paid turn.
@@ -425,6 +457,16 @@ pub(super) async fn run<T: Transport>(
                 "The final answer of a self-started turn could not be recorded for delivery");
         }
     }
+    let stopped = matches!(&completed,
+        Some(completed) if completed.status == codex::TurnStatus::Interrupted);
+    {
+        use crate::agent_run_controls::State;
+        controls.finish(match &completed {
+            Some(_) if stopped => State::Interrupted,
+            Some(_) => State::Completed,
+            None => State::Failed,
+        });
+    }
     drop(controls);
     let retain = matches!(&completed, Some(completed) if completed.usage.is_reported())
         && provider.session.can_continue();
@@ -432,6 +474,7 @@ pub(super) async fn run<T: Transport>(
         answered = completed.is_some(),
         usage_reported = completed.as_ref().is_some_and(|completed| completed.usage.is_reported()),
         retained = retain,
+        stopped_from_room = stopped,
         "A self-started turn ended");
     if retain {
         sessions.retain(key, provider, anchor.clone());
@@ -439,14 +482,14 @@ pub(super) async fn run<T: Transport>(
         let _ = provider.stop().await;
     }
     remember(pending, &anchor);
-    ready(config, status, Ok(()))
+    ready(config, status, Ok(stopped))
 }
 
-fn ready(
+fn ready<T>(
     config: &StartConfig,
     status: &watch::Sender<RuntimeStatus>,
-    result: Result<(), RuntimeError>,
-) -> Result<(), RuntimeError> {
+    result: Result<T, RuntimeError>,
+) -> Result<T, RuntimeError> {
     let mut ready = RuntimeStatus::new(
         &config.agent_id,
         if config.shared_workspace { "online" } else { "online_chat_only" },

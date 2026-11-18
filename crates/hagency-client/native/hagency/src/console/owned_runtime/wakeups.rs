@@ -475,7 +475,15 @@ pub(super) async fn pump<T: Transport>(
         {
             // The attempt stays counted: after a restart the turn starts once more.
             Err(error) => return Err(error),
-            Ok(()) => settle(&root, &timer.id, now()),
+            // Stopped from the room: a repeating timer ends with its turn.
+            // The room has no other way to end it than through the Agent,
+            // and it would start the next turn an interval later.
+            Ok(true) if timer.repeat.is_some() => {
+                timers::remove(&root, &timer.id);
+                tracing::info!(code = "agent_timer_stopped",
+                    "The room stopped the turn of a repeating timer; the timer is removed");
+            }
+            Ok(_) => settle(&root, &timer.id, now()),
         }
     }
     Ok(())
