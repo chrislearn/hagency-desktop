@@ -909,6 +909,72 @@ pub(super) mod timers {
         }
     }
 }
+
+/// The standing role a person gave a local Agent for one room (`roles`).
+/// Sealed like the timers, in the folder of the Agent's device: one file per
+/// room and per person who gave it.
+pub(super) mod roles {
+    use super::{Path, PathBuf};
+    use serde::{Deserialize, Serialize};
+    const MAX_ROLES: usize = 512;
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub(in crate::console::owned_runtime) struct Role {
+        pub version: u8,
+        pub room: String,
+        /// The person whose request saved it.
+        pub by: String,
+        /// Unix seconds.
+        pub set: i64,
+        pub text: String,
+    }
+    fn directory(device_root: &Path) -> Result<(PathBuf, super::StoreCipher), ()> {
+        let root = device_root.join("outgoing-messages");
+        hagency_store::private::directory(&root).map_err(|_| ())?;
+        let cipher = super::cipher(&root)?;
+        let directory = root.join("roles");
+        hagency_store::private::directory(&directory).map_err(|_| ())?;
+        Ok((directory, cipher))
+    }
+    /// A room and a person name the file; neither is ever a path.
+    fn name(room: &str, by: &str) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}.sealed", Sha256::digest(serde_json::json!([room, by]).to_string().as_bytes()))
+    }
+    /// True where a role may have been saved: a look creates no folder and
+    /// no key for an Agent that never had one.
+    pub(in crate::console::owned_runtime) fn any(device_root: &Path) -> bool {
+        device_root.join("outgoing-messages").join("roles").is_dir()
+    }
+    pub(in crate::console::owned_runtime) fn save(device_root: &Path, role: &Role) -> Result<(), ()> {
+        let (directory, cipher) = directory(device_root)?;
+        let path = directory.join(name(&role.room, &role.by));
+        let bytes = cipher.encrypt_value(role).map_err(|_| ())?;
+        if path.exists() {
+            return hagency_store::private::replace(&path, &bytes).map_err(|_| ());
+        }
+        if std::fs::read_dir(&directory).map_err(|_| ())?.count() >= MAX_ROLES {
+            return Err(());
+        }
+        hagency_store::private::write_new(&path, &bytes).map_err(|_| ())
+    }
+    /// The role `by` saved for `room`, if one is saved. A file that cannot
+    /// be read, or that names another room or person, is no role.
+    pub(in crate::console::owned_runtime) fn get(device_root: &Path, room: &str, by: &str) -> Option<Role> {
+        if !any(device_root) {
+            return None;
+        }
+        let (directory, cipher) = directory(device_root).ok()?;
+        let bytes = super::read(&directory.join(name(room, by)), 64 * 1024).ok()?;
+        cipher
+            .decrypt_value::<Role>(&bytes)
+            .ok()
+            .filter(|role| role.version == 1 && role.room == room && role.by == by)
+    }
+    pub(in crate::console::owned_runtime) fn remove(device_root: &Path, room: &str, by: &str) {
+        let _ = std::fs::remove_file(device_root.join("outgoing-messages").join("roles").join(name(room, by)));
+    }
+}
 impl MessageSink for Outbox {
     fn record(&self, id: &str, text: &str) -> Result<(), MessageError> {
         if id.is_empty() || id.len() > 2048 || id.chars().any(char::is_control)

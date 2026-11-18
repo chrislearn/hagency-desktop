@@ -136,6 +136,72 @@ const TIMER_REPEAT_HINT: &str = "repeat_seconds must be left out for a timer tha
 const TIMER_ID_HINT: &str =
     "wakeup_id must be an id that schedule_wakeup or list_wakeups returned (wk_...), and nothing else";
 
+/// A standing role for one room, which the host keeps. A room of an Agent
+/// space starts a new conversation with every top-level message, and a new
+/// conversation knows nothing of the earlier ones; the role is what the host
+/// hands to each of them.
+pub const ROOM_ROLE_TOOLS: [&str; 2] = ["set_room_role", "get_room_role"];
+pub const ROLE_BYTES: usize = 2000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RoomRoleOperation {
+    /// Empty text removes the role.
+    Set {
+        role: String,
+    },
+    Get {},
+    /// A call whose arguments cannot be used; answered with the reason, like
+    /// a timer tool's.
+    Invalid {
+        tool: &'static str,
+        reason: &'static str,
+    },
+}
+impl RoomRoleOperation {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Set { .. } => ROOM_ROLE_TOOLS[0],
+            Self::Get {} => ROOM_ROLE_TOOLS[1],
+            Self::Invalid { tool, .. } => tool,
+        }
+    }
+    /// Only the role's text is read. The room and the person it is saved for
+    /// are the run's, never the model's.
+    fn read(tool: &'static str, arguments: &Value) -> Self {
+        Self::usable(tool, arguments).unwrap_or_else(|reason| Self::Invalid { tool, reason })
+    }
+    fn usable(tool: &'static str, arguments: &Value) -> Result<Self, &'static str> {
+        let none = serde_json::Map::new();
+        let fields = match arguments {
+            Value::Null => &none,
+            Value::Object(fields) => fields,
+            _ => return Err("the arguments must be a JSON object"),
+        };
+        if tool == ROOM_ROLE_TOOLS[1] {
+            return Ok(Self::Get {});
+        }
+        if !fields.keys().all(|key| key == "role") {
+            return Err(ROLE_FIELDS_HINT);
+        }
+        let role = fields
+            .get("role")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|role| role.len() <= ROLE_BYTES && !role.contains('\0'))
+            .ok_or(ROLE_TEXT_HINT)?;
+        Ok(Self::Set { role: role.to_owned() })
+    }
+}
+const ROLE_FIELDS_HINT: &str =
+    "set_room_role takes only role; the role is always for this room";
+const ROLE_TEXT_HINT: &str = "role must be text of at most 2000 bytes; empty text removes the role";
+
+/// A tool whose effect stays on the host: it sends nothing, reads nothing of
+/// the room and runs nothing.
+pub fn host_kept(name: &str) -> bool {
+    ROOM_TIMER_TOOLS.contains(&name) || ROOM_ROLE_TOOLS.contains(&name)
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(
     tag = "tool",
@@ -210,18 +276,25 @@ impl RoomFileOperation {
 pub struct RoomTools {
     files: bool,
     timers: bool,
+    roles: bool,
 }
 impl RoomTools {
     pub fn history() -> Self {
-        Self { files: false, timers: false }
+        Self { files: false, timers: false, roles: false }
     }
     pub fn history_and_files() -> Self {
-        Self { files: true, timers: false }
+        Self { files: true, timers: false, roles: false }
     }
     /// Also the conversation's timers. Only a host that keeps and fires them
     /// offers these: an owner's own computer, for the owner's local Agents.
     pub fn with_timers(self) -> Self {
         Self { timers: true, ..self }
+    }
+    /// Also the room's standing role. Only a host that keeps it and hands it
+    /// to each new conversation offers these: the owner's own computer, for
+    /// the owner's local Agents.
+    pub fn with_roles(self) -> Self {
+        Self { roles: true, ..self }
     }
     pub fn definitions(self) -> Vec<Value> {
         let mut definitions = vec![history_definition()];
@@ -230,6 +303,9 @@ impl RoomTools {
         }
         if self.timers {
             definitions.extend(timer_definitions());
+        }
+        if self.roles {
+            definitions.extend(role_definitions());
         }
         definitions
     }
@@ -248,6 +324,10 @@ impl RoomTools {
             && self.timers
         {
             Ok(RoomOperation::Timer(RoomTimerOperation::read(tool, arguments)))
+        } else if let Some(tool) = ROOM_ROLE_TOOLS.iter().copied().find(|tool| *tool == name)
+            && self.roles
+        {
+            Ok(RoomOperation::Role(RoomRoleOperation::read(tool, arguments)))
         } else {
             Err(Error::Unsupported)
         }
@@ -258,6 +338,7 @@ pub enum RoomOperation {
     History { cursor: Option<String> },
     File(RoomFileOperation),
     Timer(RoomTimerOperation),
+    Role(RoomRoleOperation),
 }
 impl RoomOperation {
     pub fn name(&self) -> &'static str {
@@ -265,6 +346,7 @@ impl RoomOperation {
             Self::History { .. } => ROOM_HISTORY_TOOL,
             Self::File(operation) => operation.name(),
             Self::Timer(operation) => operation.name(),
+            Self::Role(operation) => operation.name(),
         }
     }
 }
@@ -305,9 +387,60 @@ pub(crate) fn timer_definitions() -> Vec<Value> {
     ]
 }
 
+pub(crate) fn role_definitions() -> Vec<Value> {
+    vec![
+        json!({"name":"set_room_role","description":"Save your standing role, or standing instructions, for THIS room. Use it whenever the person gives you a role here (for example reviewer, tester, the one who writes the design notes), tells you how to work in this room from now on, or changes or ends such a role. A new conversation in this room starts without the earlier ones, so a role that is not saved is forgotten; what you save is handed to you at the start of every later conversation here. Write it so that it is enough on its own: what you are in this room, what you do and what you leave to others. Empty text removes the role. A role the owner of this Agent gives applies to everyone in the room; one that another person gives applies to that person's conversations here. The result says which.","inputSchema":{"type":"object","properties":{"role":{"type":"string","maxLength":ROLE_BYTES,"description":"The whole role as it should stand from now on; it replaces the one saved before."}},"required":["role"],"additionalProperties":false}}),
+        json!({"name":"get_room_role","description":"Read the standing role saved for you in this room: its text, who gave it and whom it applies to.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_room_role_is_offered_and_parsed_only_where_the_host_keeps_it() {
+        let plain = RoomTools::history_and_files().with_timers();
+        let kept = plain.with_roles();
+        let names: Vec<_> = kept
+            .definitions()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(&names[plain.definitions().len()..], &ROOM_ROLE_TOOLS);
+        let role = json!({"role":"  You are the reviewer of this room.  "});
+        assert!(matches!(plain.parse("set_room_role", &role), Err(Error::Unsupported)));
+        assert!(matches!(plain.parse("get_room_role", &json!({})), Err(Error::Unsupported)));
+        match kept.parse("set_room_role", &role) {
+            Ok(RoomOperation::Role(RoomRoleOperation::Set { role })) => {
+                assert_eq!(role, "You are the reviewer of this room.")
+            }
+            _ => panic!("the role was not read"),
+        }
+        // Empty text is the way to remove it.
+        assert!(matches!(
+            kept.parse("set_room_role", &json!({"role":"   "})),
+            Ok(RoomOperation::Role(RoomRoleOperation::Set { role })) if role.is_empty()
+        ));
+        assert!(matches!(kept.parse("get_room_role", &json!({})), Ok(RoomOperation::Role(RoomRoleOperation::Get {}))));
+        assert!(matches!(kept.parse("get_room_role", &Value::Null), Ok(RoomOperation::Role(RoomRoleOperation::Get {}))));
+        let reason = |arguments: Value| match kept.parse("set_room_role", &arguments) {
+            Ok(RoomOperation::Role(RoomRoleOperation::Invalid { tool, reason })) => {
+                assert_eq!(tool, "set_room_role");
+                reason
+            }
+            _ => panic!("{arguments} was not refused"),
+        };
+        for bad in [json!({}), json!({"role":7}), json!({"role":"r".repeat(ROLE_BYTES + 1)}), json!({"role":"a\0b"})] {
+            assert_eq!(reason(bad), ROLE_TEXT_HINT);
+        }
+        // The model never names the room or the person the role is for.
+        for bad in [json!({"role":"r","room":"!other:example.test"}), json!({"role":"r","for":"@other:example.test"})] {
+            assert_eq!(reason(bad), ROLE_FIELDS_HINT);
+        }
+        assert_eq!(reason(json!(["r"])), "the arguments must be a JSON object");
+        assert!(ROLE_TEXT_HINT.contains(&format!("at most {ROLE_BYTES} bytes")));
+        assert!(host_kept("set_room_role") && host_kept("cancel_wakeup") && !host_kept("send_file"));
+    }
     #[test]
     fn timers_are_offered_and_parsed_only_where_the_host_keeps_them() {
         let plain = RoomTools::history_and_files();

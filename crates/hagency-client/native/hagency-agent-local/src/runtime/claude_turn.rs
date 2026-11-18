@@ -465,17 +465,23 @@ async fn drive<H: Host, C: Capture>(
                     // this dispatch's room authority. External MCP tools still
                     // use the owner's ordinary permission policy below.
                     if let Some(name) = tool_name.strip_prefix("mcp__hagency_matrix__") {
-                        use hagency_runtime::room_tools::{RoomOperation, RoomTimerOperation, RoomTools};
+                        use hagency_runtime::room_tools::{RoomOperation, RoomRoleOperation, RoomTimerOperation, RoomTools};
                         let operation = RoomTools::history_and_files()
                             .with_timers()
+                            .with_roles()
                             .parse(name, &input);
                         // A timer set or removed on the word of a peer
-                        // session would later act as the session's own: in
-                        // such a turn it is the owner's to decide, below.
+                        // session would later act as the session's own, and
+                        // a role saved on its word would be handed to every
+                        // later conversation of the room: in such a turn
+                        // each is the owner's to decide, below.
                         let peer_timer = outside
-                            && matches!(&operation, Ok(RoomOperation::Timer(timer))
-                                if !matches!(timer, RoomTimerOperation::ListWakeups {}
-                                    | RoomTimerOperation::Invalid { .. }));
+                            && match &operation {
+                                Ok(RoomOperation::Timer(timer)) => !matches!(timer,
+                                    RoomTimerOperation::ListWakeups {} | RoomTimerOperation::Invalid { .. }),
+                                Ok(RoomOperation::Role(role)) => matches!(role, RoomRoleOperation::Set { .. }),
+                                _ => false,
+                            };
                         if !peer_timer {
                             return Decision::Tool(ToolAnswer::allowed(
                                 queue.room.is_some() && operation.is_ok(),
