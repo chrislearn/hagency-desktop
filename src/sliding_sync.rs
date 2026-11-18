@@ -313,7 +313,17 @@ async fn login(
             }
         }
 
-        LoginRequest::LoginByOAuthSuccess(client, client_session, epoch) => finish_oauth_login(client,client_session,epoch).await,
+        LoginRequest::LoginByOAuthSuccess(client, client_session, epoch) => {
+            finish_oauth_login(client, client_session, epoch)
+                .await
+                .map_err(|error| {
+                    if let Some(message) = crate::login::browser_credential_error_message(&error, true) {
+                        error.context(message)
+                    } else {
+                        error
+                    }
+                })
+        }
 
         LoginRequest::LoginBySSOSuccess(client, client_session) => {
             let user = client.user_id().ok_or_else(|| anyhow!("SSO did not return a Matrix identity"))?.to_owned();
@@ -2469,7 +2479,13 @@ async fn matrix_worker_task(
                         }
                         Err(error) => {
                             Cx::post_action(LoginAction::SsoPending(false));
-                            Cx::post_action(LoginAction::LoginFailure(format!("Browser sign-in failed: {error}")));
+                            let message = if let Some(message) = crate::login::browser_credential_error_message(&error, false) {
+                                warning!("Local credential check failed before browser sign-in: {error}");
+                                message.to_owned()
+                            } else {
+                                format!("Browser sign-in failed: {error}")
+                            };
+                            Cx::post_action(LoginAction::LoginFailure(message));
                         }
                     }
                 }));

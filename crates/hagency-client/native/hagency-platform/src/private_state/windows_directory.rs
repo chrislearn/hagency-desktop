@@ -11,8 +11,9 @@ use windows_sys::{
     Win32::{
         Foundation::{STATUS_PENDING, STATUS_SUCCESS, WAIT_OBJECT_0},
         Storage::FileSystem::{
-            FILE_ID_INFO, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
-            GetFileInformationByHandleEx, GetVolumeInformationByHandleW,
+            FILE_ID_INFO, FILE_NAME_OPENED, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
+            GetDriveTypeW, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
+            GetVolumeInformationByHandleW, VOLUME_NAME_GUID,
         },
         System::{
             IO::IO_STATUS_BLOCK,
@@ -140,12 +141,61 @@ fn candidate(directory: &Dir) -> Result<Option<(File, Identity)>, Error> {
     Ok(Some((file, before)))
 }
 
-fn supported_profile(device: u32, characteristics: u32) -> bool {
+fn supported_profile(
+    device: u32,
+    characteristics: u32,
+    fixed_volume: impl FnOnce() -> bool,
+) -> bool {
+    const DISK: u32 = 7;
     const MOUNTED: u32 = 0x20;
     const ALLOW_APPCONTAINER_TRAVERSAL: u32 = 0x20000;
-    device == 7
-        && characteristics & MOUNTED != 0
-        && characteristics & !(MOUNTED | ALLOW_APPCONTAINER_TRAVERSAL) == 0
+    // Observed on local NTFS. The public device-characteristics definitions do
+    // not identify this bit, so require a separate fixed-volume check for it.
+    const EXTRA_NTFS_CHARACTERISTIC: u32 = 0x200000;
+    if device != DISK || characteristics & MOUNTED == 0 {
+        return false;
+    }
+    match characteristics & !(MOUNTED | ALLOW_APPCONTAINER_TRAVERSAL) {
+        0 => true,
+        EXTRA_NTFS_CHARACTERISTIC => fixed_volume(),
+        _ => false,
+    }
+}
+
+fn fixed_volume(file: &File) -> bool {
+    const DRIVE_FIXED: u32 = 3;
+    // Get the volume identity from the original live directory handle. The
+    // resulting root is used only to query its drive type.
+    let mut path = vec![0u16; 32_768];
+    // SAFETY: The handle and UTF-16 output buffer stay live for this call.
+    let len = unsafe {
+        GetFinalPathNameByHandleW(
+            file.as_raw_handle(),
+            path.as_mut_ptr(),
+            path.len() as u32,
+            FILE_NAME_OPENED | VOLUME_NAME_GUID,
+        )
+    } as usize;
+    if len == 0 || len >= path.len() {
+        return false;
+    }
+    let prefix: Vec<u16> = r"\\?\Volume{".encode_utf16().collect();
+    let root_len = prefix.len() + 36 + 2; // GUID, closing brace, backslash.
+    let Some(root) = path[..len].get(..root_len) else {
+        return false;
+    };
+    if !root.starts_with(&prefix)
+        || !root.ends_with(&[b'}' as u16, b'\\' as u16])
+        || !root[prefix.len()..root_len - 2].iter().all(|&unit| {
+            u8::try_from(unit).is_ok_and(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+        })
+    {
+        return false;
+    }
+    path[root_len] = 0;
+    // SAFETY: The volume GUID root is NUL-terminated and includes its trailing
+    // backslash. This call does not retain the buffer.
+    unsafe { GetDriveTypeW(path.as_ptr()) == DRIVE_FIXED }
 }
 
 // Heap storage has a stable address even across the exceptional parking path.
@@ -224,7 +274,11 @@ fn query(file: File, #[cfg(test)] gate: Option<tests::Gate>) -> Option<File> {
     }
     if completion != STATUS_SUCCESS
         || original.status.Information != size_of::<FILE_FS_DEVICE_INFORMATION>()
-        || !supported_profile(original.device.DeviceType, original.device.Characteristics)
+        || !supported_profile(
+            original.device.DeviceType,
+            original.device.Characteristics,
+            || fixed_volume(&original.file),
+        )
     {
         return None;
     }

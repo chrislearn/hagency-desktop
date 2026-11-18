@@ -33,6 +33,8 @@ pub enum Error {
     Missing,
     #[error("credential_access_unavailable")]
     Unavailable,
+    #[error("credential_write_resources_exhausted")]
+    WriteResourcesExhausted,
     #[error("credential_store_locked")]
     Locked,
     #[error("credential_access_denied")]

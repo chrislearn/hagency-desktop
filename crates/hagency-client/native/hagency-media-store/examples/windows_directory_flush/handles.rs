@@ -84,14 +84,14 @@ pub(super) fn candidate(dir: &Dir) -> Result<File> {
         return Err(Failure::refused("same_object"));
     }
     println!("{{\"phase\":\"same_object\",\"full_identity\":true,\"private_acl\":true}}");
-    profile(&candidate)?;
+    profile(dir, &candidate)?;
     candidate
         .sync_all()
         .map_err(|e| Failure::io("directory_before", e))?;
     println!("{{\"phase\":\"directory_before\",\"ack\":true}}");
     Ok(candidate)
 }
-fn profile(file: &File) -> Result<()> {
+fn profile(dir: &Dir, file: &File) -> Result<()> {
     let mut filesystem = [0u16; 32];
     let mut flags = 0;
     // SAFETY: Only a borrowed actual directory handle, fixed initialized output
@@ -155,10 +155,12 @@ fn profile(file: &File) -> Result<()> {
         "{{\"phase\":\"filesystem_profile\",\"ntfs\":true,\"device_type\":{},\"characteristics\":{}}}",
         device.DeviceType, device.Characteristics
     );
-    // The optional named app-container traversal bit is classified explicitly.
-    // The actual token must not be an app container and has no enabled
-    // privileges. Every other characteristic still refuses.
-    if !super::supported_profile(device.DeviceType, device.Characteristics) {
+    // Preserve the raw observations and use the production adapter to qualify
+    // the same retained directory, including its fixed-volume check.
+    if private::WindowsDirectorySync::open(dir)
+        .map_err(|_| Failure::refused("local_mounted_disk"))?
+        .is_none()
+    {
         return Err(Failure::refused("local_mounted_disk"));
     }
     Ok(())
