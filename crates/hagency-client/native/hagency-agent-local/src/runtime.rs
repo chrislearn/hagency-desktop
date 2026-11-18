@@ -584,13 +584,13 @@ fn timer_tool_lookup(tool: &str, arguments: &Value) -> bool {
                     SELF_TIMER_TOOLS
                         .iter()
                         .any(|timer| timer.strip_prefix("claude.") == Some(name))
-                        || name.strip_prefix("mcp__hagency_matrix__").is_some_and(|timer| {
-                            hagency_runtime::room_tools::ROOM_TIMER_TOOLS.contains(&timer)
-                        })
+                        || name
+                            .strip_prefix("mcp__hagency_matrix__")
+                            .is_some_and(hagency_runtime::room_tools::host_kept)
                 })
             })
 }
-const CLAUDE_ROOM_NOTE: &str = "You answer in a chat room through Hagency. To do something later, or to report on a schedule, set a timer with the schedule_wakeup tool of the hagency_matrix server (mcp__hagency_matrix__schedule_wakeup) and end your answer. When the timer fires you run again, and what you answer then is posted to the same chat by itself. That timer is kept by Hagency and survives a restart; ScheduleWakeup lives only as long as this process, so use it only when you are asked for it by name. Do not pass time with sleep or another waiting command.";
+const CLAUDE_ROOM_NOTE: &str = "You answer in a chat room through Hagency. To do something later, or to report on a schedule, set a timer with the schedule_wakeup tool of the hagency_matrix server (mcp__hagency_matrix__schedule_wakeup) and end your answer. When the timer fires you run again, and what you answer then is posted to the same chat by itself. That timer is kept by Hagency and survives a restart; ScheduleWakeup lives only as long as this process, so use it only when you are asked for it by name. Do not pass time with sleep or another waiting command. A role or standing instructions that a person gives you for the room are forgotten by the next conversation unless you save them with set_room_role of the same server (mcp__hagency_matrix__set_room_role).";
 /// How long the confirmation recorded for a self-started turn lasts: the
 /// longest a confirmation may last, which is also the longest a turn may run.
 const SELF_STARTED_CONFIRMED_SECS: i64 = 3600;

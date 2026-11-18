@@ -326,7 +326,7 @@ pub(super) async fn run<T: Transport>(
         cancel: cancel.clone(),
     });
     let room_bridge = match (
-        room_tools::Host::new(gate, config, &config.profile.cwd),
+        room_tools::Host::new(gate, config, &config.profile.cwd).map(|host| host.for_owner(owner)),
         hagency_agent_local::room_tools::room_queue(&scope, &turn),
     ) {
         (Ok(room_host), Ok((channel, room_receiver))) => {
@@ -394,6 +394,8 @@ pub(super) async fn run<T: Transport>(
     let control_cancel = cancel.clone();
     let question_cancel = cancel.clone();
     let (room_host, room_receiver) = room_bridge;
+    // A timer's turn starts with the room's standing role, as a request does.
+    let input = input.map(|note| format!("{}{note}", room_host.saved_role()));
     let result = tokio::select! { biased;
         _ = canceled(cancel) => Err(RuntimeError::Stopped),
         result = async {

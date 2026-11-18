@@ -5,6 +5,7 @@ pub(in crate::console) mod messages;
 pub(in crate::console) mod e2ee;
 mod provider_custody;
 pub(in crate::console) mod questions;
+mod roles;
 mod room_tools;
 pub(in crate::console) mod run_controls;
 mod service;
@@ -2768,7 +2769,7 @@ async fn run_turn<T: Transport>(
             let room_folder = working_directory::for_room_files(&config.profile, &profile, owner, &scope, config.shared_workspace)?;
             #[cfg(not(unix))]
             let room_folder = profile.cwd.clone();
-            let host = room_tools::Host::new(gate, config, &room_folder)?;
+            let host = room_tools::Host::new(gate, config, &room_folder)?.for_owner(owner);
             let (channel, receiver) = hagency_agent_local::room_tools::room_queue(&scope, &prepared.dispatch.id)
                 .map_err(|_| RuntimeError::Profile)?;
             queue = queue.with_room_tools(channel);
@@ -2934,7 +2935,7 @@ async fn run_turn<T: Transport>(
             provider.session.verify_host_environment().await.inspect_err(|error|{provider_failure("provider_environment", error);})?;
             provider.session.require_local_account().await.inspect_err(|error|{provider_failure("provider_account", error);})?;
             if room_tools {
-                provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files().with_timers()).await
+                provider.session.enable_room_tools(hagency_runtime::room_tools::RoomTools::history_and_files().with_timers().with_roles()).await
                     .inspect_err(|error|{provider_failure("provider_room_tools", error);})?;
             }
             provider.session.open_context(ledger,&scope,&profile).await.inspect_err(|error|{provider_failure("provider_context", error);})?;

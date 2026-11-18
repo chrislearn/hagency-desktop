@@ -98,6 +98,9 @@ pub(super) struct Host {
     records: PathBuf,
     namespace: String,
     state: Option<State>,
+    /// The account this Agent runs for. Empty where the host was not told:
+    /// the room's standing role is then neither read nor saved.
+    owner: String,
 }
 impl Host {
     pub(super) fn new(
@@ -136,7 +139,32 @@ impl Host {
             records,
             namespace,
             state: None,
+            owner: String::new(),
         })
+    }
+    /// The role tools tell the owner's request from another member's.
+    pub(super) fn for_owner(mut self, owner: &str) -> Self {
+        self.owner = owner.into();
+        self
+    }
+    /// The room's standing role as it reaches this request (`roles`). It
+    /// needs no device and no server, only the folder of the Agent's device.
+    fn standing_role(&self) -> String {
+        if self.owner.is_empty() {
+            return String::new();
+        }
+        e2ee::message_root(&self.gate.console, &self.gate.lease, &self.config)
+            .map(|root| roles::standing(&root, &self.gate.expected, &self.owner))
+            .unwrap_or_default()
+    }
+    /// The saved role alone, for a turn that no request started.
+    pub(super) fn saved_role(&self) -> String {
+        if self.owner.is_empty() {
+            return String::new();
+        }
+        e2ee::message_root(&self.gate.console, &self.gate.lease, &self.config)
+            .map(|root| roles::saved(&root, &self.gate.expected, &self.owner))
+            .unwrap_or_default()
     }
     async fn ensure(&mut self) -> Result<&mut State, &'static str> {
         if !self
@@ -192,6 +220,11 @@ impl Host {
         self.state.as_mut().ok_or("room_device_unavailable")
     }
     pub(super) async fn prompt(&mut self, text: String) -> String {
+        let role = self.standing_role();
+        let prompt = self.request_prompt(text).await;
+        if role.is_empty() { prompt } else { format!("{role}{prompt}") }
+    }
+    async fn request_prompt(&mut self, text: String) -> String {
         // Losing the device preview does not discard a new plaintext request.
         // Tools retry device acquisition under their own bounded operation.
         let prepared = tokio::time::timeout(Duration::from_secs(20), async {
@@ -246,12 +279,31 @@ impl Host {
                 .is_some_and(|v| v.get("error").is_some());
             return RoomReply::new(text, is_error).unwrap_or_else(|_| RoomReply::unavailable());
         }
+        if let RoomOperation::Role(operation) = operation {
+            // Kept by the host like a timer: saving a role sends nothing and
+            // reads nothing of the room. It is saved for the room and the
+            // requester of the run this call belongs to.
+            if self.owner.is_empty() {
+                return RoomReply::unavailable();
+            }
+            let Ok(root) = e2ee::message_root(&self.gate.console, &self.gate.lease, &self.config)
+            else {
+                tracing::warn!(code = "agent_room_role_tool_unavailable", tool = operation.name(),
+                    "The folder of the Agent's device could not be found for a room role tool");
+                return RoomReply::unavailable();
+            };
+            let text = roles::tool(&root, &self.gate.expected, &self.owner, operation);
+            let is_error = serde_json::from_str::<Value>(&text)
+                .ok()
+                .is_some_and(|v| v.get("error").is_some());
+            return RoomReply::new(text, is_error).unwrap_or_else(|_| RoomReply::unavailable());
+        }
         let state = match self.ensure().await {
             Ok(state) => state,
             Err(_) => return RoomReply::unavailable(),
         };
         let text = match operation {
-            RoomOperation::Timer(_) => return RoomReply::unavailable(),
+            RoomOperation::Timer(_) | RoomOperation::Role(_) => return RoomReply::unavailable(),
             RoomOperation::History { cursor } => {
                 match state.history.read_native(cursor.as_deref(), context).await {
                     Ok(text) => text,

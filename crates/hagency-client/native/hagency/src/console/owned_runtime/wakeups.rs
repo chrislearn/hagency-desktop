@@ -313,7 +313,7 @@ async fn session<T: Transport>(
                     provider.session.require_local_account().await?;
                     provider
                         .session
-                        .enable_room_tools(RoomTools::history_and_files().with_timers())
+                        .enable_room_tools(RoomTools::history_and_files().with_timers().with_roles())
                         .await?;
                     provider.session.open_context(ledger, &scope, &profile).await
                 } => Some(result),
