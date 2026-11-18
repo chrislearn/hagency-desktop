@@ -519,5 +519,8 @@ one second late after it, in a process started for it; a repeating timer ran
 twice, was removed by the Agent in its second turn and did not run again; a
 local Codex Agent set a timer and its report arrived. In a private chat that
 is not encrypted: a local Octos Agent set a timer and its report arrived.
-Not run live: a timer's turn cut off by a restart and started again, and a
-timer set in a turn that holds a peer session's message.
+The host was restarted while a timer's turn ran a command the owner had
+approved: the turn started again 83 seconds late in a new process, asked for
+the command again, said in its report that the earlier run had been cut off,
+and the room got one report. Not run live: a timer set in a turn that holds
+a peer session's message.
