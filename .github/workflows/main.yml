@@ -19,6 +19,9 @@ env:
   RUST_BACKTRACE: 1
   # Fixtures inject SecretStore; CI must never access a runner's native vault.
   HAGENCY_NATIVE_CREDENTIAL_IO: deny
+  # No step reads this. Naming the two secrets makes GitHub mask the
+  # self-hosted machine's name wherever it would appear in this public log.
+  MASKED_IN_LOGS: ${{ secrets.CI_MASK_MACHINE_NAME_A }} ${{ secrets.CI_MASK_MACHINE_NAME_B }}
 
 jobs:
   libraries:
