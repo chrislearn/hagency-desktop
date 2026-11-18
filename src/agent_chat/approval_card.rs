@@ -117,7 +117,7 @@ script_mod! {
         width: Fit
         height: 16.0
         align: Align{x: 0.5, y: 0.5}
-        margin: Inset{top: 20.0, right: 10.0}
+        margin: Inset{right: 10.0}
         padding: Inset{left: 6.0, right: 6.0}
         show_bg: true
         draw_bg +: {

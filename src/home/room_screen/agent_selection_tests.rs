@@ -106,6 +106,29 @@ fn drag(cx: &mut Cx, message: &WidgetRef) -> String {
 }
 
 #[test]
+fn agent_badge_is_centered_beside_the_sender_name() {
+    let (mut cx, message) = fixture(false);
+    let name = message.label(&mut cx, ids!(content.username_view.username));
+    let badge = message.widget(&mut cx, ids!(content.username_view.agent_badge));
+    name.set_text(&mut cx, "架构师-悟空");
+    badge
+        .label(&mut cx, ids!(agent_badge_label))
+        .set_text(&mut cx, "agent");
+    badge.set_visible(&mut cx, true);
+    draw(&mut cx, &message);
+
+    let name = name.area().rect(&cx);
+    let badge = badge.area().rect(&cx);
+    assert!(name.size.y > 0.0 && badge.size.y > 0.0);
+    assert!(badge.pos.x >= name.pos.x + name.size.x);
+    let center_y = |rect: Rect| rect.pos.y + rect.size.y * 0.5;
+    assert!(
+        (center_y(name) - center_y(badge)).abs() <= 1.0,
+        "name {name:?}, badge {badge:?}"
+    );
+}
+
+#[test]
 fn agent_reply_drag_selection_reaches_context_menu_and_survives_redraw() {
     for condensed in [false, true] {
         for rich in [false, true] {
