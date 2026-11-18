@@ -91,4 +91,21 @@ every conversation of the room.
 
 ## Evidence
 
-See the pull request that adds this record.
+Live on the production server, 2026-11-18, in an encrypted room of an Agent
+space, with a local Codex Agent and a local Claude Code Agent of the same
+owner:
+
+- A top-level message gave the Codex Agent the role of test engineer with a
+  prefix for every answer. The Agent called `set_room_role`
+  (`agent_room_role_saved`, for everyone), and nobody was asked.
+- The next top-level message, a new conversation, asked what it does in the
+  room. The answer began with the prefix and named the role.
+- The same two messages to the Claude Code Agent, with the role of reviewer:
+  saved, and the answer in the new conversation kept it. The two Agents hold
+  different roles in the same room.
+- A message that ended the role removed it for each Agent
+  (`agent_room_role_removed`).
+
+Not run live: another member's own instructions, and the owner's role as it
+reaches another member's conversation. Both are covered by the unit tests of
+`owned_runtime/roles.rs`.
