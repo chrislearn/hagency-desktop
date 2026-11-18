@@ -29,23 +29,23 @@ pub const TIMER_MIN_REPEAT_SECS: u64 = 60;
 pub const TIMER_MAX_SECS: u64 = 30 * 24 * 3600;
 pub const TIMER_NOTE_BYTES: usize = 2000;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "tool",
-    content = "arguments",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RoomTimerOperation {
     ScheduleWakeup {
         delay_seconds: u64,
         note: String,
-        #[serde(default)]
         repeat_seconds: Option<u64>,
     },
     ListWakeups {},
     CancelWakeup {
         wakeup_id: String,
+    },
+    /// A call of one of the timer tools whose arguments cannot be used. It
+    /// sets nothing; the host answers it with the reason, so that the model
+    /// can correct its call instead of concluding that timers do not work.
+    Invalid {
+        tool: &'static str,
+        reason: &'static str,
     },
 }
 impl RoomTimerOperation {
@@ -54,32 +54,87 @@ impl RoomTimerOperation {
             Self::ScheduleWakeup { .. } => ROOM_TIMER_TOOLS[0],
             Self::ListWakeups {} => ROOM_TIMER_TOOLS[1],
             Self::CancelWakeup { .. } => ROOM_TIMER_TOOLS[2],
+            Self::Invalid { tool, .. } => tool,
         }
     }
-    pub fn validate(&self) -> Result<(), Error> {
-        let valid = match self {
-            Self::ScheduleWakeup {
-                delay_seconds,
-                note,
-                repeat_seconds,
-            } => {
-                (TIMER_MIN_DELAY_SECS..=TIMER_MAX_SECS).contains(delay_seconds)
-                    && !note.trim().is_empty()
-                    && note.len() <= TIMER_NOTE_BYTES
-                    && !note.contains('\0')
-                    && repeat_seconds
-                        .is_none_or(|every| (TIMER_MIN_REPEAT_SECS..=TIMER_MAX_SECS).contains(&every))
-            }
-            Self::ListWakeups {} => true,
-            Self::CancelWakeup { wakeup_id } => {
-                wakeup_id.starts_with("wk_")
-                    && wakeup_id.len() <= 64
-                    && wakeup_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            }
+    /// The call of the timer tool `tool` with what the model gave it. Only
+    /// the named fields are read: a room, a requester or a path is never
+    /// taken from the model, and a call that names one is not carried out.
+    fn read(tool: &'static str, arguments: &Value) -> Self {
+        Self::usable(tool, arguments).unwrap_or_else(|reason| Self::Invalid { tool, reason })
+    }
+    fn usable(tool: &'static str, arguments: &Value) -> Result<Self, &'static str> {
+        // A whole number written as 120.0 is that number.
+        fn seconds(value: &Value) -> Option<u64> {
+            value.as_u64().or_else(|| {
+                value
+                    .as_f64()
+                    .filter(|v| v.fract() == 0.0 && (0.0..=1e12).contains(v))
+                    .map(|v| v as u64)
+            })
+        }
+        // A model may leave out the arguments of a tool that takes none.
+        let none = serde_json::Map::new();
+        let fields = match arguments {
+            Value::Null => &none,
+            Value::Object(fields) => fields,
+            _ => return Err("the arguments must be a JSON object"),
         };
-        if valid { Ok(()) } else { Err(Error::Malformed) }
+        let only = |names: &[&str]| fields.keys().all(|key| names.contains(&key.as_str()));
+        if tool == ROOM_TIMER_TOOLS[0] {
+            if !only(&["delay_seconds", "note", "repeat_seconds"]) {
+                return Err(TIMER_FIELDS_HINT);
+            }
+            let delay_seconds = fields
+                .get("delay_seconds")
+                .and_then(seconds)
+                .filter(|delay| (TIMER_MIN_DELAY_SECS..=TIMER_MAX_SECS).contains(delay))
+                .ok_or(TIMER_DELAY_HINT)?;
+            let note = fields
+                .get("note")
+                .and_then(Value::as_str)
+                .filter(|note| {
+                    !note.trim().is_empty() && note.len() <= TIMER_NOTE_BYTES && !note.contains('\0')
+                })
+                .ok_or(TIMER_NOTE_HINT)?;
+            // Left out, null and 0 all mean a timer that fires once.
+            let repeat_seconds = match fields.get("repeat_seconds") {
+                None | Some(Value::Null) => None,
+                Some(value) => match seconds(value) {
+                    Some(0) => None,
+                    Some(every) if (TIMER_MIN_REPEAT_SECS..=TIMER_MAX_SECS).contains(&every) => {
+                        Some(every)
+                    }
+                    _ => return Err(TIMER_REPEAT_HINT),
+                },
+            };
+            Ok(Self::ScheduleWakeup { delay_seconds, note: note.to_owned(), repeat_seconds })
+        } else if tool == ROOM_TIMER_TOOLS[1] {
+            Ok(Self::ListWakeups {})
+        } else {
+            let wakeup_id = fields
+                .get("wakeup_id")
+                .and_then(Value::as_str)
+                .filter(|id| {
+                    only(&["wakeup_id"])
+                        && id.starts_with("wk_")
+                        && id.len() <= 64
+                        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                })
+                .ok_or(TIMER_ID_HINT)?;
+            Ok(Self::CancelWakeup { wakeup_id: wakeup_id.to_owned() })
+        }
     }
 }
+const TIMER_FIELDS_HINT: &str = "schedule_wakeup takes only delay_seconds, note and \
+    repeat_seconds; the timer is always for this chat";
+const TIMER_DELAY_HINT: &str =
+    "delay_seconds must be a whole number of seconds from 10 to 2592000 (30 days)";
+const TIMER_NOTE_HINT: &str = "note must be text of 1 to 2000 bytes";
+const TIMER_REPEAT_HINT: &str = "repeat_seconds must be left out for a timer that fires once, \
+    or a whole number of seconds from 60 to 2592000";
+const TIMER_ID_HINT: &str =
+    "wakeup_id must be an id that schedule_wakeup or list_wakeups returned (wk_...), and nothing else";
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(
@@ -189,14 +244,10 @@ impl RoomTools {
                     .map_err(|_| Error::Malformed)?;
             operation.validate()?;
             Ok(RoomOperation::File(operation))
-        } else if self.timers && ROOM_TIMER_TOOLS.contains(&name) {
-            // A model may leave out the arguments of a tool that takes none.
-            let arguments = if arguments.is_null() { &json!({}) } else { arguments };
-            let operation: RoomTimerOperation =
-                serde_json::from_value(json!({"tool":name,"arguments":arguments}))
-                    .map_err(|_| Error::Malformed)?;
-            operation.validate()?;
-            Ok(RoomOperation::Timer(operation))
+        } else if let Some(tool) = ROOM_TIMER_TOOLS.iter().copied().find(|tool| *tool == name)
+            && self.timers
+        {
+            Ok(RoomOperation::Timer(RoomTimerOperation::read(tool, arguments)))
         } else {
             Err(Error::Unsupported)
         }
@@ -248,7 +299,7 @@ pub(crate) fn file_definitions() -> Vec<Value> {
 
 pub(crate) fn timer_definitions() -> Vec<Value> {
     vec![
-        json!({"name":"schedule_wakeup","description":"Set a timer for THIS chat. When it is due you run again by yourself with your note as the instruction, and what you answer then is posted to this chat as your own message; nobody has to send you anything. Use it whenever you are asked to do, check or report something later, or on a schedule (repeat_seconds, until you cancel it). Do not wait inside a turn with sleep or a waiting command: set the timer, say that you did, and end your answer. Write the note so that it is enough on its own: what to do and what to answer. The host keeps the timer, so it survives a restart of the Agent. At most 8 timers per chat.","inputSchema":{"type":"object","properties":{"delay_seconds":{"type":"integer","minimum":TIMER_MIN_DELAY_SECS,"maximum":TIMER_MAX_SECS,"description":"Seconds from now until the timer fires."},"note":{"type":"string","minLength":1,"maxLength":TIMER_NOTE_BYTES,"description":"Your instruction to yourself for when it fires."},"repeat_seconds":{"type":["integer","null"],"minimum":TIMER_MIN_REPEAT_SECS,"maximum":TIMER_MAX_SECS,"description":"Fire again every this many seconds after the first time. Leave out for a timer that fires once."}},"required":["delay_seconds","note"],"additionalProperties":false}}),
+        json!({"name":"schedule_wakeup","description":"Set a timer for THIS chat. When it is due you run again by yourself with your note as the instruction, and what you answer then is posted to this chat as your own message; nobody has to send you anything. Use it whenever you are asked to do, check or report something later, or on a schedule (repeat_seconds, until you cancel it). Do not wait inside a turn with sleep or a waiting command: set the timer, say that you did, and end your answer. Write the note so that it is enough on its own: what to do and what to answer. The host keeps the timer, so it survives a restart of the Agent. At most 8 timers per chat.","inputSchema":{"type":"object","properties":{"delay_seconds":{"type":"integer","minimum":TIMER_MIN_DELAY_SECS,"maximum":TIMER_MAX_SECS,"description":"Seconds from now until the timer fires."},"note":{"type":"string","minLength":1,"maxLength":TIMER_NOTE_BYTES,"description":"Your instruction to yourself for when it fires."},"repeat_seconds":{"type":"integer","maximum":TIMER_MAX_SECS,"description":"Fire again every this many seconds (60 or more) after the first time, for at most a week or 200 times. Leave out, or give 0, for a timer that fires once."}},"required":["delay_seconds","note"],"additionalProperties":false}}),
         json!({"name":"list_wakeups","description":"List the timers of this chat that are still set: id, due time, note and repeat interval.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
         json!({"name":"cancel_wakeup","description":"Remove one timer of this chat by the id schedule_wakeup or list_wakeups returned. A repeating timer stops for good.","inputSchema":{"type":"object","properties":{"wakeup_id":{"type":"string","maxLength":64}},"required":["wakeup_id"],"additionalProperties":false}}),
     ]
@@ -281,18 +332,42 @@ mod tests {
         assert!(matches!(timed.parse("list_wakeups", &json!({})), Ok(RoomOperation::Timer(RoomTimerOperation::ListWakeups {}))));
         assert!(matches!(timed.parse("list_wakeups", &Value::Null), Ok(RoomOperation::Timer(_))));
         assert!(matches!(timed.parse("cancel_wakeup", &json!({"wakeup_id":"wk_0a1b"})), Ok(RoomOperation::Timer(_))));
-        for bad in [
-            json!({"delay_seconds":9,"note":"n"}),
-            json!({"delay_seconds":TIMER_MAX_SECS + 1,"note":"n"}),
-            json!({"delay_seconds":60,"note":"  "}),
-            json!({"delay_seconds":60,"note":"n","repeat_seconds":59}),
-            json!({"delay_seconds":60,"note":"n","room":"!other:example.test"}),
-            json!({"delay_seconds":60}),
-        ] {
-            assert!(matches!(timed.parse("schedule_wakeup", &bad), Err(Error::Malformed)), "{bad}");
+        // Written loosely, meant plainly.
+        assert!(matches!(
+            timed.parse("schedule_wakeup", &json!({"delay_seconds":120.0,"note":"n","repeat_seconds":0})),
+            Ok(RoomOperation::Timer(RoomTimerOperation::ScheduleWakeup { delay_seconds: 120, repeat_seconds: None, .. }))
+        ));
+        // A call that cannot be used is answered with its reason by the
+        // host; nothing of it is carried out.
+        let reason = |tool: &str, arguments: Value| match timed.parse(tool, &arguments) {
+            Ok(RoomOperation::Timer(RoomTimerOperation::Invalid { tool: named, reason })) => {
+                assert_eq!(named, tool);
+                reason
+            }
+            _ => panic!("{tool} {arguments} was not refused"),
+        };
+        for bad in [json!({"delay_seconds":9,"note":"n"}), json!({"delay_seconds":TIMER_MAX_SECS + 1,"note":"n"}),
+            json!({"delay_seconds":60.5,"note":"n"}), json!({"delay_seconds":"60","note":"n"}), json!({"note":"n"})] {
+            assert_eq!(reason("schedule_wakeup", bad), TIMER_DELAY_HINT);
         }
-        for bad in [json!({"wakeup_id":"other"}), json!({"wakeup_id":"wk_../x"}), json!({})] {
-            assert!(matches!(timed.parse("cancel_wakeup", &bad), Err(Error::Malformed)), "{bad}");
+        for bad in [json!({"delay_seconds":60,"note":"  "}), json!({"delay_seconds":60}),
+            json!({"delay_seconds":60,"note":"n".repeat(TIMER_NOTE_BYTES + 1)})] {
+            assert_eq!(reason("schedule_wakeup", bad), TIMER_NOTE_HINT);
         }
+        assert_eq!(reason("schedule_wakeup", json!({"delay_seconds":60,"note":"n","repeat_seconds":59})), TIMER_REPEAT_HINT);
+        // The model never names the room, the requester or a path.
+        assert_eq!(
+            reason("schedule_wakeup", json!({"delay_seconds":60,"note":"n","room":"!other:example.test"})),
+            TIMER_FIELDS_HINT
+        );
+        assert_eq!(reason("schedule_wakeup", json!([60, "n"])), "the arguments must be a JSON object");
+        for bad in [json!({"wakeup_id":"other"}), json!({"wakeup_id":"wk_../x"}), json!({}),
+            json!({"wakeup_id":"wk_0a1b","room":"!other:example.test"})] {
+            assert_eq!(reason("cancel_wakeup", bad), TIMER_ID_HINT);
+        }
+        // The hints name the limits the checks use.
+        assert!(TIMER_DELAY_HINT.contains(&format!("from {TIMER_MIN_DELAY_SECS} to {TIMER_MAX_SECS} ")));
+        assert!(TIMER_REPEAT_HINT.contains(&format!("from {TIMER_MIN_REPEAT_SECS} to {TIMER_MAX_SECS}")));
+        assert!(TIMER_NOTE_HINT.contains(&format!("1 to {TIMER_NOTE_BYTES} bytes")));
     }
 }

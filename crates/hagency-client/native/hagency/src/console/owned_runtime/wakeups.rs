@@ -67,6 +67,12 @@ pub(super) fn tool(
     let now = now();
     let error = |code: &str| json!({ "error": code }).to_string();
     match operation {
+        RoomTimerOperation::Invalid { tool, reason } => {
+            // The reason is one of the host's own sentences, never the model's words.
+            tracing::info!(code = "agent_timer_tool_invalid", tool, reason,
+                "A timer tool was called with arguments that cannot be used");
+            json!({ "error": "invalid_arguments", "hint": reason }).to_string()
+        }
         RoomTimerOperation::ScheduleWakeup { delay_seconds, note, repeat_seconds } => {
             let set = timers::list(root).iter().filter(|timer| same_chat(timer, dispatch)).count();
             if set >= MAX_PER_CHAT {
@@ -518,6 +524,9 @@ mod tests {
             call(root, &here, RoomTimerOperation::CancelWakeup { wakeup_id: id })["status"],
             "cancelled"
         );
+        assert_eq!(timers::list(root).len(), 1);
+        let refused = RoomTimerOperation::Invalid { tool: "schedule_wakeup", reason: "the reason" };
+        assert_eq!(call(root, &here, refused), json!({"error":"invalid_arguments","hint":"the reason"}));
         assert_eq!(timers::list(root).len(), 1);
         // The saved file is sealed: the note is not on disk in the clear.
         let folder = root.join("outgoing-messages").join("timers");

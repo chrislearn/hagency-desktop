@@ -236,6 +236,8 @@ impl Host {
             // same way.
             let Ok(root) = e2ee::message_root(&self.gate.console, &self.gate.lease, &self.config)
             else {
+                tracing::warn!(code = "agent_timer_tool_unavailable", tool = operation.name(),
+                    "The folder of the Agent's device could not be found for a timer tool");
                 return RoomReply::unavailable();
             };
             let text = wakeups::tool(&root, &self.gate.expected, &self.gate.execution, operation);

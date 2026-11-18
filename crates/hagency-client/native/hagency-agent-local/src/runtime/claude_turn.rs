@@ -474,7 +474,8 @@ async fn drive<H: Host, C: Capture>(
                         // such a turn it is the owner's to decide, below.
                         let peer_timer = outside
                             && matches!(&operation, Ok(RoomOperation::Timer(timer))
-                                if !matches!(timer, RoomTimerOperation::ListWakeups {}));
+                                if !matches!(timer, RoomTimerOperation::ListWakeups {}
+                                    | RoomTimerOperation::Invalid { .. }));
                         if !peer_timer {
                             return Decision::Tool(ToolAnswer::allowed(
                                 queue.room.is_some() && operation.is_ok(),
