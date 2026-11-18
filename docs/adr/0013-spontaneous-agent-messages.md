@@ -405,8 +405,9 @@ itself is run again. The turn of a timer the host keeps is the one exception
 - A self-started cycle that follows a requested turn's result without an idle
   state in between still ends that requested turn as a late failure.
 - The room's history and file tools answer "unavailable" in such a turn (the
-  timer tools work), questions to the requester go unanswered, and the room
-  cannot steer or stop it.
+  timer tools work): they act for a request that is running on the server.
+- Words cannot be added to such a turn from the room (see "A card for a turn
+  nobody requested").
 - Stopping the process (refusal, eviction from the cache of 8 sessions, daemon
   restart) ends the timers the CLI keeps itself (`ScheduleWakeup`, cron). A
   timer set with the host is not affected.
@@ -428,6 +429,47 @@ client). In that room also: a reminder asked for in plain words was set with
 the timer tool and arrived a minute later, and a message another Claude
 session on the computer sent to the parked session was answered in the same
 thread.
+
+## A card for a turn nobody requested (2026-11-18)
+
+A turn the CLI started by itself, or one the host started for a timer, was
+invisible until its first message, could not be stopped from the room, and a
+question its model asked went unanswered.
+
+**Card.** The turn gets a run card of its own, on the message of the run it
+reports to. It carries that run's dispatch and the turn's own identity, so
+it is a second card on that message beside the run's own. The app shows it
+as it shows any run card; nothing in the app changed.
+
+**Stop.** The requester of that run or the owner can stop the turn there
+(`Card::permits`, checked on the authenticated sender of the action). A
+requested run's action is also checked against its dispatch still running on
+the server. No dispatch runs for this turn, so that check is left out;
+stopping needs no more authority than the card's own rule.
+
+**No added words.** Words added from the card are refused as unsupported,
+and the app keeps the text. They would be a request nobody admitted, run
+under the confirmation the turn recorded for itself.
+
+**Questions.** A question of the model goes to the same two people, on the
+same message, through the question card of a requested run.
+
+**A repeating timer.** Stopping the turn of a repeating timer removes the
+timer. The room has no other way to end it than through the Agent, and it
+would start the next turn an interval later.
+
+**No card.** A run whose requester is another Agent has no card, as before;
+its turn runs without one.
+
+**Evidence.** Live on River on 2026-11-18, a local Claude Agent in an
+encrypted room: the card showed "running" while a timer's turn ran a command
+the owner had approved; Stop ended the command and the turn, and the card
+showed "stopped". Stop on the turn of a repeating timer ended the turn two
+seconds later and removed the timer; it did not fire again. In another
+timer's turn the question card appeared with its choices; nobody answered,
+it expired after its ten minutes, and the model went on and reported. Not
+run live: answering the question (the test window could not be scrolled to
+its buttons). The host code of this section has no unit test.
 
 ## Timers kept by the host (2026-11-17)
 
