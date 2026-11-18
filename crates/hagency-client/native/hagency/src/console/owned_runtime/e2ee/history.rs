@@ -1,4 +1,5 @@
 use super::*;
+use super::earlier_devices::EarlierDevices;
 use matrix_sdk::{deserialized_responses::{DeviceLinkProblem, TimelineEvent}, room::MessagesOptions};
 use serde_json::{Value, json};
 
@@ -99,6 +100,187 @@ impl AgentDevice {
             events: page.chunk.iter().filter_map(history_event).collect(),
             next: page.end,
         })
+    }
+}
+
+/// One event from the expected sender, as the check for an earlier send of a
+/// report sees it.
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::console) struct ReportTrace {
+    pub event_id: String,
+    /// `None` when this device cannot read it as an authentic, unredacted
+    /// event (undecryptable, an unverifiable sending device, or redacted): it
+    /// may be the report.
+    pub readable: Option<ReportContent>,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::console) struct ReportContent {
+    /// The Hagency report ID of an `m.room.message`, if it carries one.
+    pub report_id: Option<String>,
+    /// SHA-256 of its `body`, the digest the outbox keeps for a report's text.
+    pub body_digest: Option<String>,
+}
+#[derive(Debug, Default)]
+pub(in crate::console) struct ReportScan {
+    /// The sender's events, newest first: messages that carry a report ID,
+    /// and events this device cannot read.
+    pub events: Vec<ReportTrace>,
+    /// The scan reached an event from the sender's homeserver older than the
+    /// start time, or the start of the history this Agent can see.
+    pub complete: bool,
+}
+
+#[derive(Clone, Copy)]
+enum TraceKind {
+    Undecryptable,
+    Decrypted { authentic: bool },
+    Plain,
+    /// Undecryptable here, read with a session that one of this Agent's
+    /// earlier devices on this computer started itself.
+    EarlierDevice,
+}
+
+fn trace_kind(event: &TimelineEvent, raw: &Value) -> TraceKind {
+    match &event.kind {
+        TimelineEventKind::UnableToDecrypt { .. } => TraceKind::Undecryptable,
+        TimelineEventKind::Decrypted(d) => TraceKind::Decrypted {
+            authentic: d.encryption_info.sender.as_str() == raw["sender"].as_str().unwrap_or_default()
+                && verification_issue(&d.encryption_info.verification_state).is_none(),
+        },
+        TimelineEventKind::PlainText { .. } => TraceKind::Plain,
+    }
+}
+
+fn report_trace(raw: &Value, kind: TraceKind) -> Option<ReportTrace> {
+    let event_id = matrix_id(&raw["event_id"], '$')?.to_owned();
+    let readable = match kind {
+        TraceKind::Undecryptable | TraceKind::Decrypted { authentic: false } => false,
+        TraceKind::Decrypted { authentic: true } | TraceKind::Plain | TraceKind::EarlierDevice => {
+            raw["unsigned"].get("redacted_because").is_none()
+        }
+    };
+    if !readable {
+        return Some(ReportTrace { event_id, readable: None });
+    }
+    let message = raw["type"] == "m.room.message";
+    let field = |key: &str| if message { raw["content"][key].as_str() } else { None };
+    Some(ReportTrace {
+        event_id,
+        readable: Some(ReportContent {
+            report_id: field("org.hagency.report_id").map(str::to_owned),
+            body_digest: field("body").map(|body| format!("{:x}", Sha256::digest(body.as_bytes()))),
+        }),
+    })
+}
+
+/// One page, newest first: keeps `sender`'s messages that carry a report ID
+/// and its events this device cannot read, and says whether the page reached
+/// an event from the sender's homeserver older than `since_ms`. That server
+/// stamps the report with the same clock, and a report sent after the
+/// attempt began comes after every event the server had created before it.
+/// Another server's timestamps prove nothing, so they never end a scan.
+fn scan_page(
+    page: impl IntoIterator<Item = (Value, TraceKind)>,
+    sender: &OwnedUserId,
+    since_ms: u64,
+    events: &mut Vec<ReportTrace>,
+) -> bool {
+    let mut reached = false;
+    for (raw, kind) in page {
+        let Some(from) = matrix_id(&raw["sender"], '@').and_then(|s| OwnedUserId::try_from(s).ok()) else { continue };
+        if from.server_name() == sender.server_name()
+            && raw["origin_server_ts"].as_u64().is_some_and(|ts| ts < since_ms)
+        {
+            reached = true;
+        }
+        if from != *sender { continue; }
+        let Some(trace) = report_trace(&raw, kind) else { continue };
+        if trace.readable.as_ref().is_none_or(|content| content.report_id.is_some()) {
+            events.push(trace);
+        }
+    }
+    reached
+}
+
+/// At most this many pages of 50 events are read for one check.
+const REPORT_SCAN_PAGES: usize = 6;
+
+impl AgentDevice {
+    /// Look back through `room` with this device's keys, newest first, for
+    /// what became of an earlier send of a report by `sender`. The sender's
+    /// events this device cannot decrypt are read with the stores of this
+    /// Agent's earlier devices on this computer, when one of them sent it.
+    /// The scan ends at that homeserver's events from before `since_ms`.
+    pub(in crate::console) async fn report_scan(
+        &self,
+        room: &str,
+        sender: &str,
+        since_ms: u64,
+    ) -> Result<ReportScan, RuntimeError> {
+        let room_id = OwnedRoomId::try_from(room).map_err(|_| RuntimeError::Request)?;
+        let sender = OwnedUserId::try_from(sender).map_err(|_| RuntimeError::Request)?;
+        let room = self.client.get_room(&room_id).ok_or(RuntimeError::Transport)?;
+        let mut scan = ReportScan::default();
+        let mut from: Option<String> = None;
+        // Opened at the sender's first event this device cannot decrypt.
+        let mut earlier: Option<EarlierDevices> = None;
+        let mut read_earlier = 0usize;
+        for _ in 0..REPORT_SCAN_PAGES {
+            let mut options = MessagesOptions::backward().from(from.as_deref());
+            options.limit = 50u32.into();
+            let page = tokio::time::timeout(Duration::from_secs(10), room.messages(options))
+                .await
+                .map_err(|_| RuntimeError::Transport)?
+                .map_err(|_| RuntimeError::Transport)?;
+            let mut events = Vec::with_capacity(page.chunk.len());
+            for event in &page.chunk {
+                let Ok(raw) = serde_json::from_str::<Value>(event.kind.raw().json().get()) else { continue };
+                let kind = trace_kind(event, &raw);
+                if matches!(kind, TraceKind::Undecryptable) && raw["sender"] == sender.as_str() {
+                    if earlier.is_none() {
+                        earlier = Some(self.earlier_devices().await);
+                    }
+                    let plain = match &earlier {
+                        Some(devices) => devices.read(&room_id, &raw).await,
+                        None => None,
+                    };
+                    if let Some(plain) = plain {
+                        read_earlier += 1;
+                        events.push((plain, TraceKind::EarlierDevice));
+                        continue;
+                    }
+                }
+                events.push((raw, kind));
+            }
+            if scan_page(events, &sender, since_ms, &mut scan.events) {
+                scan.complete = true;
+                break;
+            }
+            match page.end {
+                // The start of the history this Agent can see.
+                None => {
+                    scan.complete = true;
+                    break;
+                }
+                // A server that hands back the same token would never finish.
+                Some(end) if from.as_deref() == Some(end.as_str()) => break,
+                Some(end) => from = Some(end),
+            }
+        }
+        if let Some(devices) = &earlier {
+            tracing::info!(stage = "report_scan_earlier_devices", stores = devices.len(), read = read_earlier,
+                complete = scan.complete, "Read the Agent's own earlier messages with its earlier devices' keys");
+        }
+        Ok(scan)
+    }
+
+    /// This Agent's earlier devices on this computer (see `earlier_devices.rs`).
+    async fn earlier_devices(&self) -> EarlierDevices {
+        let (Some(user), Some(device)) = (self.client.user_id(), self.client.device_id()) else {
+            return EarlierDevices::none();
+        };
+        let Ok(passphrase) = store_passphrase(&self.root) else { return EarlierDevices::none() };
+        EarlierDevices::open(&self.root, &passphrase, user, device).await
     }
 }
 
@@ -222,6 +404,64 @@ mod tests {
 
     fn event(id: &str, content: Value) -> Value {
         json!({"type":"m.room.message","event_id":id,"sender":"@member:example.test","origin_server_ts":1700000000000u64,"content":content})
+    }
+
+    fn report(id: &str, sender: &str, ts: u64, report_id: Option<&str>) -> Value {
+        let mut content = json!({"msgtype":"m.text","body":"done"});
+        if let Some(report_id) = report_id {
+            content["org.hagency.report_id"] = report_id.into();
+        }
+        json!({"type":"m.room.message","event_id":id,"sender":sender,"origin_server_ts":ts,"content":content})
+    }
+
+    #[test]
+    fn report_traces_read_report_ids_only_from_authentic_unredacted_messages() {
+        let raw = report("$report", "@agent:example.test", 1_700_000_000_000, Some("id"));
+        let read = report_trace(&raw, TraceKind::Decrypted { authentic: true }).unwrap();
+        assert_eq!(read.event_id, "$report");
+        assert_eq!(read.readable, Some(ReportContent {
+            report_id: Some("id".into()),
+            body_digest: Some(format!("{:x}", Sha256::digest(b"done"))),
+        }));
+        assert_eq!(report_trace(&raw, TraceKind::Plain).unwrap(), read);
+        assert_eq!(report_trace(&raw, TraceKind::EarlierDevice).unwrap(), read);
+        // Anything this device cannot read as an authentic event may be the report.
+        assert_eq!(report_trace(&raw, TraceKind::Decrypted { authentic: false }).unwrap().readable, None);
+        assert_eq!(report_trace(&raw, TraceKind::Undecryptable).unwrap().readable, None);
+        let mut redacted = raw.clone();
+        redacted["unsigned"] = json!({"redacted_because":{}});
+        assert_eq!(report_trace(&redacted, TraceKind::Plain).unwrap().readable, None);
+        // Only room messages carry a report ID.
+        let mut reaction = raw.clone();
+        reaction["type"] = "m.reaction".into();
+        assert_eq!(report_trace(&reaction, TraceKind::Plain).unwrap().readable.unwrap().report_id, None);
+        let mut nameless = raw;
+        nameless["event_id"] = "report".into();
+        assert!(report_trace(&nameless, TraceKind::Plain).is_none());
+    }
+
+    #[test]
+    fn report_scan_pages_keep_only_the_sender_and_end_on_its_own_server_clock() {
+        let agent = OwnedUserId::try_from("@agent:example.test").unwrap();
+        let since = 1_000_000;
+        let page = vec![
+            (report("$new", "@agent:example.test", since + 5, Some("a")), TraceKind::Decrypted { authentic: true }),
+            // Another sender's copy of a report ID is not the Agent's event.
+            (report("$copy", "@member:example.test", since + 4, Some("a")), TraceKind::Plain),
+            // The Agent's ordinary messages carry no report ID and cannot be the report.
+            (report("$answer", "@agent:example.test", since + 3, None), TraceKind::Plain),
+            (report("$sealed", "@agent:example.test", since + 2, None), TraceKind::Undecryptable),
+            // A remote server's old timestamp does not end the scan.
+            (report("$remote", "@peer:remote.test", 1, None), TraceKind::Plain),
+        ];
+        let mut events = Vec::new();
+        assert!(!scan_page(page, &agent, since, &mut events));
+        assert_eq!(events.iter().map(|e| e.event_id.as_str()).collect::<Vec<_>>(), ["$new", "$sealed"]);
+        assert_eq!(events[1].readable, None);
+        // Any event from the Agent's homeserver from before the attempt does.
+        let older = vec![(report("$old", "@member:example.test", since - 1, None), TraceKind::Plain)];
+        assert!(scan_page(older, &agent, since, &mut events));
+        assert_eq!(events.len(), 2);
     }
 
     #[test]

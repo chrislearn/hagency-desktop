@@ -27,8 +27,11 @@ use sha2::{Digest, Sha256};
 mod history;
 mod documents;
 mod files;
+mod earlier_devices;
 pub(in crate::console) use documents::RoomFile;
-pub(in crate::console) use history::HistoryBatch;
+pub(in crate::console) use history::{HistoryBatch, ReportScan};
+#[cfg(test)]
+pub(in crate::console) use history::{ReportContent, ReportTrace};
 use std::{
     collections::HashMap,
     path::Path,
@@ -69,6 +72,9 @@ pub(in crate::console) struct AgentDevice {
     pub(in crate::console) question_records: std::path::PathBuf,
     run_controls: crate::agent_questions::Inbox,
     pub(in crate::console) run_records: std::path::PathBuf,
+    /// The Agent's private directory: this device's store, and the stores of
+    /// its earlier devices on this computer.
+    root: std::path::PathBuf,
     revoked: Arc<AtomicBool>,
     sync: tokio::task::AbortHandle,
 }
@@ -467,6 +473,7 @@ impl AgentDevice {
             question_records: root.join("question-cards.json"),
             run_controls,
             run_records: root.join("run-cards.json"),
+            root,
             revoked,
             sync,
         })

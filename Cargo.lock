@@ -4758,6 +4758,7 @@ dependencies = [
  "hyper-util",
  "lopdf",
  "matrix-sdk",
+ "matrix-sdk-crypto",
  "matrix-sdk-store-encryption",
  "percent-encoding",
  "reqwest 0.12.28",

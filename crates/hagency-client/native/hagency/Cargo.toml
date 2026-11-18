@@ -56,6 +56,9 @@ getrandom.workspace = true
 # The executor's own Agent device for encrypted owner-direct Rooms.
 matrix-sdk = { workspace = true, features = ["e2e-encryption", "markdown", "sqlite", "bundled-sqlite", "rustls-aws-lc-rs", "experimental-send-custom-to-device", "local-server"] }
 matrix-sdk-store-encryption.workspace = true
+# A replacement Agent device reads what its earlier devices on this computer
+# sent with their own crypto stores (ADR 0013 report recovery).
+matrix-sdk-crypto.workspace = true
 # Shared owner-dashboard DTOs served by the owner daemon (ADR 0012).
 hagency-metering.workspace = true
 # Owner daemon peer identity checks (geteuid) for private local IPC, and the
@@ -74,7 +77,6 @@ hagency-store = { workspace = true, features = ["test-support"] }
 hagency-execution = { workspace = true, features = ["test-diagnostics"] }
 matrix-sdk-base = { workspace = true, features = ["e2e-encryption"] }
 matrix-sdk-sqlite = { workspace = true, features = ["state-store", "bundled"] }
-matrix-sdk-crypto.workspace = true
 ruma = { workspace = true, features = ["client-api-c", "events"] }
 tokio = { workspace = true, features = ["process", "test-util"] }
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }

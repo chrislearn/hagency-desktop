@@ -1,6 +1,10 @@
 # ADR 0013: Spontaneous Agent messages in Matrix conversations
 
 - Date: 2026-11-16
+- Amended: 2026-11-17. A replacement device may send a report once when the
+  room's history proves it never arrived. It reads what the Agent's earlier
+  devices on the same computer sent with those devices' own stores (see
+  "Delivery, ordering and recovery").
 - Status: Accepted; implementation and end-to-end acceptance are pending.
 - Scope: Hagency Desktop and its embedded Hagency Client, Hagency Server,
   provider adapters, and the Octos OUP protocol where an extension is needed.
@@ -135,9 +139,28 @@ endpoint**; Matrix transaction IDs are device- and endpoint-scoped. Refreshes
 on the same device can retry, but device replacement or logout does not by
 itself prove that reusing the ID will deduplicate. Reconcile through an
 authoritative receipt or decryptable history containing the same opaque report
-ID, expected Agent sender, room and content digest. If that evidence is
-unavailable or conflicts, retain the unknown state instead of blindly sending
-a second copy from a new device. See the
+ID, expected Agent sender, room and content digest. A replacement device may
+send the report once only when that history proves the report absent, and only
+if all of these hold:
+- The history reaches back past the first attempt: an event from the sender's
+  own homeserver older than the first attempt minus a clock margin (one hour).
+- Every event from the expected sender in it is readable and authentic.
+- None of those events carries the report.
+- The last attempt has been quiet for a settle period (five minutes).
+- The sender account is unchanged.
+- The report is not resent in plaintext after an encrypted first attempt.
+
+A replacement device cannot decrypt its predecessors' messages with its own
+keys. Each device generation keeps its own crypto store in the Agent's private
+directory on that computer, so the check reads the expected sender's
+undecryptable events with those stores. It uses only a session that the
+earlier device started itself, never one it received, imported or restored.
+The Megolm signature and the room must both verify. Nothing is imported into
+the new device's store. Messages from the Agent's devices on other computers
+stay unreadable.
+
+If that evidence is unavailable, incomplete or conflicts, retain the unknown
+state instead of blindly sending a second copy from a new device. See the
 [Matrix transaction identifier specification](https://spec.matrix.org/v1.15/client-server-api/#transaction-identifiers).
 
 On restart, recover pending messages without rerunning the model. Replay from a
@@ -227,8 +250,9 @@ and notifications remain subject to its own client and homeserver behavior.
   attachments. No private child text becomes a user-facing message by default.
 - Crash tests cover provider capture, cursor checkpoint, send response loss,
   final-reply settlement, restart, access-token refresh and device replacement.
-  A replacement device reconciles a verifiable original event and must not
-  turn an unknown prior send into an unverified duplicate.
+  A replacement device reconciles a verifiable original event. It resends only
+  after the room's history proves the report absent, and must not turn an
+  unknown prior send into an unverified duplicate.
 - Use an isolated encrypted Matrix room and a synthetic model to verify actual
   event delivery, decryption and final-answer coexistence. Add real CLI smoke
   coverage for Codex, Claude and Octos, and record unsupported cases explicitly.

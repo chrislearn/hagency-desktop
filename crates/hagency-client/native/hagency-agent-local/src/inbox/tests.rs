@@ -1028,6 +1028,50 @@ fn terminal_rejections_free_payload_and_active_slots_without_losing_started_witn
     assert!(l.inbox_capacity(OWNER).unwrap().charged_bytes > 0);
 }
 
+/// A failed run's settled record loses its body, and an empty body otherwise
+/// marks a request that came encrypted. The digest kept from its arrival still
+/// tells the two apart, so the run's later messages to a room that is not
+/// encrypted are not held back as if the request had been ciphertext.
+#[test]
+fn a_cleared_body_still_reads_as_a_request_that_came_in_the_clear() {
+    let t = tempfile::tempdir().unwrap();
+    let mut l = setup(&t.path().join("local.db"));
+    charge_policy(&mut l);
+    for (n, body) in ["request", ""].into_iter().enumerate() {
+        let mut e = event();
+        e.id = format!("finished-{n}");
+        e.event_id = format!("$finished-{n}:test");
+        e.body = body.into();
+        l.receive_dispatch(OWNER, &e, Limits::default(), 10)
+            .unwrap();
+        assert_eq!(l.inbox_record(OWNER, &e.id).unwrap().request_encrypted, body.is_empty());
+        l.acknowledge_dispatch(OWNER, &e.id).unwrap();
+        let p = l.prepare_execution(OWNER, &e.id).unwrap();
+        l.confirm_execution_start(OWNER, &response(&p, true))
+            .unwrap();
+        l.reserve(&e.scope(), &p.execution_id, &e.id, 10, 10)
+            .unwrap();
+        l.settle(
+            &e.scope(),
+            &p.execution_id,
+            &crate::Usage {
+                input: 3,
+                output: 2,
+                cached_input: 0,
+                cache_write_input: None,
+                reasoning_output: 0,
+                accounting_version: "fixture-actual-v1".into(),
+            },
+        )
+        .unwrap();
+        l.finish_local_execution(OWNER, &e.id, &p.execution_id, Finish::Failed)
+            .unwrap();
+        let record = l.inbox_record(OWNER, &e.id).unwrap();
+        assert!(record.dispatch.body.is_empty(), "the settled failure keeps no request text");
+        assert_eq!(record.request_encrypted, body.is_empty());
+    }
+}
+
 #[test]
 fn only_settled_failed_cost_can_compact_unknown_and_unsent_results_stay_retained() {
     let t = tempfile::tempdir().unwrap();
