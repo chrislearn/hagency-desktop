@@ -367,7 +367,9 @@ inside the turn with a `sleep` command. That asks the owner for a command
 and keeps the Agent busy for the whole wait. A local Agent's CLI therefore
 gets one added instruction (`--append-system-prompt`): to do something later
 or to report on a schedule, set a timer and end the answer; the later answer
-is posted to the same chat by itself.
+is posted to the same chat by itself. The instruction names the host's own
+timer tool first (see "Timers kept by the host") and leaves `ScheduleWakeup`
+for when it is asked for by name.
 
 **Decided on 2026-11-17: no separate switch.** The rules above ask for "its
 own enabled trigger" for an independent turn. For a local Agent that rule is
@@ -381,7 +383,9 @@ recorded as a version-2 report (`self-started:<turn>:<native id>`) in the
 encrypted outbox of the run the session answered last and sent with
 delivery-only authority, as described under "Delivery, ordering and
 recovery". A sealed note beside the outbox names each run that may hold such
-reports, so delivery resumes after a restart; no turn is run again.
+reports, so delivery resumes after a restart; no turn the CLI started by
+itself is run again. The turn of a timer the host keeps is the one exception
+(see "Timers kept by the host").
 
 **Limits of this version.**
 
@@ -390,10 +394,15 @@ reports, so delivery resumes after a restart; no turn is run again.
   process.
 - A self-started cycle that follows a requested turn's result without an idle
   state in between still ends that requested turn as a late failure.
-- Room tools answer "unavailable" in such a turn, questions to the requester
-  go unanswered, and the room cannot steer or stop it.
+- The room's history and file tools answer "unavailable" in such a turn (the
+  timer tools work), questions to the requester go unanswered, and the room
+  cannot steer or stop it.
 - Stopping the process (refusal, eviction from the cache of 8 sessions, daemon
-  restart) ends the CLI's pending timers.
+  restart) ends the timers the CLI keeps itself (`ScheduleWakeup`, cron). A
+  timer set with the host is not affected.
+- A turn that a restart cuts off says nothing about it in the room: what it
+  had already sent stays, its answer never comes. Only the turn of a host
+  timer is started again.
 - A host that predates version-2 records cannot read an outbox that holds one
   (see rollout step 4).
 
@@ -409,3 +418,106 @@ client). In that room also: a reminder asked for in plain words was set with
 the timer tool and arrived a minute later, and a message another Claude
 session on the computer sent to the parked session was answered in the same
 thread.
+
+## Timers kept by the host (2026-11-17)
+
+**Why.** A timer of Claude Code lives in the process that set it. A restart of
+the host, the eviction of the idle session and a refused turn end it without
+a word, and Codex and Octos have no such tool. Seen live: the host was
+restarted in the middle of a timer's turn; nothing was posted for it, nothing
+was posted twice, and the timer was gone.
+
+**Tools.** A local Agent of any of the three runtimes gets three more room
+tools (`RoomTools::with_timers()`): `schedule_wakeup {delay_seconds, note,
+repeat_seconds?}`, `list_wakeups {}` and `cancel_wakeup {wakeup_id}`. The
+model never names a room: a timer belongs to the conversation (room and
+thread) of the run that set it, and list and cancel see only that
+conversation's timers. The delay is 10 seconds to 30 days, a repeat interval
+at least 60 seconds, the note at most 2000 bytes, and a conversation holds at
+most 8 timers. A call that cannot be used is answered with the reason, not
+with "unavailable". A pooled run is not offered these tools: a pool member's
+timer would spend the pool with nobody asking, which needs an admission by
+the server first.
+
+**Store.** One sealed file per timer under `outgoing-messages/timers/` of the
+Agent's device, with the key of the outbox: its id, the run it was set in,
+room and thread, whether that run's request came as ciphertext, due time,
+note, repeat interval, and how often it started and ran. Outbox recovery
+reads only `run_*` entries, so a host that does not know the folder leaves it
+alone.
+
+**Encrypted or not.** Every send path reads "this request came as ciphertext"
+from the request record: an empty body. The ledger's record of a run gives up
+its body once the answer is proved sent, so a record read back later looks
+encrypted whatever it was, and a report for a chat that is not encrypted was
+held back for good (seen live with a timer in such a chat; the same held back
+the reports a restart found). The fact is therefore written down while the
+body is still there, in the timer and in the note of undelivered reports, and
+put back on the record when it is read from the ledger. A timer or note from
+before that is read as encrypted: its reports go out encrypted or not at all.
+
+**Firing.** The loop of each binding looks at the timers every two seconds.
+For one that is due it checks that the run it was set in is still this
+binding's and that the scope does not deny requests; while hosting is closed
+the timer waits. It then counts the attempt on disk, takes the
+conversation's idle process or starts one that resumes the conversation from
+disk exactly as a request would (the same checks, working folder and tools),
+and gives the model the host's own words: a timer it set is due, its note,
+and that the answer is posted as its own message. From there the turn is a
+self-started turn as above: admitted without asking, refused by a denying
+scope or a spent budget, charged and settled as a turn of its own, its
+messages delivered to the room and thread of the run that set the timer, a
+tool the rules ask about put to the owner.
+
+**At least once.** This is where a host timer differs from a turn the CLI
+started. A timer's turn that a restart cut off is started once more; after
+two cut-off starts that due time is given up (a repeating timer waits for its
+next time, any other is removed). The second start tells the model that the
+earlier turn was cut off and that nothing it answered reached the chat, and
+asks it to check what was already done before repeating a command or a
+change. Part of a timer's work can therefore run twice. That is chosen over a
+reminder that silently never comes.
+
+**Repeating.** The next time counts from the end of the turn, so a host that
+was off for a day does not run the missed turns one after another. A
+repeating timer ends by itself after 200 runs or seven days. The Agent can
+remove it in the timer's own turn: the host reads the timer again after the
+turn and leaves it alone if it is gone.
+
+**A model that waits instead.** Asked for a reminder half a minute away, a
+Codex Agent waited inside its turn and answered then; no timer was set. That
+is its choice and nothing is lost by it, but the Agent is busy for the wait.
+Only Claude's CLI gets the added instruction above; the other two learn of
+the timer from the tool's description.
+
+**Trust.** In an ordinary turn the three tools need nobody's approval, for
+the reason given under "No approval for the timer". In a turn that holds a
+message of a peer session, setting and removing a timer are put to the owner
+like every other tool of that turn, so a peer cannot leave a timer behind
+unseen. The turn a timer starts is the conversation's own turn and runs under
+the rules of the scope the timer was set in.
+
+**The CLI's own timers stay.** `ScheduleWakeup` and the cron tools of Claude
+Code are not taken away. `permissions.deny` in the settings given to the CLI
+removes them from the model's tools (measured with 2.1.323); doing that is
+left for later.
+
+**Codex 0.169.** The live check found that every room tool of a local Codex
+Agent answered "unavailable" with Codex 0.169: the bridge compared the call's
+item id with its call id, which were equal in 0.167 and are not in 0.169
+(measured with the installed CLI). The comparison is gone; a call is still
+bound to a turn observed on the process's own stream and its call id is
+accepted once.
+
+**Evidence.** Unit tests of the tools, the store and the repeat and give-up
+rules; local-runtime tests of a host-started turn for Claude and Octos
+(admitted without asking, refused by a denying scope and a spent budget);
+the bridge test with the 0.169 call shape. Live on River on 2026-11-17, in an
+encrypted room of an Agent space: a local Claude Agent set a reminder in
+plain words and it arrived; a timer set before a restart of the host fired
+one second late after it, in a process started for it; a repeating timer ran
+twice, was removed by the Agent in its second turn and did not run again; a
+local Codex Agent set a timer and its report arrived. In a private chat that
+is not encrypted: a local Octos Agent set a timer and its report arrived.
+Not run live: a timer's turn cut off by a restart and started again, and a
+timer set in a turn that holds a peer session's message.
