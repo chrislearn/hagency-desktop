@@ -1686,6 +1686,17 @@ impl Widget for RoomScreen {
                     if let Some(tl)=self.tl_state.as_mut() {tl.profile_drawn_since_last_update.clear();tl.content_drawn_since_last_update.clear();}
                     self.view.redraw(cx);
                 }
+                #[cfg(feature = "agent_chat")]
+                if let Some(changed) = action.downcast_ref::<crate::agent_access::room_roster::RoomRosterChanged>()
+                    && changed.epoch == crate::account_session::epoch()
+                    && self.timeline_kind.as_ref().is_some_and(|kind| kind.room_id() == &changed.room)
+                {
+                    if let Some(tl) = self.tl_state.as_mut() {
+                        tl.profile_drawn_since_last_update.clear();
+                        tl.content_drawn_since_last_update.clear();
+                    }
+                    self.view.redraw(cx);
+                }
                 // Shared-execution requests and Agent questions arrive and resolve
                 // outside the timeline: re-populate so their cards appear, update and
                 // disappear in place.
@@ -4289,6 +4300,8 @@ impl RoomScreen {
 
         self.room_name_id = Some(room_name_id.clone());
         self.timeline_kind = Some(timeline_kind.clone());
+        #[cfg(feature = "agent_chat")]
+        crate::agent_access::room_roster::request(room_name_id.room_id());
         self.view.action_room_board(cx, ids!(actions_board)).select(cx,
             if matches!(timeline_kind, TimelineKind::MainRoom { .. }) { Some(room_name_id.room_id().clone()) } else { None });
         self.view.view(cx, ids!(room_screen_wrapper)).set_visible(cx, true);
@@ -5403,7 +5416,7 @@ fn populate_message_view(
     #[cfg(feature = "agent_chat")]
     let mut agent_chat_message: Option<ApprovalMessage> = None;
     #[cfg(feature = "agent_chat")]
-    let mut agent_presentation = AgentMessagePresentation::for_sender(event_tl_item.sender());
+    let mut agent_presentation = AgentMessagePresentation::for_sender_in_room(event_tl_item.sender(), timeline_kind.room_id());
 
     let (item, used_cached_item) = match &msg_like_content.kind {
         MsgLikeKind::Message(msg) => {
@@ -6048,7 +6061,7 @@ fn populate_message_view(
     #[cfg(feature = "agent_chat")]
     let agent_reply = agent_text.is_some()
         && event_tl_item.event_id().is_some()
-        && AgentMessagePresentation::for_sender(event_tl_item.sender()).is_some();
+        && agent_presentation.is_some();
     #[cfg(not(feature = "agent_chat"))]
     let agent_reply = false;
     item.widget(cx, ids!(content.message)).set_visible(cx, web_mini_app.is_none() && forward_bundle.is_none() && !agent_reply);
@@ -6184,7 +6197,7 @@ fn populate_message_view(
         use crate::agent_chat::reply::AgentReplyWidgetRefExt;
         let reply = item.agent_reply(cx, ids!(content.agent_reply));
         if let (Some((body, formatted)), Some(mut presentation), Some(event_id)) =
-            (agent_text, AgentMessagePresentation::for_sender(event_tl_item.sender()), event_tl_item.event_id())
+            (agent_text, agent_presentation.clone(), event_tl_item.event_id())
         {
             let (body, formatted) = presentation.present(usage.as_ref().map_or(body.as_str(),|u|u.answer), formatted);
             let identity = format!("{}|{}|{}", crate::sliding_sync::current_user_id().map(|id| id.to_string()).unwrap_or_default(), timeline_kind.room_id(), event_id);

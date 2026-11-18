@@ -21,7 +21,8 @@ def send(value):
     value = json.loads(json.dumps(value))
     # Captured CLI 2.1.321 result metadata: breakdowns do not add billed tokens.
     if value.get('type') == 'result':
-        value['uuid'] = f'fixture-result-{os.getpid()}-{native_result_index}'
+        result_index = 0 if mode == 'background_native_reused_id' and native_result_index == 1 else native_result_index
+        value['uuid'] = f'fixture-result-{os.getpid()}-{result_index}'
         native_result_index += 1
         if 'modelUsage' not in value and value.get('usage') and mode != 'mixed_usage':
             usage = value['usage']
@@ -193,10 +194,17 @@ if kind == 'claude':
             send({'type':'command_lifecycle','command_uuid':'fixture-command','state':'started','session_id':session})
         send({'type': 'system', 'subtype': 'init', 'session_id': session, 'user_message_uuids':[prompt.get('uuid')]})
         aborted = False
-        if mode == 'spontaneous_messages':
-            send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
-                'message':{'id':'progress-a','content':[{'type':'text','text':'First finding'},
-                    {'type':'tool_use','id':'progress-tool-a','name':'Read','input':{}}]}})
+        if mode in ('spontaneous_messages', 'spontaneous_split'):
+            text = {'type':'text','text':'First finding'}
+            tool = {'type':'tool_use','id':'progress-tool-a','name':'Read','input':{}}
+            if mode == 'spontaneous_split':
+                send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
+                    'message':{'id':'progress-a','content':[text]}})
+                send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
+                    'message':{'id':'progress-a','content':[tool]}})
+            else:
+                send({'type':'assistant','session_id':session,'parent_tool_use_id':None,
+                    'message':{'id':'progress-a','content':[text, tool]}})
             deadline = time.monotonic() + 5
             while not (root / 'progress-observed').exists() and time.monotonic() < deadline:
                 time.sleep(.01)
@@ -371,7 +379,7 @@ if kind == 'claude':
             result['modelUsage'] = {'main': {'inputTokens':9007199254740991,'outputTokens':1,'cacheReadInputTokens':0,'cacheCreationInputTokens':0}}
         if mode == 'long_usage':
             result['modelUsage'] = {'main':{'inputTokens':12000,'outputTokens':1200,'cacheReadInputTokens':0,'cacheCreationInputTokens':0}}
-        if continuous or mode in ('cumulative', 'mixed_usage', 'regressing_usage', 'wrong_session', 'background_usage', 'background_wrong_snapshot', 'background_approval', 'background_regressing', 'background_snapshot_eof', 'background_native_followup', 'background_stop_after_answer'):
+        if continuous or mode in ('cumulative', 'mixed_usage', 'regressing_usage', 'wrong_session', 'background_usage', 'background_wrong_snapshot', 'background_approval', 'background_regressing', 'background_snapshot_eof', 'background_native_followup', 'background_native_equal', 'background_native_reused_id', 'background_stop_after_answer'):
             count_file = root / 'count'
             count = int(count_file.read_text()) + 1 if count_file.exists() else 1
             count_file.write_text(str(count))
@@ -384,7 +392,7 @@ if kind == 'claude':
                     result['modelUsage']['subagent']['outputTokens'] = 20*(n-1)+10
         if mode.startswith('background_'):
             child_task = {'task_id':'child-one','task_type':'local_agent'}
-            if mode == 'background_native_followup': child_task['run_id'] = 'native-child-run'
+            if mode in ('background_native_followup', 'background_native_equal', 'background_native_reused_id'): child_task['run_id'] = 'native-child-run'
             send({'type':'system','subtype':'background_tasks_changed','session_id':session,'tasks':[child_task]})
         send(result)
         if mode == 'steer_cycle':
@@ -414,18 +422,19 @@ if kind == 'claude':
                     response = read()['response']['response']
                     if response['behavior'] == 'allow':
                         (root / 'child-effect').write_text('one')
-            if mode != 'background_native_followup':
+            if mode not in ('background_native_followup', 'background_native_equal', 'background_native_reused_id'):
                 send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':session})
             import time
             time.sleep(0.05)
             (root / 'background-completed').write_text(str(count))
             send({'type':'system','subtype':'task_notification','session_id':session,**child_task,'status':'completed'})
             send({'type':'system','subtype':'background_tasks_changed','session_id':session,'tasks':[]})
-            if mode == 'background_native_followup':
+            if mode in ('background_native_followup', 'background_native_equal', 'background_native_reused_id'):
                 send({'type':'system','subtype':'init','session_id':session})
                 result['modelUsage']['subagent']['outputTokens'] = 20 * process_count
-                result['result'] = 'native background final answer'
+                result['result'] = 'offline reply' if mode == 'background_native_equal' else 'native background final answer'
                 result.pop('user_message_uuid', None)
+                result.pop('uuid', None)
                 result['origin'] = {'kind':'task-notification','producer':'session-task','runId':'native-child-run'}
                 send(result)
                 send({'type':'system','subtype':'session_state_changed','state':'idle','session_id':session})

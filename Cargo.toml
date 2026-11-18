@@ -182,6 +182,11 @@ hagency = { path = "crates/hagency-client/native/hagency", features = ["test-sup
 name = "article_editor_review"
 required-features = ["onboarding-test-support"]
 
+[[test]]
+name = "owner_daemon_jit"
+harness = false
+required-features = ["onboarding-test-support"]
+
 ## For OAuth/SSO login on iOS, via `ASWebAuthenticationSession`. Ugh....
 [target.'cfg(target_os = "ios")'.dependencies]
 robius-web-auth-session = { git = "https://github.com/project-robius/robius" }

@@ -209,6 +209,15 @@ pub enum Notification {
         turn_id: String,
     },
     Envelope(Envelope),
+    /// An explicitly user-facing report from a scoped Octos session. Monitor
+    /// output and uncorrelated child transcripts do not use this variant.
+    AgentReport {
+        session_id: String,
+        turn_id: String,
+        message_id: String,
+        origin_id: String,
+        text: String,
+    },
     ApprovalRequested {
         session_id: String,
         approval_id: String,
@@ -348,6 +357,39 @@ impl Notification {
                     session_id: routed_session(&params)?,
                     turn_id: field(&params, "turn_id")?.to_owned(),
                     inputs,
+                }
+            }
+            "background/activity"
+                if params["origin_kind"] == "agent"
+                    && params["suppressed"] != true
+                    && params["report"].is_object()
+                    && params["report"]["durable"] == true =>
+            {
+                let report = &params["report"];
+                let summary = params["text"].as_str()
+                    .filter(|text| !text.trim().is_empty() && text.len() <= MAX_TEXT_BYTES)
+                    .ok_or(Error::Envelope)?;
+                let mut text = summary.to_owned();
+                for (field_name, label) in [("next_step", "Next"), ("evidence", "Evidence")] {
+                    if let Some(value) = report.get(field_name).filter(|value| !value.is_null()) {
+                        let value = value.as_str()
+                            .filter(|value| !value.trim().is_empty() && value.len() <= MAX_TEXT_BYTES)
+                            .ok_or(Error::Envelope)?;
+                        if text.len().saturating_add(value.len()).saturating_add(label.len() + 4) > MAX_TEXT_BYTES {
+                            return Err(Error::Capacity);
+                        }
+                        text.push_str("\n\n");
+                        text.push_str(label);
+                        text.push_str(": ");
+                        text.push_str(value);
+                    }
+                }
+                Self::AgentReport {
+                    session_id: routed_session(&params)?,
+                    turn_id: field(report, "turn_id")?.to_owned(),
+                    message_id: field(report, "message_id")?.to_owned(),
+                    origin_id: field(&params, "origin_id")?.to_owned(),
+                    text,
                 }
             }
             "projection/envelope" => {

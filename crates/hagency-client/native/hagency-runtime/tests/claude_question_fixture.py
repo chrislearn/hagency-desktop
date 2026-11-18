@@ -6,6 +6,7 @@ import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
+with_progress = len(sys.argv) > 2 and sys.argv[2] == "progress"
 questions = [{"question": f"Question {i}?", "header": f"Q{i}", "multiSelect": i == 0,
               "options": [{"label": "One", "description": "First"}, {"label": "Two", "description": "Second"}]}
              for i in range(4)]
@@ -33,8 +34,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             content = {"type": "tool_use", "id": "question-native", "name": "AskUserQuestion", "input": {"questions": questions}}
         else:
             content = {"type": "text", "text": "Offline native question completed."}
+        blocks = ([{"type": "text", "text": "First finding"}] if asking and with_progress else []) + [content]
         message = {"id": "msg_question" if asking else "msg_done", "type": "message", "role": "assistant",
-                   "model": data.get("model", "claude-sonnet-4-5"), "content": [content],
+                   "model": data.get("model", "claude-sonnet-4-5"), "content": blocks,
                    "stop_reason": "tool_use" if asking else "end_turn", "stop_sequence": None,
                    "usage": {"input_tokens": 17, "output_tokens": 9, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}
         self.send_response(200)
@@ -50,13 +52,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.flush()
         start = dict(message, content=[], stop_reason=None)
         event("message_start", {"message": start})
-        if asking:
-            event("content_block_start", {"index":0,"content_block":dict(content,input={})})
-            event("content_block_delta", {"index":0,"delta":{"type":"input_json_delta","partial_json":json.dumps(content["input"])}})
-        else:
-            event("content_block_start", {"index":0,"content_block":{"type":"text","text":""}})
-            event("content_block_delta", {"index":0,"delta":{"type":"text_delta","text":content["text"]}})
-        event("content_block_stop", {"index":0})
+        for index, block in enumerate(blocks):
+            if block["type"] == "tool_use":
+                event("content_block_start", {"index":index,"content_block":dict(block,input={})})
+                event("content_block_delta", {"index":index,"delta":{"type":"input_json_delta","partial_json":json.dumps(block["input"])}})
+            else:
+                event("content_block_start", {"index":index,"content_block":{"type":"text","text":""}})
+                event("content_block_delta", {"index":index,"delta":{"type":"text_delta","text":block["text"]}})
+            event("content_block_stop", {"index":index})
         event("message_delta", {"delta":{"stop_reason":message["stop_reason"],"stop_sequence":None},"usage":{"output_tokens":9}})
         event("message_stop", {})
 

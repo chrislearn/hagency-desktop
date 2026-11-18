@@ -9,7 +9,7 @@
 
 use std::borrow::Cow;
 
-use matrix_sdk::ruma::{events::room::message::FormattedBody, UserId};
+use matrix_sdk::ruma::{events::room::message::FormattedBody, RoomId, UserId};
 
 use super::agents::{is_agent_localpart, AgentRole};
 
@@ -126,16 +126,33 @@ pub struct AgentMessagePresentation {
     pub kind: Option<AgentReplyKind>,
     /// The permalink the bridge appended, if any.
     pub permalink: Option<String>,
+    /// The legacy bridge owns the emoji/permalink decoration convention.
+    strip_bridge_decoration: bool,
 }
 
 impl AgentMessagePresentation {
-    /// Returns `Some` if `sender` looks like an agent puppet account.
+    /// Returns `Some` for a legacy puppet or an explicitly registered Agent.
     pub fn for_sender(sender: &UserId) -> Option<Self> {
         let localpart = sender.localpart();
-        is_agent_localpart(localpart).then(|| Self {
+        let legacy = is_agent_localpart(localpart);
+        Self::for_sender_with_registration(sender, legacy || crate::agent_access::is_registered_agent(sender))
+    }
+
+    /// Room roster identities are authenticated observations, never inferred
+    /// from message contents or account display names.
+    pub fn for_sender_in_room(sender: &UserId, room: &RoomId) -> Option<Self> {
+        Self::for_sender(sender).or_else(||
+            Self::for_sender_with_registration(sender, crate::agent_access::room_roster::contains(room, sender)))
+    }
+
+    fn for_sender_with_registration(sender: &UserId, registered: bool) -> Option<Self> {
+        let localpart = sender.localpart();
+        let legacy = is_agent_localpart(localpart);
+        (legacy || registered).then(|| Self {
             role: AgentRole::from_name(localpart),
             kind: None,
             permalink: None,
+            strip_bridge_decoration: legacy,
         })
     }
 
@@ -156,8 +173,12 @@ impl AgentMessagePresentation {
         body: &'a str,
         formatted: Option<&'a FormattedBody>,
     ) -> (Cow<'a, str>, Option<Cow<'a, FormattedBody>>) {
-        let (kind, rest) = AgentReplyKind::split_from_body(body);
-        let (rest, permalink) = split_permalink(rest);
+        let (kind, rest) = if self.strip_bridge_decoration {
+            AgentReplyKind::split_from_body(body)
+        } else { (None, body) };
+        let (rest, permalink) = if self.strip_bridge_decoration {
+            split_permalink(rest)
+        } else { (Cow::Borrowed(rest), None) };
         self.kind = kind;
         self.permalink = permalink.map(str::to_owned);
         let body = match rest {
@@ -166,6 +187,7 @@ impl AgentMessagePresentation {
             Cow::Owned(owned) => Cow::Owned(owned),
         };
         let formatted = formatted.map(|formatted| {
+            if !self.strip_bridge_decoration { return Cow::Borrowed(formatted); }
             let stripped = strip_permalink_anchor_from_html(&formatted.body);
             let stripped = match stripped {
                 Cow::Borrowed(html) => strip_kind_marker_from_html(html),
@@ -249,6 +271,19 @@ mod tests {
         assert!(AgentMessagePresentation::for_sender(&human).is_none());
         let helper = OwnedUserId::try_from("@ac_helper:example.org").unwrap();
         assert_eq!(AgentMessagePresentation::for_sender(&helper).unwrap().badge_text(), "agent");
+    }
+
+    #[test]
+    fn registered_nonstandard_agent_preserves_its_complete_message() {
+        let sender = OwnedUserId::try_from("@dragon:example.org").unwrap();
+        assert!(AgentMessagePresentation::for_sender_with_registration(&sender, false).is_none());
+        let mut presentation = AgentMessagePresentation::for_sender_with_registration(&sender, true).unwrap();
+        let source = "ℹ A finding\n\n🔗 https://example.org/evidence";
+        let (body, _) = presentation.present(source, None);
+        assert_eq!(body, source);
+        assert!(presentation.kind.is_none());
+        assert!(presentation.permalink.is_none());
+        assert_eq!(presentation.badge_text(), "agent");
     }
 
     #[test]

@@ -153,15 +153,23 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
             return Ok(());
         };
         let next = payload["result"].as_str().unwrap_or("");
+        let next_id = payload["uuid"].as_str().filter(|id| !id.is_empty())
+            .map(|id| format!("claude:result:{id}"))
+            .unwrap_or_else(|| format!("claude:result:observation:{}", observation.sequence()));
         if !observation.continues_answer()
-            && let (Some(output), Some(previous)) = (&self.output, &self.answer)
-            && previous.text != next
+            && let Some(previous) = &self.answer
         {
+            if previous.id == next_id {
+                if previous.text != next { return Err(Error::Protocol("Claude result changed")); }
+                return Ok(());
+            }
             // A correlated background result supersedes the original answer
             // in the native completion receipt. Keep that earlier answer as
-            // a separate message before accepting the later result.
-            output.message(&previous.id, &previous.text)
-                .map_err(|_| Error::Protocol("message delivery custody"))?;
+            // a separate message even when the two bodies are identical.
+            if let Some(output) = &self.output {
+                output.message(&previous.id, &previous.text)
+                    .map_err(|_| Error::Protocol("message delivery custody"))?;
+            }
         }
         // A steer that ran as a cycle of its own continues the answer read so
         // far, as the driver's receipt does. Any other result replaces it.
@@ -172,9 +180,7 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
         join_answer(&mut text, payload["result"].as_str().unwrap_or(""));
         self.answer = Some(Answer {
             text,
-            id: payload["uuid"].as_str().filter(|id| !id.is_empty())
-                .map(|id| format!("claude:result:{id}"))
-                .unwrap_or_else(|| format!("claude:result:observation:{}", observation.sequence())),
+            id: next_id,
             clean: payload["is_error"] == false
                 && payload["terminal_reason"] != "aborted_streaming",
         });
@@ -249,7 +255,16 @@ impl<'a, C: super::claude_turn::Capture> Controls<'a, C> {
                             .map_err(|_| Error::Protocol("message delivery custody"))?;
                     }
                 } else if completed.is_empty() {
-                    self.pending_message = Some((previous_id, previous_text, previous_delivered));
+                    // Claude can emit the text and tool blocks as separate
+                    // assistant frames with the same API message ID. A tool
+                    // frame proves the preceding text is intermediate even
+                    // when the tool is waiting for a user response.
+                    let mut delivered = previous_delivered;
+                    if !delivered && blocks.iter().any(|block| block["type"] == "tool_use") {
+                        delivered = output.message(&format!("claude:assistant:{previous_id}"), &previous_text)
+                            .map_err(|_| Error::Protocol("message delivery custody"))?;
+                    }
+                    self.pending_message = Some((previous_id, previous_text, delivered));
                     return Ok(());
                 } else if previous_delivered {
                     if previous_text != completed { return Err(Error::Protocol("Claude message changed")); }

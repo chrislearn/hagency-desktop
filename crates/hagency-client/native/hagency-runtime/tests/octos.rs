@@ -26,6 +26,32 @@ fn envelope(payload: Value) -> Value {
 }
 
 #[test]
+fn agent_report_decodes_identity_and_user_facing_details() {
+    let params = json!({
+        "session_id":"coding:local:one", "origin_kind":"agent", "origin_id":"main",
+        "text":"Found the cause", "report":{"turn_id":"turn-1","message_id":"message-1",
+        "kind":"milestone","next_step":"Run tests","evidence":"build log","durable":true}
+    });
+    assert!(matches!(notification("background/activity", params.clone()),
+        Notification::AgentReport { session_id, turn_id, message_id, origin_id, text }
+        if session_id=="coding:local:one" && turn_id=="turn-1" && message_id=="message-1"
+            && origin_id=="main" && text=="Found the cause\n\nNext: Run tests\n\nEvidence: build log"));
+    let mut monitor = params.clone();
+    monitor["origin_kind"] = json!("monitor");
+    assert!(matches!(notification("background/activity", monitor), Notification::Other));
+    let mut suppressed = params.clone();
+    suppressed["suppressed"] = json!(true);
+    assert!(matches!(notification("background/activity", suppressed), Notification::Other));
+    let mut best_effort = params.clone();
+    best_effort["report"]["durable"] = json!(false);
+    assert!(matches!(notification("background/activity", best_effort), Notification::Other));
+    let mut no_id = params;
+    no_id["report"].as_object_mut().unwrap().remove("message_id");
+    assert!(matches!(frame(json!({"jsonrpc":"2.0","method":"background/activity","params":no_id})),
+        Err(Error::Envelope)));
+}
+
+#[test]
 fn native_octos_reads_routed_plan_snapshots() {
     let plan = json!({"items":[{"title":"Inspect","status":"in_progress"}],"updated_at_ms":1});
     assert!(matches!(notification("plan/updated", json!({"session_id":"coding:local:one",

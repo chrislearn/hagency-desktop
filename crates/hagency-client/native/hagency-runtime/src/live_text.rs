@@ -10,6 +10,26 @@ pub trait MessageSink: Send + Sync {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessageError;
+
+/// Opaque identity for a native, explicitly user-facing message. Provider,
+/// session and optional turn/task are supplied by the supervised adapter;
+/// the model never supplies a conversation destination. Length-delimited
+/// encoding prevents separator collisions between provider IDs.
+pub fn native_message_id(
+    provider: &str, session: &str, scope: Option<&str>, message: &str,
+) -> Result<String, MessageError> {
+    use sha2::{Digest, Sha256};
+    let valid = |value: &str| !value.is_empty() && value.len() <= 512
+        && !value.chars().any(|c| c.is_control() || c.is_whitespace());
+    if !valid(provider) || provider.len() > 32
+        || !provider.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+        || !valid(session) || !valid(message) || scope.is_some_and(|scope| !valid(scope))
+    {
+        return Err(MessageError);
+    }
+    let encoded = serde_json::to_vec(&(provider, session, scope, message)).map_err(|_| MessageError)?;
+    Ok(format!("{provider}:report:{:x}", Sha256::digest(encoded)))
+}
 #[derive(Clone, Default)]
 pub struct LiveText {
     state: Arc<Mutex<State>>,
@@ -88,6 +108,17 @@ impl LiveText {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_message_identity_is_scoped_and_unambiguous() {
+        let id = native_message_id("octos", "profile:session", Some("turn:a"), "message:b").unwrap();
+        assert_eq!(id, native_message_id("octos", "profile:session", Some("turn:a"), "message:b").unwrap());
+        assert_ne!(id, native_message_id("octos", "profile:session", Some("turn"), "a:message:b").unwrap());
+        assert_ne!(id, native_message_id("claude", "profile:session", Some("turn:a"), "message:b").unwrap());
+        assert_ne!(id, native_message_id("octos", "other:session", Some("turn:a"), "message:b").unwrap());
+        assert!(native_message_id("bad provider", "session", None, "message").is_err());
+        assert!(native_message_id("octos", "session", Some(""), "message").is_err());
+    }
 
     #[test]
     fn large_unicode_preview_is_bounded_and_completed_text_is_not_duplicated() {

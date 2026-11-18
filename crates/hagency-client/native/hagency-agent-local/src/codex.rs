@@ -719,6 +719,63 @@ impl ReplyText {
         } else { notes }
     }
 }
+
+/// Codex async messages are explicitly addressed to the user and may include
+/// non-blocking questions. Preserve every question and option in the plain
+/// Matrix body so other clients can read it, without claiming a blocking or
+/// clickable question-control handshake.
+fn async_message(item: &Value, text: &str) -> Result<Option<String>> {
+    let asynchronous = match item.get("delivery") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(value)) if value == "async" => true,
+        _ => return Err(Error::Protocol("unsupported Codex message delivery")),
+    };
+    if !asynchronous {
+        if item.get("questions").is_some_and(|value| !value.is_null()) {
+            return Err(Error::Protocol("uncorrelated Codex message questions"));
+        }
+        return Ok(None);
+    }
+    if item.get("moderation").filter(|value| !value.is_null())
+        .is_some_and(|moderation| moderation["moderated"] != false)
+    {
+        return Err(Error::Protocol("unsupported Codex message moderation"));
+    }
+    let mut body = text.to_owned();
+    let mut fallback = String::new();
+    if body.len() > ReplyText::LIMIT { return Err(Error::Protocol("Codex async message too large")); }
+    if let Some(questions) = item.get("questions").filter(|value| !value.is_null()) {
+        let questions = questions.as_array().filter(|questions| !questions.is_empty() && questions.len() <= 16)
+            .ok_or(Error::Protocol("invalid Codex async questions"))?;
+        for question in questions {
+            let title = question["title"].as_str()
+                .filter(|title| !title.trim().is_empty() && title.len() <= 4096)
+                .ok_or(Error::Protocol("invalid Codex async question"))?;
+            if !fallback.is_empty() { fallback.push_str("\n\n"); }
+            fallback.push_str(title);
+            if let Some(options) = question.get("options").filter(|value| !value.is_null()) {
+                let options = options.as_array().filter(|options| !options.is_empty() && options.len() <= 32)
+                    .ok_or(Error::Protocol("invalid Codex async options"))?;
+                for option in options {
+                    let option = option.as_str().filter(|option| !option.trim().is_empty() && option.len() <= 4096)
+                        .ok_or(Error::Protocol("invalid Codex async option"))?;
+                    fallback.push_str("\n- ");
+                    fallback.push_str(option);
+                    if fallback.len() > ReplyText::LIMIT { return Err(Error::Protocol("Codex async message too large")); }
+                }
+            }
+            if fallback.len() > ReplyText::LIMIT { return Err(Error::Protocol("Codex async message too large")); }
+        }
+    }
+    // Current Codex already includes the question fallback in `text`; do not
+    // duplicate it when adding structured choices for other producers.
+    if !fallback.is_empty() && !body.contains(&fallback) {
+        if !body.is_empty() { body.push_str("\n\n"); }
+        body.push_str(&fallback);
+        if body.len() > ReplyText::LIMIT { return Err(Error::Protocol("Codex async message too large")); }
+    }
+    Ok(Some(body))
+}
 #[derive(Debug)]
 pub struct Completed {
     pub text: String,
@@ -1814,10 +1871,13 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                         let message = item["text"]
                             .as_str()
                             .ok_or(Error::Protocol("message missing"))?;
-                        collected.push(message, item["phase"] == "commentary");
+                        let async_body = async_message(item, message)?;
+                        let message = async_body.as_deref().unwrap_or(message);
+                        let commentary = async_body.is_some() || item["phase"] == "commentary";
+                        collected.push(message, commentary);
                         if let Some(output) = &queue.live_text {
                             output.complete(id, message);
-                            if item["phase"] == "commentary" {
+                            if commentary {
                                 collected.notes_delivered |= output.message(&format!("codex:{event_thread}:{event_turn}:{id}"), message)
                                     .map_err(|_| Error::Protocol("message delivery custody"))?;
                             }
@@ -2717,6 +2777,15 @@ mod tests {
                                 emit(&mut w, value!({"method":"item/completed","params":{"threadId":"thread-a","turnId":"turn-a",
                                     "item":{"id":id,"type":"agentMessage","phase":"commentary","text":text}}})).await;
                             }
+                        }
+                        if kind == "async_messages" {
+                            for id in ["async-a", "async-b"] {
+                                emit(&mut w, value!({"method":"item/completed","params":{"threadId":"thread-a","turnId":"turn-a",
+                                    "item":{"id":id,"type":"agentMessage","delivery":"async","text":"same report"}}})).await;
+                            }
+                            emit(&mut w, value!({"method":"item/completed","params":{"threadId":"thread-a","turnId":"turn-a",
+                                "item":{"id":"async-question","type":"agentMessage","delivery":"async","text":"Please choose",
+                                    "questions":[{"title":"Which database?","options":["SQLite","Postgres"]}]}}})).await;
                         }
                         emit(&mut w,value!({"method":"item/completed","params":{"threadId":"thread-a","turnId":"turn-a","item":{"id":"message-a","type":"agentMessage","text":"hello"}}})).await;
                         emit(&mut w,value!({"method":"turn/completed","params":{"threadId":"thread-a","turn":{"id":"turn-a","status":if kind=="failed"{"failed"}else{"completed"}}}})).await;
@@ -3664,6 +3733,43 @@ mod tests {
         assert_eq!(&*sink.0.lock().unwrap(), &[("codex:thread-a:turn-a:note-a".into(), "first progress".into()),
             ("codex:thread-a:turn-a:note-b".into(), "second progress".into())]);
         peer.abort();
+    }
+    #[tokio::test]
+    async fn codex_async_items_keep_separate_identity_and_question_options() {
+        #[derive(Default)]
+        struct Sink(std::sync::Mutex<Vec<(String, String)>>);
+        impl hagency_runtime::live_text::MessageSink for Sink {
+            fn record(&self, id: &str, text: &str) -> std::result::Result<(), hagency_runtime::live_text::MessageError> {
+                self.0.lock().unwrap().push((id.into(), text.into()));
+                Ok(())
+            }
+        }
+        let (_temp, mut ledger, profile) = setup(false);
+        let (mut session, _, peer) = fake(profile.cwd.to_str().unwrap().into(), false, true, 10, "async_messages");
+        session.initialize().await.unwrap();
+        session.open_context(&mut ledger, &scope(), &profile).await.unwrap();
+        let sink = std::sync::Arc::new(Sink::default());
+        let (queue, _) = approval_queue(1).unwrap();
+        let queue = queue.with_live_text(hagency_runtime::live_text::LiveText::with_messages(sink.clone()));
+        let completed = session.run(&mut ledger, "@alice:test", &scope(), "call", "dispatch", "hello", BudgetMode::Postpaid, &queue).await.unwrap();
+        assert_eq!(completed.text, "hello");
+        assert_eq!(&*sink.0.lock().unwrap(), &[
+            ("codex:thread-a:turn-a:async-a".into(), "same report".into()),
+            ("codex:thread-a:turn-a:async-b".into(), "same report".into()),
+            ("codex:thread-a:turn-a:async-question".into(), "Please choose\n\nWhich database?\n- SQLite\n- Postgres".into()),
+        ]);
+        peer.abort();
+    }
+
+    #[test]
+    fn codex_async_questions_fail_closed_when_the_payload_is_invalid() {
+        assert!(async_message(&value!({"delivery":"async","questions":[{"title":"valid","options":[7]}]}), "message").is_err());
+        assert!(async_message(&value!({"questions":[{"title":"unscoped"}]}), "message").is_err());
+        assert!(async_message(&value!({"delivery":"future"}), "message").is_err());
+        assert!(async_message(&value!({"delivery":"async","moderation":{"moderated":true}}), "message").is_err());
+        let question = value!({"delivery":"async","questions":[{"title":"Which database?","options":["SQLite","Postgres"]}]});
+        let native_text = "Which database?\n- SQLite\n- Postgres";
+        assert_eq!(async_message(&question, native_text).unwrap().as_deref(), Some(native_text));
     }
     #[tokio::test]
     async fn resumed_context_without_response_receipts_retains_unresolved_usage() {

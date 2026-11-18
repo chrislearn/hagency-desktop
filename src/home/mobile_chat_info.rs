@@ -240,7 +240,7 @@ fn group_members(members: &mut Vec<UserProfile>, owners: &HashMap<OwnedUserId, O
     *members = ordered;
     grouped
 }
-async fn fetch_member_owners(room: &str, owner: &OwnedUserId) -> Result<(HashMap<OwnedUserId, OwnedUserId>, bool), String> {
+pub(crate) async fn fetch_member_owners(room: &str, owner: &OwnedUserId) -> Result<(HashMap<OwnedUserId, OwnedUserId>, bool), String> {
     use crate::hagency::{backend::Service,model::Command};
     let service = Service::for_current()?;
     let roster = service.execute(Command::Agents).await?;

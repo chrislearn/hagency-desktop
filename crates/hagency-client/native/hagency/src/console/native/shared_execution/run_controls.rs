@@ -233,7 +233,7 @@ async fn serve(
             && io.check_running(&command).await.is_ok()
             && super::files::authorize(&io, &work.id).await.is_ok()
         {
-            let _ = messages.send_next(&device, work.encrypted).await;
+            let _ = messages.send_next(&device, work.encrypted, None, None).await;
         }
         for (received, action) in card.actions().await.unwrap_or_default() {
             // Current server identity, assignment and command; native submission

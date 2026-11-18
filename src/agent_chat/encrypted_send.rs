@@ -1,9 +1,10 @@
 //! Do not encrypt the first Agent request to an empty recipient device list.
 //! Joining a room and publishing native device keys are separate operations.
 use matrix_sdk::{
-    Client, Room, RoomMemberships,
-    ruma::{OwnedUserId, UserId, events::room::message::RoomMessageEventContent},
+    Room, RoomMemberships,
+    ruma::{OwnedUserId, events::room::message::RoomMessageEventContent},
 };
+use hagency::agent_encryption::wait_for_sendable_device;
 use std::{collections::BTreeSet, time::Duration};
 
 fn recipients(members: Vec<OwnedUserId>, mentions: &BTreeSet<OwnedUserId>) -> Vec<OwnedUserId> {
@@ -47,7 +48,7 @@ pub(crate) async fn ensure_ready(
         );
         let client = room.client();
         for user in users {
-            wait_for_device(&client, &user).await.map_err(|_| ())?;
+            wait_for_sendable_device(&client, &user).await.map_err(|_| ())?;
         }
         Ok::<_, ()>(())
     })
@@ -57,38 +58,6 @@ pub(crate) async fn ensure_ready(
         _ => Err(
             "This Agent's device keys are not available; it may not have started on its computer yet. Your message was not sent. Check that its service is running, then try again.",
         ),
-    }
-}
-
-async fn wait_for_device(client: &Client, user: &UserId) -> Result<(), matrix_sdk::Error> {
-    loop {
-        let devices = client
-            .encryption()
-            .get_user_devices(user)
-            .await?;
-        if devices
-            .devices()
-            .any(|d| !d.is_deleted() && !d.is_blacklisted() && d.curve25519_key().is_some())
-        {
-            return Ok(());
-        }
-        // Query through the SDK so device signatures are validated and its
-        // send queue sees the same keys; a bot need not have cross-signing.
-        client
-            .encryption()
-            .request_user_identity(user)
-            .await?;
-        let devices = client
-            .encryption()
-            .get_user_devices(user)
-            .await?;
-        if devices
-            .devices()
-            .any(|d| !d.is_deleted() && !d.is_blacklisted() && d.curve25519_key().is_some())
-        {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 

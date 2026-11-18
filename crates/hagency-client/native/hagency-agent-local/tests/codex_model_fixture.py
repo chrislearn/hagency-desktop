@@ -53,6 +53,13 @@ class Provider(http.server.BaseHTTPRequestHandler):
             assert 'ROOM_FILE_RECEIPT' in json.dumps(body['input'])
             item = {'type':'message','id':response_id+'-message','role':'assistant','status':'completed',
                     'content':[{'type':'output_text','text':'ROOM_REPLY','annotations':[]}]}
+        elif mode == "async_message" and n < 2:
+            assert any(t.get('name') == 'send_message_to_user_async' for t in body['tools'])
+            item = {'type':'function_call','id':response_id+'-async','call_id':response_id+'-async',
+                    'name':'send_message_to_user_async','arguments':json.dumps({'message':'same report'})}
+        elif mode == "async_message":
+            item = {'type':'message','id':response_id+'-message','role':'assistant','status':'completed',
+                    'content':[{'type':'output_text','text':'ASYNC_FINAL','annotations':[]}]}
         elif mode == "questions" and n == 0:
             assert any(t.get('name') == 'request_user_input' for t in body['tools'])
             item = {'type':'function_call','id':response_id+'-ask','call_id':response_id+'-ask',

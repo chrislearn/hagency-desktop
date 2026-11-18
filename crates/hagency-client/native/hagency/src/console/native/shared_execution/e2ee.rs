@@ -138,7 +138,7 @@ pub(super) async fn send_message(
     }
     let _ = pending;
     let device = device(io, b, &work.assignment_id).await?;
-    outbox.send_next(&device, work.encrypted).await
+    outbox.send_next(&device, work.encrypted, None, None).await
         .map_err(|_| failure(503, "shared_message_delivery_pending"))
 }
 pub(super) fn file_records(io: &Io, b: &Bound, assignment: &str) -> Result<PathBuf, NativeError> {
